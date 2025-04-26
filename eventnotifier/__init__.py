@@ -1,4 +1,6 @@
 from .eventnotifier import EventNotifier
 
 async def setup(bot):
-    await bot.add_cog(EventNotifier(bot))
+    cog = EventNotifier(bot)
+    await cog.initialize()
+    await bot.add_cog(cog)
