@@ -23,6 +23,7 @@ class EventNotifier(commands.Cog):
                     
                     for event_id, event_data in events.items():
                         event_time = datetime.fromisoformat(event_data["time"])
+                        unix_timestamp = int(event_time.timestamp())
                         
                         # Check for reminders
                         for reminder_minutes in reminder_times:
@@ -35,7 +36,7 @@ class EventNotifier(commands.Cog):
                                     if channel:
                                         reminder_embed = discord.Embed(
                                             title=f"Event Reminder: {event_data['name']}",
-                                            description=f"Event starts in {reminder_minutes} minutes!\n\n{event_data['description']}",
+                                            description=f"Event starts <t:{unix_timestamp}:R>!\n\n{event_data['description']}",
                                             color=discord.Color.gold()
                                         )
                                         await channel.send(
@@ -154,13 +155,12 @@ class EventNotifier(commands.Cog):
                 await user.remove_roles(role, reason="Event ended")
             except discord.HTTPException:
                 print(f"Failed to remove event role from {user.name}")
-
-    @commands.group()
-    async def event(self, ctx):
+                    @commands.group()
+    async def events(self, ctx):
         """Event management commands"""
         pass
 
-    @event.command()
+    @events.command()
     @commands.mod()
     async def timezone(self, ctx, timezone_name: str):
         """Set the timezone for the guild (e.g., 'US/Pacific', 'Europe/London')"""
@@ -171,11 +171,11 @@ class EventNotifier(commands.Cog):
         except pytz.exceptions.UnknownTimeZoneError:
             await ctx.send("Invalid timezone. Please use a valid timezone name from the IANA timezone database.")
 
-    @event.command()
+    @events.command()
     @commands.mod()
     async def setreminders(self, ctx, *minutes: int):
         """Set when to send reminders before events (in minutes)
-        Example: !event setreminders 60 30 10"""
+        Example: !events setreminders 60 30 10"""
         if not minutes:
             await ctx.send("Please provide at least one reminder time in minutes")
             return
@@ -184,14 +184,14 @@ class EventNotifier(commands.Cog):
         await self.config.guild(ctx.guild).reminder_times.set(reminder_times)
         await ctx.send(f"Reminder times set to: {', '.join(str(m) + ' minutes' for m in reminder_times)}")
 
-    @event.command()
+    @events.command()
     @commands.mod()
     async def showreminders(self, ctx):
         """Show current reminder times"""
         reminder_times = await self.config.guild(ctx.guild).reminder_times()
         await ctx.send(f"Current reminder times: {', '.join(str(m) + ' minutes' for m in reminder_times)}")
 
-    @event.command()
+    @events.command()
     @commands.mod()
     async def create(self, ctx, name: str, *, time_and_description: str):
         """Create a new event. Time can be natural language like 'tomorrow at 3pm' or 'in 2 hours'"""
@@ -248,7 +248,7 @@ class EventNotifier(commands.Cog):
         except Exception as e:
             await ctx.send(f"Error creating event: {str(e)}")
 
-    @event.command()
+    @events.command()
     async def list(self, ctx):
         """List all upcoming events"""
         events = await self.config.guild(ctx.guild).events()
@@ -262,18 +262,16 @@ class EventNotifier(commands.Cog):
             color=discord.Color.blue()
         )
         
-        guild_tz = await self.config.guild(ctx.guild).timezone()
-        
         for event_id, event_data in events.items():
             event_time = datetime.fromisoformat(event_data["time"])
+            unix_timestamp = int(event_time.timestamp())
             interested_count = len(event_data["interested_users"])
             maybe_count = len(event_data["maybe_users"])
             declined_count = len(event_data["declined_users"])
             
-            local_time = event_time.astimezone(pytz.timezone(guild_tz))
-            
             field_value = (
-                f"Time: {local_time.strftime('%Y-%m-%d %I:%M %p %Z')}\n"
+                f"Time: <t:{unix_timestamp}:F>\n"
+                f"Relative: <t:{unix_timestamp}:R>\n"
                 f"Description: {event_data['description']}\n"
                 f"Going: {interested_count} | Maybe: {maybe_count} | Not Going: {declined_count}"
             )
@@ -287,7 +285,7 @@ class EventNotifier(commands.Cog):
         await ctx.send(embed=embed)
 
     async def create_event_embed(self, name, event_time, description, event_id, guild_tz, interested_users=None, maybe_users=None, declined_users=None):
-        """Create an embed for the event with timezone information"""
+        """Create an embed for the event with Discord timestamp"""
         if interested_users is None:
             interested_users = []
         if maybe_users is None:
@@ -301,16 +299,12 @@ class EventNotifier(commands.Cog):
             color=discord.Color.blue()
         )
         
-        # Add time information for different timezones
-        common_timezones = ['US/Pacific', 'US/Eastern', 'Europe/London', 'Europe/Paris', 'Asia/Tokyo']
-        time_field = f"Local Time ({guild_tz}): {event_time.strftime('%Y-%m-%d %I:%M %p %Z')}\n\n"
-        time_field += "Other Timezones:\n"
-        
-        for tz_name in common_timezones:
-            if tz_name != guild_tz:
-                tz = pytz.timezone(tz_name)
-                converted_time = event_time.astimezone(tz)
-                time_field += f"{tz_name}: {converted_time.strftime('%Y-%m-%d %I:%M %p %Z')}\n"
+        # Convert to Unix timestamp for Discord's timestamp format
+        unix_timestamp = int(event_time.timestamp())
+        time_field = (
+            f"Event Time: <t:{unix_timestamp}:F>\n"
+            f"Relative Time: <t:{unix_timestamp}:R>"
+        )
         
         embed.add_field(name="Time", value=time_field, inline=False)
         embed.add_field(name="Event ID", value=event_id, inline=False)
