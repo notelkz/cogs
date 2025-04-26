@@ -160,8 +160,131 @@ class EventNotifier(commands.Cog):
         """Event management commands"""
         pass
 
-    # Add all your other command methods here...
-    # (timezone, setreminders, showreminders, create, etc.)
+    @event.command()
+    @commands.mod()
+    async def timezone(self, ctx, timezone_name: str):
+        """Set the timezone for the guild (e.g., 'US/Pacific', 'Europe/London')"""
+        try:
+            pytz.timezone(timezone_name)
+            await self.config.guild(ctx.guild).timezone.set(timezone_name)
+            await ctx.send(f"Timezone set to {timezone_name}")
+        except pytz.exceptions.UnknownTimeZoneError:
+            await ctx.send("Invalid timezone. Please use a valid timezone name from the IANA timezone database.")
+
+    @event.command()
+    @commands.mod()
+    async def setreminders(self, ctx, *minutes: int):
+        """Set when to send reminders before events (in minutes)
+        Example: !event setreminders 60 30 10"""
+        if not minutes:
+            await ctx.send("Please provide at least one reminder time in minutes")
+            return
+            
+        reminder_times = sorted(minutes, reverse=True)
+        await self.config.guild(ctx.guild).reminder_times.set(reminder_times)
+        await ctx.send(f"Reminder times set to: {', '.join(str(m) + ' minutes' for m in reminder_times)}")
+
+    @event.command()
+    @commands.mod()
+    async def showreminders(self, ctx):
+        """Show current reminder times"""
+        reminder_times = await self.config.guild(ctx.guild).reminder_times()
+        await ctx.send(f"Current reminder times: {', '.join(str(m) + ' minutes' for m in reminder_times)}")
+
+    @event.command()
+    @commands.mod()
+    async def create(self, ctx, name: str, *, time_and_description: str):
+        """Create a new event. Time can be natural language like 'tomorrow at 3pm' or 'in 2 hours'"""
+        try:
+            # Split the time and description
+            parts = time_and_description.split(" - ", 1)
+            if len(parts) != 2:
+                await ctx.send("Please provide both time and description separated by ' - '")
+                return
+                
+            time_str, description = parts
+            
+            # Get guild timezone
+            guild_tz = await self.config.guild(ctx.guild).timezone()
+            settings = {'TIMEZONE': guild_tz, 'RETURN_AS_TIMEZONE_AWARE': True}
+            
+            # Parse the time
+            event_time = dateparser.parse(time_str, settings=settings)
+            if not event_time:
+                await ctx.send("Couldn't understand that time format. Try something like 'tomorrow at 3pm' or 'in 2 hours'")
+                return
+            
+            event_id = str(len((await self.config.guild(ctx.guild).events()).keys()) + 1)
+            
+            # Create the event embed
+            embed = await self.create_event_embed(
+                name, 
+                event_time, 
+                description, 
+                event_id, 
+                guild_tz,
+                []
+            )
+            
+            # Send the embed and add reaction options
+            event_message = await ctx.send(embed=embed)
+            await event_message.add_reaction(self.YES_EMOJI)
+            await event_message.add_reaction(self.MAYBE_EMOJI)
+            await event_message.add_reaction(self.NO_EMOJI)
+            
+            # Save the event
+            async with self.config.guild(ctx.guild).events() as events:
+                events[event_id] = {
+                    "name": name,
+                    "time": event_time.isoformat(),
+                    "description": description,
+                    "interested_users": [],
+                    "maybe_users": [],
+                    "declined_users": [],
+                    "message_id": event_message.id,
+                    "channel_id": ctx.channel.id
+                }
+            
+        except Exception as e:
+            await ctx.send(f"Error creating event: {str(e)}")
+
+    @event.command()
+    async def list(self, ctx):
+        """List all upcoming events"""
+        events = await self.config.guild(ctx.guild).events()
+        
+        if not events:
+            await ctx.send("No upcoming events!")
+            return
+            
+        embed = discord.Embed(
+            title="Upcoming Events",
+            color=discord.Color.blue()
+        )
+        
+        guild_tz = await self.config.guild(ctx.guild).timezone()
+        
+        for event_id, event_data in events.items():
+            event_time = datetime.fromisoformat(event_data["time"])
+            interested_count = len(event_data["interested_users"])
+            maybe_count = len(event_data["maybe_users"])
+            declined_count = len(event_data["declined_users"])
+            
+            local_time = event_time.astimezone(pytz.timezone(guild_tz))
+            
+            field_value = (
+                f"Time: {local_time.strftime('%Y-%m-%d %I:%M %p %Z')}\n"
+                f"Description: {event_data['description']}\n"
+                f"Going: {interested_count} | Maybe: {maybe_count} | Not Going: {declined_count}"
+            )
+            
+            embed.add_field(
+                name=f"{event_data['name']} (ID: {event_id})",
+                value=field_value,
+                inline=False
+            )
+            
+        await ctx.send(embed=embed)
 
     async def create_event_embed(self, name, event_time, description, event_id, guild_tz, interested_users=None, maybe_users=None, declined_users=None):
         """Create an embed for the event with timezone information"""
@@ -241,6 +364,56 @@ class EventNotifier(commands.Cog):
             elif emoji == self.NO_EMOJI:
                 event["declined_users"].append(user.id)
                 await self.remove_event_role(guild, user)
+                
+            # Update the embed
+            try:
+                guild_tz = await self.config.guild(guild).timezone()
+                event_time = datetime.fromisoformat(event["time"])
+                new_embed = await self.create_event_embed(
+                    event["name"],
+                    event_time,
+                    event["description"],
+                    event_id,
+                    guild_tz,
+                    event["interested_users"],
+                    event["maybe_users"],
+                    event["declined_users"]
+                )
+                await message.edit(embed=new_embed)
+            except discord.HTTPException:
+                pass
+
+    @commands.Cog.listener()
+    async def on_reaction_remove(self, reaction, user):
+        if user.bot:
+            return
+            
+        message = reaction.message
+        guild = message.guild
+        if not guild:
+            return
+            
+        async with self.config.guild(guild).events() as events:
+            event_id = None
+            for eid, event_data in events.items():
+                if event_data.get("message_id") == message.id:
+                    event_id = eid
+                    break
+                    
+            if not event_id:
+                return
+                
+            emoji = str(reaction.emoji)
+            event = events[event_id]
+            
+            # Remove user from the appropriate list
+            if emoji == self.YES_EMOJI and user.id in event["interested_users"]:
+                event["interested_users"].remove(user.id)
+                await self.remove_event_role(guild, user)
+            elif emoji == self.MAYBE_EMOJI and user.id in event["maybe_users"]:
+                event["maybe_users"].remove(user.id)
+            elif emoji == self.NO_EMOJI and user.id in event["declined_users"]:
+                event["declined_users"].remove(user.id)
                 
             # Update the embed
             try:
