@@ -155,7 +155,8 @@ class EventNotifier(commands.Cog):
                 await user.remove_roles(role, reason="Event ended")
             except discord.HTTPException:
                 print(f"Failed to remove event role from {user.name}")
-                    @commands.group()
+
+    @commands.group()
     async def events(self, ctx):
         """Event management commands"""
         pass
