@@ -54,8 +54,6 @@ class EventNotifier(commands.Cog):
         
         self.event_check_task = None
         self.role_cleanup_task = None
-
-        # Add persistent views for buttons
         self.persistent_views_added = False
 
     async def initialize(self):
@@ -63,7 +61,6 @@ class EventNotifier(commands.Cog):
         self.event_check_task = self.bot.loop.create_task(self.check_events())
         self.role_cleanup_task = self.bot.loop.create_task(self.cleanup_roles())
 
-        # Add persistent views if not already added
         if not self.persistent_views_added:
             await self.add_persistent_views()
             self.persistent_views_added = True
@@ -81,7 +78,121 @@ class EventNotifier(commands.Cog):
         if self.role_cleanup_task:
             self.role_cleanup_task.cancel()
 
-    # Define the events group first
+    async def check_events(self):
+        """Background task to check for starting events and send reminders"""
+        await self.bot.wait_until_ready()
+        while self is self.bot.get_cog("EventNotifier"):
+            try:
+                for guild in self.bot.guilds:
+                    events = await self.config.guild(guild).events()
+                    reminder_times = await self.config.guild(guild).reminder_times()
+                    current_time = datetime.now(timezone.utc)
+                    role_id = await self.config.guild(guild).event_role_id()
+                    event_role = guild.get_role(role_id)
+                    
+                    for event_id, event_data in events.items():
+                        event_time = datetime.fromisoformat(event_data["time"])
+                        unix_timestamp = int(event_time.timestamp())
+                        
+                        # Check for reminders
+                        for reminder_minutes in reminder_times:
+                            reminder_threshold = event_time - timedelta(minutes=reminder_minutes)
+                            time_until_reminder = (reminder_threshold - current_time).total_seconds()
+                            
+                            if 0 <= time_until_reminder <= 60:  # Within the next minute
+                                if event_role and event_data["interested_users"]:
+                                    channel = guild.get_channel(event_data["channel_id"])
+                                    if channel:
+                                        reminder_embed = discord.Embed(
+                                            title=f"Event Reminder: {event_data['name']}",
+                                            description=f"Event starts <t:{unix_timestamp}:R>!\n\n{event_data['description']}",
+                                            color=discord.Color.gold()
+                                        )
+                                        await channel.send(
+                                            content=f"{event_role.mention}",
+                                            embed=reminder_embed
+                                        )
+                        
+                        # Check if event is starting
+                        time_diff = (event_time - current_time).total_seconds()
+                        if 0 <= time_diff <= 60:
+                            # Send start notification
+                            if event_role and event_data["interested_users"]:
+                                channel = guild.get_channel(event_data["channel_id"])
+                                if channel:
+                                    start_embed = discord.Embed(
+                                        title=f"Event Starting: {event_data['name']}",
+                                        description=event_data['description'],
+                                        color=discord.Color.green()
+                                    )
+                                    await channel.send(
+                                        content=f"{event_role.mention} The event is starting now!",
+                                        embed=start_embed
+                                    )
+                            
+                            # Add cleanup time to the event data
+                            event_data["cleanup_time"] = (event_time + timedelta(minutes=60)).isoformat()
+                            
+                            # Update the event data
+                            async with self.config.guild(guild).events() as events:
+                                events[event_id] = event_data
+            except Exception as e:
+                print(f"Error in event checker: {e}")
+            
+            await asyncio.sleep(60)  # Check every minute
+
+    async def cleanup_roles(self):
+        """Background task to remove roles after events"""
+        await self.bot.wait_until_ready()
+        while self is self.bot.get_cog("EventNotifier"):
+            try:
+                current_time = datetime.now(timezone.utc)
+                
+                for guild in self.bot.guilds:
+                    async with self.config.guild(guild).events() as events:
+                        events_to_remove = []
+                        
+                        for event_id, event_data in events.items():
+                            if "cleanup_time" in event_data:
+                                cleanup_time = datetime.fromisoformat(event_data["cleanup_time"])
+                                
+                                if current_time >= cleanup_time:
+                                    # Remove roles from users
+                                    for user_id in event_data["interested_users"]:
+                                        user = guild.get_member(user_id)
+                                        if user:
+                                            await self.remove_event_role(guild, user)
+                                    
+                                    events_to_remove.append(event_id)
+                        
+                        # Remove completed events
+                        for event_id in events_to_remove:
+                            del events[event_id]
+            except Exception as e:
+                print(f"Error in role cleanup: {e}")
+            
+            await asyncio.sleep(60)  # Check every minute
+
+    async def assign_event_role(self, guild, user):
+        """Assign the event role to a user"""
+        role_id = await self.config.guild(guild).event_role_id()
+        role = guild.get_role(role_id)
+        if role and not role in user.roles:
+            try:
+                await user.add_roles(role, reason="Event RSVP")
+            except discord.HTTPException:
+                print(f"Failed to assign event role to {user.name}")
+
+    async def remove_event_role(self, guild, user):
+        """Remove the event role from a user"""
+        role_id = await self.config.guild(guild).event_role_id()
+        role = guild.get_role(role_id)
+        if role and role in user.roles:
+            try:
+                await user.remove_roles(role, reason="Event ended")
+            except discord.HTTPException:
+                print(f"Failed to remove event role from {user.name}")
+
     @commands.group(name="events")
     async def events_group(self, ctx):
         """Event management commands"""
@@ -223,18 +334,207 @@ class EventNotifier(commands.Cog):
     async def events_create(self, ctx, name: str, *, time_and_description: str):
         """Create a new event. Time can be natural language like 'tomorrow at 3pm' or 'in 2 hours'"""
         try:
-            # [Rest of the create method remains the same]
-            # Just rename the method to events_create
-            pass
+            # Check if there's a channel mention at the start of the description
+            parts = time_and_description.split(" - ", 1)
+            if len(parts) != 2:
+                await ctx.send("Please provide both time and description separated by ' - '")
+                return
+                
+            time_str, description = parts
+            
+            # Check for channel mention at the start of description
+            target_channel = ctx.channel
+            if description.startswith("<#") and ">" in description:
+                channel_id = description[2:description.index(">")]
+                try:
+                    mentioned_channel = ctx.guild.get_channel(int(channel_id))
+                    if mentioned_channel:
+                        target_channel = mentioned_channel
+                        description = description[description.index(">")+1:].strip()
+                except ValueError:
+                    pass
+            else:
+                # Check for default announcement channel
+                default_channel_id = await self.config.guild(ctx.guild).default_channel()
+                if default_channel_id:
+                    default_channel = ctx.guild.get_channel(default_channel_id)
+                    if default_channel:
+                        target_channel = default_channel
+            
+            # Get guild timezone
+            guild_tz = await self.config.guild(ctx.guild).timezone()
+            settings = {'TIMEZONE': guild_tz, 'RETURN_AS_TIMEZONE_AWARE': True}
+            
+            # Parse the time
+            event_time = dateparser.parse(time_str, settings=settings)
+            if not event_time:
+                await ctx.send("Couldn't understand that time format. Try something like 'tomorrow at 3pm' or 'in 2 hours'")
+                return
+            
+            event_id = str(len((await self.config.guild(ctx.guild).events()).keys()) + 1)
+            
+            # Create the event embed
+            embed = await self.create_event_embed(
+                name, 
+                event_time, 
+                description, 
+                event_id, 
+                guild_tz,
+                []
+            )
+            
+            # Create and send the embed with buttons
+            view = RSVPView(self, event_id)
+            event_message = await target_channel.send(embed=embed, view=view)
+            
+            # Save the event
+            async with self.config.guild(ctx.guild).events() as events:
+                events[event_id] = {
+                    "name": name,
+                    "time": event_time.isoformat(),
+                    "description": description,
+                    "interested_users": [],
+                    "maybe_users": [],
+                    "declined_users": [],
+                    "message_id": event_message.id,
+                    "channel_id": target_channel.id
+                }
+            
+            if target_channel != ctx.channel:
+                await ctx.send(f"Event created in {target_channel.mention}")
+            
+        except Exception as e:
+            await ctx.send(f"Error creating event: {str(e)}")
 
     @events_group.command(name="list")
     async def events_list(self, ctx):
         """List all upcoming events"""
-        # [Rest of the list method remains the same]
-        # Just rename the method to events_list
-        pass
+        events = await self.config.guild(ctx.guild).events()
+        
+        if not events:
+            await ctx.send("No upcoming events!")
+            return
+            
+        embed = discord.Embed(
+            title="Upcoming Events",
+            color=discord.Color.blue()
+        )
+        
+        for event_id, event_data in events.items():
+            event_time = datetime.fromisoformat(event_data["time"])
+            unix_timestamp = int(event_time.timestamp())
+            interested_count = len(event_data["interested_users"])
+            maybe_count = len(event_data["maybe_users"])
+            declined_count = len(event_data["declined_users"])
+            
+            field_value = (
+                f"Time: <t:{unix_timestamp}:F>\n"
+                f"Relative: <t:{unix_timestamp}:R>\n"
+                f"Description: {event_data['description']}\n"
+                f"Going: {interested_count} | Maybe: {maybe_count} | Not Going: {declined_count}"
+            )
+            
+            embed.add_field(
+                name=f"{event_data['name']} (ID: {event_id})",
+                value=field_value,
+                inline=False
+            )
+            
+        await ctx.send(embed=embed)
 
-    # [Rest of the methods remain the same]
+    async def create_event_embed(self, name, event_time, description, event_id, guild_tz, interested_users=None, maybe_users=None, declined_users=None):
+        """Create an embed for the event with Discord timestamp"""
+        if interested_users is None:
+            interested_users = []
+        if maybe_users is None:
+            maybe_users = []
+        if declined_users is None:
+            declined_users = []
+            
+        embed = discord.Embed(
+            title=f"Event: {name}",
+            description=description,
+            color=discord.Color.blue()
+        )
+        
+        # Convert to Unix timestamp for Discord's timestamp format
+        unix_timestamp = int(event_time.timestamp())
+        time_field = (
+            f"Event Time: <t:{unix_timestamp}:F>\n"
+            f"Relative Time: <t:{unix_timestamp}:R>"
+        )
+        
+        embed.add_field(name="Time", value=time_field, inline=False)
+        embed.add_field(name="Event ID", value=event_id, inline=False)
+        
+        # Add RSVP counts
+        rsvp_field = f"{self.YES_EMOJI} Going: {len(interested_users)}\n"
+        rsvp_field += f"{self.MAYBE_EMOJI} Maybe: {len(maybe_users)}\n"
+        rsvp_field += f"{self.NO_EMOJI} Not Going: {len(declined_users)}"
+        embed.add_field(name="RSVP Status", value=rsvp_field, inline=False)
+        
+        return embed
+
+    @commands.Cog.listener()
+    async def on_interaction(self, interaction: discord.Interaction):
+        if not interaction.data or not interaction.guild:
+            return
+
+        custom_id = interaction.data.get("custom_id", "")
+        if not custom_id.startswith("rsvp_"):
+            return
+
+        # Parse the custom_id
+        action, event_id = custom_id.split("_")[1:]
+        
+        async with self.config.guild(interaction.guild).events() as events:
+            if event_id not in events:
+                await interaction.response.send_message("This event no longer exists.", ephemeral=True)
+                return
+
+            event = events[event_id]
+            user_id = interaction.user.id
+
+            # Remove user from all lists first
+            if user_id in event["interested_users"]:
+                event["interested_users"].remove(user_id)
+            if user_id in event["maybe_users"]:
+                event["maybe_users"].remove(user_id)
+            if user_id in event["declined_users"]:
+                event["declined_users"].remove(user_id)
+
+            # Add user to appropriate list and handle role
+            if action == "yes":
+                event["interested_users"].append(user_id)
+                await self.assign_event_role(interaction.guild, interaction.user)
+                response = "You're going to the event!"
+            elif action == "maybe":
+                event["maybe_users"].append(user_id)
+                await self.remove_event_role(interaction.guild, interaction.user)
+                response = "You might go to the event."
+            elif action == "no":
+                event["declined_users"].append(user_id)
+                await self.remove_event_role(interaction.guild, interaction.user)
+                response = "You're not going to the event."
+
+            # Update the embed
+            try:
+                guild_tz = await self.config.guild(interaction.guild).timezone()
+                event_time = datetime.fromisoformat(event["time"])
+                new_embed = await self.create_event_embed(
+                    event["name"],
+                    event_time,
+                    event["description"],
+                    event_id,
+                    guild_tz,
+                    event["interested_users"],
+                    event["maybe_users"],
+                    event["declined_users"]
+                )
+                await interaction.message.edit(embed=new_embed)
+                await interaction.response.send_message(response, ephemeral=True)
+            except discord.HTTPException as e:
+                await interaction.response.send_message(f"Error updating RSVP: {str(e)}", ephemeral=True)
 
 async def setup(bot):
     cog = EventNotifier(bot)
