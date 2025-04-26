@@ -1,4 +1,4 @@
-from .mycog import MyCog
+from .membertracker import MemberTracker
 
 
 async def setup(bot):
