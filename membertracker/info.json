@@ -1,0 +1,19 @@
+{
+    "name": "MemberTrack",
+    "short": "Uses RedBots storage to track how long a member has been in the server.",
+    "description": "Uses RedBots storage to track memebers join date and assign roles based on time spent in the server..",
+    "end_user_data_statement": "This cog stores End User Data when storing the items of a user. If a user requests data-deletion, all their data will be removed from the bot.",
+    "install_msg": "Thanks for installing MemberTrack. Load the cog with `[p]load membertrack` and see all its commands with `[p]help MemberTrack`",
+    "author": [
+        "elkz"
+    ],
+    "required_cogs": {},
+    "requirements": [
+        "emoji",
+        "rapidfuzz"
+    ],
+    "tags": [
+        "MemberTrack",
+    ],
+    "type": "COG"
+}
