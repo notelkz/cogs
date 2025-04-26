@@ -9,6 +9,36 @@ import pytz
 class EventNotifier(commands.Cog):
     """A cog for managing events with RSVP functionality"""
 
+    def __init__(self, bot: Red):
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=1234567890)
+        default_guild = {
+            "events": {},  # {event_id: {name, time, description, interested_users, message_id, channel_id}}
+            "timezone": "UTC",
+            "reminder_times": [30, 5],  # Minutes before event to send reminders
+            "event_role_id": None,
+            "default_channel": None  # Default channel for event announcements
+        }
+        self.config.register_guild(**default_guild)
+        
+        self.YES_EMOJI = "✅"
+        self.NO_EMOJI = "❌"
+        self.MAYBE_EMOJI = "❔"
+        
+        self.event_check_task = None
+        self.role_cleanup_task = None
+
+    async def initialize(self):
+        """Start background tasks"""
+        self.event_check_task = self.bot.loop.create_task(self.check_events())
+        self.role_cleanup_task = self.bot.loop.create_task(self.cleanup_roles())
+
+    def cog_unload(self):
+        if self.event_check_task:
+            self.event_check_task.cancel()
+        if self.role_cleanup_task:
+            self.role_cleanup_task.cancel()
+
     async def check_events(self):
         """Background task to check for starting events and send reminders"""
         await self.bot.wait_until_ready()
@@ -106,36 +136,6 @@ class EventNotifier(commands.Cog):
                 
             await asyncio.sleep(60)  # Check every minute
 
-    def __init__(self, bot: Red):
-        self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890)
-        default_guild = {
-            "events": {},  # {event_id: {name, time, description, interested_users, message_id, channel_id}}
-            "timezone": "UTC",
-            "reminder_times": [30, 5],  # Minutes before event to send reminders
-            "event_role_id": 1358213818362233030
-        }
-        self.config.register_guild(**default_guild)
-        
-        self.YES_EMOJI = "✅"
-        self.NO_EMOJI = "❌"
-        self.MAYBE_EMOJI = "❔"
-        
-        # Create tasks after all methods are defined
-        self.event_check_task = None
-        self.role_cleanup_task = None
-
-    async def initialize(self):
-        """Start background tasks"""
-        self.event_check_task = self.bot.loop.create_task(self.check_events())
-        self.role_cleanup_task = self.bot.loop.create_task(self.cleanup_roles())
-
-    def cog_unload(self):
-        if self.event_check_task:
-            self.event_check_task.cancel()
-        if self.role_cleanup_task:
-            self.role_cleanup_task.cancel()
-
     async def assign_event_role(self, guild, user):
         """Assign the event role to a user"""
         role_id = await self.config.guild(guild).event_role_id()
@@ -160,6 +160,106 @@ class EventNotifier(commands.Cog):
     async def events(self, ctx):
         """Event management commands"""
         pass
+
+    @events.command()
+    @commands.admin()
+    async def setup(self, ctx):
+        """Interactive setup for the events system"""
+        if not ctx.guild:
+            await ctx.send("This command must be used in a server!")
+            return
+
+        try:
+            # Ask for timezone
+            await ctx.send("What timezone should be used for events? (e.g., 'US/Pacific', 'Europe/London')")
+            try:
+                timezone_msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                
+                try:
+                    pytz.timezone(timezone_msg.content)
+                    await self.config.guild(ctx.guild).timezone.set(timezone_msg.content)
+                    await ctx.send(f"✅ Timezone set to {timezone_msg.content}")
+                except pytz.exceptions.UnknownTimeZoneError:
+                    await ctx.send("❌ Invalid timezone. Setup cancelled. Please try again with a valid timezone.")
+                    return
+            except asyncio.TimeoutError:
+                await ctx.send("Setup timed out. Please try again.")
+                return
+
+            # Ask for event role
+            await ctx.send("Please mention the role that should be assigned to event participants:")
+            try:
+                role_msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                
+                if role_msg.role_mentions:
+                    role = role_msg.role_mentions[0]
+                    await self.config.guild(ctx.guild).event_role_id.set(role.id)
+                    await ctx.send(f"✅ Event role set to {role.name}")
+                else:
+                    await ctx.send("❌ No role mentioned. Setup cancelled. Please try again and mention a role.")
+                    return
+            except asyncio.TimeoutError:
+                await ctx.send("Setup timed out. Please try again.")
+                return
+
+            # Ask for reminder times
+            await ctx.send("Enter reminder times in minutes, separated by spaces (e.g., '60 30 10' for reminders at 60, 30, and 10 minutes before events):")
+            try:
+                times_msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                
+                try:
+                    times = [int(x) for x in times_msg.content.split()]
+                    if not times:
+                        raise ValueError
+                    reminder_times = sorted(times, reverse=True)
+                    await self.config.guild(ctx.guild).reminder_times.set(reminder_times)
+                    await ctx.send(f"✅ Reminder times set to: {', '.join(str(m) + ' minutes' for m in reminder_times)}")
+                except ValueError:
+                    await ctx.send("❌ Invalid reminder times. Setup cancelled. Please try again with valid numbers.")
+                    return
+            except asyncio.TimeoutError:
+                await ctx.send("Setup timed out. Please try again.")
+                return
+
+            # Ask for default announcements channel
+            await ctx.send("Please mention the default channel for event announcements (or type 'skip' to use the channel where events are created):")
+            try:
+                channel_msg = await self.bot.wait_for(
+                    "message",
+                    timeout=30.0,
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel
+                )
+                
+                if channel_msg.content.lower() == 'skip':
+                    await self.config.guild(ctx.guild).default_channel.set(None)
+                    await ctx.send("✅ Events will be posted in the channel where they are created")
+                elif channel_msg.channel_mentions:
+                    channel = channel_msg.channel_mentions[0]
+                    await self.config.guild(ctx.guild).default_channel.set(channel.id)
+                    await ctx.send(f"✅ Default announcements channel set to {channel.mention}")
+                else:
+                    await ctx.send("❌ No channel mentioned. Events will be posted in the channel where they are created.")
+                    await self.config.guild(ctx.guild).default_channel.set(None)
+            except asyncio.TimeoutError:
+                await ctx.send("Setup timed out. Please try again.")
+                return
+
+            await ctx.send("✅ Setup complete! You can now create events using `!events create`")
+
+        except Exception as e:
+            await ctx.send(f"An error occurred during setup: {str(e)}")
 
     @events.command()
     @commands.mod()
@@ -197,13 +297,32 @@ class EventNotifier(commands.Cog):
     async def create(self, ctx, name: str, *, time_and_description: str):
         """Create a new event. Time can be natural language like 'tomorrow at 3pm' or 'in 2 hours'"""
         try:
-            # Split the time and description
+            # Check if there's a channel mention at the start of the description
             parts = time_and_description.split(" - ", 1)
             if len(parts) != 2:
                 await ctx.send("Please provide both time and description separated by ' - '")
                 return
                 
             time_str, description = parts
+            
+            # Check for channel mention at the start of description
+            target_channel = ctx.channel
+            if description.startswith("<#") and ">" in description:
+                channel_id = description[2:description.index(">")]
+                try:
+                    mentioned_channel = ctx.guild.get_channel(int(channel_id))
+                    if mentioned_channel:
+                        target_channel = mentioned_channel
+                        description = description[description.index(">")+1:].strip()
+                except ValueError:
+                    pass
+            else:
+                # Check for default announcement channel
+                default_channel_id = await self.config.guild(ctx.guild).default_channel()
+                if default_channel_id:
+                    default_channel = ctx.guild.get_channel(default_channel_id)
+                    if default_channel:
+                        target_channel = default_channel
             
             # Get guild timezone
             guild_tz = await self.config.guild(ctx.guild).timezone()
@@ -228,7 +347,7 @@ class EventNotifier(commands.Cog):
             )
             
             # Send the embed and add reaction options
-            event_message = await ctx.send(embed=embed)
+            event_message = await target_channel.send(embed=embed)
             await event_message.add_reaction(self.YES_EMOJI)
             await event_message.add_reaction(self.MAYBE_EMOJI)
             await event_message.add_reaction(self.NO_EMOJI)
@@ -243,8 +362,11 @@ class EventNotifier(commands.Cog):
                     "maybe_users": [],
                     "declined_users": [],
                     "message_id": event_message.id,
-                    "channel_id": ctx.channel.id
+                    "channel_id": target_channel.id
                 }
+            
+            if target_channel != ctx.channel:
+                await ctx.send(f"Event created in {target_channel.mention}")
             
         except Exception as e:
             await ctx.send(f"Error creating event: {str(e)}")
