@@ -1,173 +1,178 @@
 import discord
 from redbot.core import commands, Config
 from redbot.core.utils.predicates import MessagePredicate
-from typing import Optional
+from redbot.core.utils.menus import start_adding_reactions
+from datetime import datetime
+from typing import Union, Optional
 import asyncio
 
-class DisApps(commands.Cog):
+class Applications(commands.Cog):
+    """Discord Member Applications Manager"""
+
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         default_guild = {
-            "setup_complete": False,
+            "mod_role": None,
+            "accepted_role": None,
+            "assignable_roles": [],
             "applications_category": None,
-            "recruit_role": None,
-            "moderator_role": None,
-            "game_roles": {},
-            "active_applications": {}
+            "setup_complete": False
         }
         self.config.register_guild(**default_guild)
 
     @commands.group(aliases=["da"])
     @commands.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
-        """DisApps management commands"""
+        """Applications management commands"""
         pass
 
     @disapps.command()
     async def setup(self, ctx):
-        """Initial setup for the DisApps system"""
-        guild = ctx.guild
+        """Setup the applications system"""
         
-        await ctx.send("Starting DisApps setup...\n\nPlease mention or provide the ID of the Applications category:")
+        # Check if setup is already complete
+        if await self.config.guild(ctx.guild).setup_complete():
+            return await ctx.send("Setup is already complete. Use `!disapps reset` to start over.")
+
+        await ctx.send("Starting setup process...")
+
+        # Get Moderator Role
+        await ctx.send("Please mention the Moderator role or provide its ID:")
         try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60)
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
             try:
-                category_id = int(msg.content)
-                category = discord.utils.get(guild.categories, id=category_id)
-            except ValueError:
-                await ctx.send("Invalid category ID. Setup cancelled.")
-                return
-            
-            if not category:
-                await ctx.send("Category not found. Setup cancelled.")
-                return
-            
-            await self.config.guild(guild).applications_category.set(category.id)
-            
-            await ctx.send("Please mention or provide the ID of the Recruit role:")
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60)
-            role = None
-            
-            try:
-                role_id = int(''.join(filter(str.isdigit, msg.content)))
-                role = guild.get_role(role_id)
-            except ValueError:
-                await ctx.send("Invalid role ID. Setup cancelled.")
-                return
-                
-            if not role:
-                await ctx.send("Role not found. Setup cancelled.")
-                return
-                
-            await self.config.guild(guild).recruit_role.set(role.id)
-            
-            await ctx.send("Please mention or provide the ID of the Moderator role:")
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60)
-            mod_role = None
-            
-            try:
-                role_id = int(''.join(filter(str.isdigit, msg.content)))
-                mod_role = guild.get_role(role_id)
-            except ValueError:
-                await ctx.send("Invalid role ID. Setup cancelled.")
-                return
-                
-            if not mod_role:
-                await ctx.send("Role not found. Setup cancelled.")
-                return
-                
-            await self.config.guild(guild).moderator_role.set(mod_role.id)
-            
-            # Game roles setup
-            game_roles = {}
-            await ctx.send("Now, let's set up game roles. Type 'done' when finished.\nEnter game name followed by role mention/ID (e.g., 'Minecraft @MinecraftRole'):")
-            
-            while True:
-                msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60)
-                
-                if msg.content.lower() == 'done':
-                    break
-                    
-                try:
-                    game_name, role_mention = msg.content.rsplit(" ", 1)
-                    role_id = int(''.join(filter(str.isdigit, role_mention)))
-                    role = guild.get_role(role_id)
-                    
-                    if role:
-                        game_roles[game_name] = role.id
-                        await ctx.send(f"Added {game_name} with role {role.name}")
-                    else:
-                        await ctx.send("Role not found, skipping...")
-                except:
-                    await ctx.send("Invalid format, skipping...")
-            
-            await self.config.guild(guild).game_roles.set(game_roles)
-            await self.config.guild(guild).setup_complete.set(True)
-            await ctx.send("Setup complete! You can now use the application system.")
-            
+                mod_role = await commands.RoleConverter().convert(ctx, msg.content)
+                await self.config.guild(ctx.guild).mod_role.set(mod_role.id)
+            except:
+                return await ctx.send("Invalid role. Setup cancelled.")
         except asyncio.TimeoutError:
-            await ctx.send("Setup timed out. Please try again.")
+            return await ctx.send("Setup timed out.")
+
+        # Get Accepted Role
+        await ctx.send("Please mention the role for accepted applicants or provide its ID:")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            try:
+                accepted_role = await commands.RoleConverter().convert(ctx, msg.content)
+                await self.config.guild(ctx.guild).accepted_role.set(accepted_role.id)
+            except:
+                return await ctx.send("Invalid role. Setup cancelled.")
+        except asyncio.TimeoutError:
+            return await ctx.send("Setup timed out.")
+
+        # Get Applications Category
+        await ctx.send("Please mention the Applications category or provide its ID:")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            try:
+                category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
+                await self.config.guild(ctx.guild).applications_category.set(category.id)
+            except:
+                return await ctx.send("Invalid category. Setup cancelled.")
+        except asyncio.TimeoutError:
+            return await ctx.send("Setup timed out.")
+
+        await self.config.guild(ctx.guild).setup_complete.set(True)
+        await ctx.send("Setup complete!")
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
+        """Create application channel when a new member joins"""
         guild = member.guild
         if not await self.config.guild(guild).setup_complete():
             return
-            
+
         category_id = await self.config.guild(guild).applications_category()
-        category = guild.get_channel(category_id)
+        category = discord.utils.get(guild.categories, id=category_id)
         
         if not category:
             return
-            
-        # Create application channel
-        channel_name = f"{member.name.lower()}-application"
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        }
-        
-        mod_role_id = await self.config.guild(guild).moderator_role()
-        mod_role = guild.get_role(mod_role_id)
-        if mod_role:
-            overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            
-        channel = await category.create_text_channel(channel_name, overwrites=overwrites)
-        
-        # Send welcome message and buttons
+
+        channel_name = f"{member.name}-application"
+        channel = await category.create_text_channel(
+            name=channel_name,
+            overwrites={
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
+        )
+
         embed = discord.Embed(
-            title="Welcome to Zero Lives Left",
-            description="Information about Zero Lives Left will be displayed here.",
+            title="Welcome to the Application Process!",
+            description="Please click the buttons below to begin.",
             color=discord.Color.blue()
         )
-        
-        apply_button = discord.ui.Button(style=discord.ButtonStyle.green, label="Apply Now", custom_id="apply_now")
-        contact_mod_button = discord.ui.Button(style=discord.ButtonStyle.red, label="Contact Mod", custom_id="contact_mod")
-        
-        view = discord.ui.View()
-        view.add_item(apply_button)
-        view.add_item(contact_mod_button)
-        
-        await channel.send(f"{member.mention}", embed=embed, view=view)
+
+        class ApplicationButtons(discord.ui.View):
+            def __init__(self, cog):
+                super().__init__(timeout=None)
+                self.cog = cog
+
+            @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
+            async def apply_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+                modal = ApplicationModal()
+                await interaction.response.send_modal(modal)
+                button.disabled = True
+                await interaction.message.edit(view=self)
+
+            @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
+            async def contact_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
+                mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
+                mod_role = interaction.guild.get_role(mod_role_id)
+                await interaction.response.send_message(f"{mod_role.mention} - Help requested by {interaction.user.mention}")
+                button.disabled = True
+                await interaction.message.edit(view=self)
+
+        class ApplicationModal(discord.ui.Modal, title="Application Form"):
+            age = discord.ui.TextInput(
+                label="Age",
+                required=True
+            )
+            location = discord.ui.TextInput(
+                label="Location",
+                required=True
+            )
+            username = discord.ui.TextInput(
+                label="Gaming Platform Username",
+                required=True
+            )
+
+            async def on_submit(self, interaction: discord.Interaction):
+                embed = discord.Embed(
+                    title="Application Submitted",
+                    description=f"Age: {self.age}\nLocation: {self.location}\nUsername: {self.username}",
+                    color=discord.Color.green()
+                )
+                await interaction.response.send_message(embed=embed)
+
+        await channel.send(content=member.mention, embed=embed, view=ApplicationButtons(self))
 
     @disapps.command()
     async def test(self, ctx):
         """Test the application system with a fake member"""
-        if not await self.config.guild(ctx.guild).setup_complete():
-            await ctx.send("Please complete setup first using !disapps setup")
-            return
-            
         class FakeMember:
             def __init__(self, guild):
-                self.name = "test_user"
                 self.guild = guild
-                self.mention = "@test_user"
-                
+                self.name = "test-user"
+                self.mention = "@test-user"
+
         fake_member = FakeMember(ctx.guild)
         await self.on_member_join(fake_member)
         await ctx.send("Test application channel created!")
 
-async def setup(bot):
-    await bot.add_cog(DisApps(bot))
+def setup(bot):
+    bot.add_cog(Applications(bot))
