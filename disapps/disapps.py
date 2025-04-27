@@ -59,41 +59,92 @@ class DisApps(commands.Cog):
         """Initial setup for DisApps"""
         guild = ctx.guild
         
-        await ctx.send("Starting setup process. Please mention the Moderator role:")
+        await ctx.send("Starting setup process. Please mention the Moderator role or provide its ID:")
         try:
             msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
-            mod_role = await commands.RoleConverter().convert(ctx, msg.content)
-        except:
-            return await ctx.send("Setup failed: Invalid moderator role")
+            try:
+                # First try to get role from mention or ID
+                if msg.role_mentions:
+                    mod_role = msg.role_mentions[0]
+                else:
+                    role_id = int(msg.content.strip())
+                    mod_role = guild.get_role(role_id)
+                    
+                if not mod_role:
+                    return await ctx.send("Setup failed: Could not find that role")
+            except ValueError:
+                return await ctx.send("Setup failed: Please provide a valid role mention or ID")
+        except asyncio.TimeoutError:
+            return await ctx.send("Setup timed out")
 
         await ctx.send("Please enter the Applications category ID:")
         try:
             msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
-            apps_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
-        except:
-            return await ctx.send("Setup failed: Invalid category ID")
+            try:
+                category_id = int(msg.content.strip())
+                apps_category = guild.get_channel(category_id)
+                if not apps_category or not isinstance(apps_category, discord.CategoryChannel):
+                    return await ctx.send("Setup failed: Invalid category ID")
+            except ValueError:
+                return await ctx.send("Setup failed: Please provide a valid category ID")
+        except asyncio.TimeoutError:
+            return await ctx.send("Setup timed out")
 
         await ctx.send("Please enter the Archive category ID:")
         try:
             msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
-            archive_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
-        except:
-            return await ctx.send("Setup failed: Invalid category ID")
+            try:
+                category_id = int(msg.content.strip())
+                archive_category = guild.get_channel(category_id)
+                if not archive_category or not isinstance(archive_category, discord.CategoryChannel):
+                    return await ctx.send("Setup failed: Invalid category ID")
+            except ValueError:
+                return await ctx.send("Setup failed: Please provide a valid category ID")
+        except asyncio.TimeoutError:
+            return await ctx.send("Setup timed out")
 
-        await ctx.send("Enter game roles in format 'Game Name: @role' (one per message, type 'done' when finished):")
+        await ctx.send("Enter game roles in format 'Game Name: @role' or 'Game Name: role_id' (one per message, type 'done' when finished):")
         game_roles = {}
         while True:
             try:
                 msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
                 if msg.content.lower() == "done":
+                    if not game_roles:
+                        return await ctx.send("Setup failed: No game roles were added")
                     break
-                game_name, role_mention = msg.content.split(":", 1)
-                role = await commands.RoleConverter().convert(ctx, role_mention.strip())
-                game_roles[game_name.strip()] = role.id
+                    
+                try:
+                    game_name, role_input = msg.content.split(":", 1)
+                    game_name = game_name.strip()
+                    role_input = role_input.strip()
+                    
+                    # Try to get role from mention first
+                    if msg.role_mentions:
+                        role = msg.role_mentions[0]
+                    else:
+                        # Try to get role from ID
+                        try:
+                            role_id = int(role_input)
+                            role = guild.get_role(role_id)
+                        except ValueError:
+                            await ctx.send("Invalid role format. Please use either a role mention or role ID")
+                            continue
+
+                    if not role:
+                        await ctx.send("Could not find that role. Please try again or type 'done'")
+                        continue
+                        
+                    game_roles[game_name] = role.id
+                    await ctx.send(f"Added {game_name} with role {role.name}")
+                    
+                except ValueError:
+                    await ctx.send("Invalid format. Use 'Game Name: @role' or 'Game Name: role_id'")
+                    continue
+                    
             except asyncio.TimeoutError:
-                return await ctx.send("Setup timed out")
-            except:
-                await ctx.send("Invalid format, try again or type 'done'")
+                if not game_roles:
+                    return await ctx.send("Setup timed out: No game roles were added")
+                break
 
         await self.config.guild(guild).mod_role.set(mod_role.id)
         await self.config.guild(guild).apps_category.set(apps_category.id)
@@ -101,7 +152,20 @@ class DisApps(commands.Cog):
         await self.config.guild(guild).game_roles.set(game_roles)
         await self.config.guild(guild).setup_complete.set(True)
 
-        await ctx.send("Setup complete!")
+        setup_embed = discord.Embed(
+            title="Setup Complete",
+            color=discord.Color.green(),
+            description="DisApps has been configured with the following settings:"
+        )
+        setup_embed.add_field(name="Moderator Role", value=f"{mod_role.name} ({mod_role.id})", inline=False)
+        setup_embed.add_field(name="Applications Category", value=f"{apps_category.name} ({apps_category.id})", inline=False)
+        setup_embed.add_field(name="Archive Category", value=f"{archive_category.name} ({archive_category.id})", inline=False)
+        
+        games_text = "\n".join(f"{game}: {guild.get_role(role_id).name} ({role_id})" 
+                              for game, role_id in game_roles.items())
+        setup_embed.add_field(name="Game Roles", value=games_text or "None", inline=False)
+
+        await ctx.send(embed=setup_embed)
 
     @disapps.command()
     async def test(self, ctx):
