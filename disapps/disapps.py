@@ -247,13 +247,18 @@ class DisApps(commands.Cog):
         category_id = await self.config.guild(guild).applications_category()
         category = guild.get_channel(category_id)
         
+        # Get the moderator role
+        mod_role_id = await self.config.guild(guild).mod_role()
+        mod_role = guild.get_role(mod_role_id)
+        
         channel_name = f"{member.name}-application"
         channel = await category.create_text_channel(
             name=channel_name,
             overwrites={
                 guild.default_role: discord.PermissionOverwrite(read_messages=False),
                 member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
             }
         )
 
