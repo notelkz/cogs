@@ -32,27 +32,85 @@ class ApplicationModal(Modal):
         self.add_item(self.location)
         self.add_item(self.steam_id)
 
-class GameSelect(Select):
+class GameSelect(View):
     def __init__(self, games_roles):
+        super().__init__(timeout=None)
+        self.games_roles = games_roles
+        
         options = [
             SelectOption(label=game, value=str(role_id))
             for game, role_id in games_roles.items()
         ]
-        super().__init__(
+        
+        select = Select(
             placeholder="Select the games you play...",
             min_values=0,
             max_values=len(options),
             options=options
         )
+        
+        async def select_callback(interaction: discord.Interaction):
+            await interaction.response.defer()
+            member = interaction.user
+            for value in select.values:
+                role = interaction.guild.get_role(int(value))
+                if role:
+                    await member.add_roles(role)
+            await interaction.followup.send("Your game roles have been updated!", ephemeral=True)
+            
+        select.callback = select_callback
+        self.add_item(select)
 
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        member = interaction.user
-        for value in self.values:
-            role = interaction.guild.get_role(int(value))
-            if role:
-                await member.add_roles(role)
-        await interaction.followup.send("Your game roles have been updated!", ephemeral=True)
+class ApplicationView(View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Apply Now", style=ButtonStyle.green)
+    async def apply_button(self, interaction: discord.Interaction, button: Button):
+        modal = ApplicationModal()
+        await interaction.response.send_modal(modal)
+        await modal.wait()
+        
+        embed = discord.Embed(
+            title="Application Submitted",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Age", value=modal.age.value)
+        embed.add_field(name="Location", value=modal.location.value)
+        embed.add_field(name="Steam ID", value=modal.steam_id.value)
+        
+        await interaction.channel.send(embed=embed)
+        
+        # Create and send game selection view
+        games_roles = await self.cog.config.guild(interaction.guild).games_roles()
+        if games_roles:
+            game_select = GameSelect(games_roles)
+            await interaction.channel.send("Please select the games you play:", view=game_select)
+        else:
+            await interaction.channel.send("No games have been configured yet.")
+
+    @discord.ui.button(label="Contact Mod", style=ButtonStyle.red)
+    async def contact_mod_button(self, interaction: discord.Interaction, button: Button):
+        mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
+        if not mod_role_id:
+            await interaction.response.send_message("Moderator role not configured.", ephemeral=True)
+            return
+
+        mod_role = interaction.guild.get_role(mod_role_id)
+        if not mod_role:
+            await interaction.response.send_message("Moderator role not found.", ephemeral=True)
+            return
+
+        online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
+        
+        if online_mods:
+            mod = online_mods[0]
+            await interaction.channel.send(f"{mod.mention} - Help requested by {interaction.user.mention}")
+        else:
+            await interaction.channel.send(f"{mod_role.mention} - Help requested by {interaction.user.mention}")
+        
+        await interaction.response.send_message("A moderator has been notified.", ephemeral=True)
 
 class DisApps(commands.Cog):
     """A cog for handling Discord applications and game role assignments"""
@@ -166,62 +224,12 @@ class DisApps(commands.Cog):
         embed.set_footer(text=f"Application for {user.name}")
         return embed
 
-    async def create_application_view(self, guild):
-        games_roles = await self.config.guild(guild).games_roles()
-        
-        class ApplicationView(View):
-            def __init__(self, cog, games_roles):
-                super().__init__(timeout=None)
-                self.cog = cog
-                self.add_item(GameSelect(games_roles))
-
-            @discord.ui.button(label="Apply Now", style=ButtonStyle.green)
-            async def apply_button(self, interaction: discord.Interaction, button: Button):
-                modal = ApplicationModal()
-                await interaction.response.send_modal(modal)
-                await modal.wait()
-                
-                embed = discord.Embed(
-                    title="Application Submitted",
-                    color=discord.Color.green()
-                )
-                embed.add_field(name="Age", value=modal.age.value)
-                embed.add_field(name="Location", value=modal.location.value)
-                embed.add_field(name="Steam ID", value=modal.steam_id.value)
-                
-                await interaction.channel.send(embed=embed)
-                await interaction.channel.send("Please select the games you play below:")
-
-            @discord.ui.button(label="Contact Mod", style=ButtonStyle.red)
-            async def contact_mod_button(self, interaction: discord.Interaction, button: Button):
-                mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
-                if not mod_role_id:
-                    await interaction.response.send_message("Moderator role not configured.", ephemeral=True)
-                    return
-
-                mod_role = interaction.guild.get_role(mod_role_id)
-                if not mod_role:
-                    await interaction.response.send_message("Moderator role not found.", ephemeral=True)
-                    return
-
-                online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
-                
-                if online_mods:
-                    mod = online_mods[0]
-                    await interaction.channel.send(f"{mod.mention} - Help requested by {interaction.user.mention}")
-                else:
-                    await interaction.channel.send(f"{mod_role.mention} - Help requested by {interaction.user.mention}")
-                
-                await interaction.response.send_message("A moderator has been notified.", ephemeral=True)
-
-        return ApplicationView(self, games_roles)
-
     @commands.Cog.listener()
     async def on_member_join(self, member):
         channel = await self.create_application_channel(member.guild, member)
         if channel:
             embed = await self.create_application_embed(member)
-            view = await self.create_application_view(member.guild)
+            view = ApplicationView(self)
             await channel.send(f"{member.mention}", embed=embed, view=view)
 
 async def setup(bot):
