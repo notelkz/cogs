@@ -15,7 +15,8 @@ class DisApps(commands.Cog):
             "mod_role": None,
             "application_category": None,
             "game_roles": {},
-            "setup_complete": False
+            "setup_complete": False,
+            "user_channels": {}  # Store user ID -> channel ID mapping
         }
         self.config.register_guild(**default_guild)
 
@@ -225,127 +226,37 @@ class DisApps(commands.Cog):
                     ephemeral=True
                 )
 
-    @commands.group(aliases=["da"])
-    @commands.admin_or_permissions(administrator=True)
-    async def disapps(self, ctx):
-        """DisApps configuration commands."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send("Please specify a subcommand. Use `!help disapps` for more information.")
-
-    @disapps.command()
-    async def setup(self, ctx):
-        """Initial setup for the DisApps system."""
-        if await self.config.guild(ctx.guild).setup_complete():
-            await ctx.send("Setup has already been completed. Use `!disapps reset` to start over.")
-            return
-
-        await ctx.send("Welcome to DisApps setup! Let's configure your application system.")
-        
-        # Get recruit role
-        await ctx.send("Please mention or provide the ID of the recruit role:")
-        try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
-            role = await self.get_role_from_message(ctx, msg)
-            if not role:
-                await ctx.send("Invalid role. Setup cancelled.")
-                return
-            await self.config.guild(ctx.guild).recruit_role.set(role.id)
-        except asyncio.TimeoutError:
-            await ctx.send("Setup timed out.")
-            return
-
-        # Get moderator role
-        await ctx.send("Please mention or provide the ID of the moderator role:")
-        try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
-            role = await self.get_role_from_message(ctx, msg)
-            if not role:
-                await ctx.send("Invalid role. Setup cancelled.")
-                return
-            await self.config.guild(ctx.guild).mod_role.set(role.id)
-        except asyncio.TimeoutError:
-            await ctx.send("Setup timed out.")
-            return
-
-        # Get application category
-        await ctx.send("Please provide the ID of the applications category:")
-        try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
-            category = ctx.guild.get_channel(int(msg.content))
-            if not isinstance(category, discord.CategoryChannel):
-                await ctx.send("Invalid category. Setup cancelled.")
-                return
-            await self.config.guild(ctx.guild).application_category.set(category.id)
-        except (ValueError, asyncio.TimeoutError):
-            await ctx.send("Invalid input or setup timed out.")
-            return
-
-        # Setup game roles
-        await ctx.send("Let's set up game roles. Send 'done' when finished.\nFormat: Game Name | @role")
-        game_roles = {}
-        while True:
-            try:
-                msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
-                if msg.content.lower() == "done":
-                    break
-                
-                if "|" not in msg.content:
-                    await ctx.send("Invalid format. Use: Game Name | @role")
-                    continue
-
-                game, role_mention = msg.content.split("|", 1)
-                game = game.strip()
-                role = await self.get_role_from_message(ctx, msg)
-                
-                if not role:
-                    await ctx.send("Invalid role. Try again.")
-                    continue
-
-                game_roles[game] = role.id
-                await ctx.send(f"Added {game} with role {role.name}")
-
-            except asyncio.TimeoutError:
-                await ctx.send("Setup timed out.")
-                return
-
-        await self.config.guild(ctx.guild).game_roles.set(game_roles)
-        await self.config.guild(ctx.guild).setup_complete.set(True)
-        await ctx.send("Setup completed successfully!")
-
-    @disapps.command()
-    async def reset(self, ctx):
-        """Reset all DisApps configuration for this server."""
-        await ctx.send("Are you sure you want to reset all DisApps configuration? This cannot be undone.\nType `yes` to confirm.")
-        
-        try:
-            msg = await self.bot.wait_for(
-                "message",
-                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                timeout=30
-            )
-            
-            if msg.content.lower() == "yes":
-                await self.config.guild(ctx.guild).clear()
-                await ctx.send("All DisApps configuration has been reset. Use `!disapps setup` to configure again.")
-            else:
-                await ctx.send("Reset cancelled.")
-                
-        except asyncio.TimeoutError:
-            await ctx.send("Reset timed out.")
-
-    @disapps.command()
-    async def test(self, ctx):
-        """Test the application system with a fake new member."""
-        if not await self.config.guild(ctx.guild).setup_complete():
-            await ctx.send("Please complete setup first using `!disapps setup`")
-            return
-
-        await self.create_application_channel(ctx.author)
-        await ctx.send("Test application channel created!")
-
-    async def create_application_channel(self, member):
-        """Create a new application channel for a member."""
+    async def get_or_create_application_channel(self, member):
+        """Get existing application channel or create a new one."""
         guild = member.guild
+        
+        # Get stored channel data
+        user_channels = await self.config.guild(guild).user_channels()
+        
+        # Check if user already has a channel
+        if str(member.id) in user_channels:
+            channel_id = user_channels[str(member.id)]
+            channel = guild.get_channel(channel_id)
+            
+            if channel:
+                # Channel exists, update permissions and return it
+                mod_role_id = await self.config.guild(guild).mod_role()
+                mod_role = guild.get_role(mod_role_id)
+                
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                    member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                    mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                }
+                
+                await channel.edit(overwrites=overwrites)
+                return channel
+            else:
+                # Channel was deleted, remove from storage
+                user_channels.pop(str(member.id))
+                await self.config.guild(guild).user_channels.set(user_channels)
+        
+        # Create new channel
         category_id = await self.config.guild(guild).application_category()
         category = guild.get_channel(category_id)
         mod_role_id = await self.config.guild(guild).mod_role()
@@ -361,16 +272,94 @@ class DisApps(commands.Cog):
             f"{member.name.lower()}-application",
             overwrites=overwrites
         )
+        
+        # Store the new channel
+        user_channels[str(member.id)] = channel.id
+        await self.config.guild(guild).user_channels.set(user_channels)
+        
+        return channel
 
+    async def create_application_channel(self, member):
+        """Create or get existing application channel for a member."""
+        channel = await self.get_or_create_application_channel(member)
+        
         embed = discord.Embed(
             title="Welcome to Zero Lives Left",
             description="[Your organization description here]",
             color=discord.Color.blue()
         )
 
-        game_roles = await self.config.guild(guild).game_roles()
+        game_roles = await self.config.guild(member.guild).game_roles()
         view = self.ApplicationButtons(self, game_roles)
         await channel.send(f"{member.mention}", embed=embed, view=view)
+
+    @commands.group(aliases=["da"])
+    @commands.admin_or_permissions(administrator=True)
+    async def disapps(self, ctx):
+        """DisApps configuration commands."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Please specify a subcommand. Use `!help disapps` for more information.")
+
+    @disapps.command()
+    async def cleanup(self, ctx):
+        """Clean up deleted channels from the storage."""
+        user_channels = await self.config.guild(ctx.guild).user_channels()
+        cleaned = 0
+        
+        for user_id, channel_id in list(user_channels.items()):
+            channel = ctx.guild.get_channel(channel_id)
+            if not channel:
+                user_channels.pop(user_id)
+                cleaned += 1
+        
+        await self.config.guild(ctx.guild).user_channels.set(user_channels)
+        await ctx.send(f"Cleaned up {cleaned} deleted channel(s) from storage.")
+
+    @disapps.command()
+    async def channels(self, ctx):
+        """List all application channels."""
+        user_channels = await self.config.guild(ctx.guild).user_channels()
+        
+        if not user_channels:
+            await ctx.send("No application channels found.")
+            return
+        
+        embed = discord.Embed(
+            title="Application Channels",
+            color=discord.Color.blue()
+        )
+        
+        for user_id, channel_id in user_channels.items():
+            channel = ctx.guild.get_channel(channel_id)
+            user = ctx.guild.get_member(int(user_id))
+            
+            if channel and user:
+                embed.add_field(
+                    name=f"{user.name}",
+                    value=f"Channel: {channel.mention}",
+                    inline=False
+                )
+        
+        await ctx.send(embed=embed)
+
+    @disapps.command()
+    async def delchannel(self, ctx, user: discord.Member):
+        """Delete a user's application channel."""
+        user_channels = await self.config.guild(ctx.guild).user_channels()
+        
+        if str(user.id) not in user_channels:
+            await ctx.send(f"No application channel found for {user.name}.")
+            return
+        
+        channel_id = user_channels[str(user.id)]
+        channel = ctx.guild.get_channel(channel_id)
+        
+        if channel:
+            await channel.delete()
+        
+        user_channels.pop(str(user.id))
+        await self.config.guild(ctx.guild).user_channels.set(user_channels)
+        await ctx.send(f"Deleted application channel for {user.name}.")
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
