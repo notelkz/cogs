@@ -20,15 +20,18 @@ class DisApps(commands.Cog):
         self.config.register_guild(**default_guild)
 
     class ApplicationForm(discord.ui.Modal):
-        def __init__(self, game_roles, *args, **kwargs):
-            super().__init__(title="Application Form", *args, **kwargs)
+        def __init__(self, game_roles):
+            super().__init__(title="Application Form")
+            
+            self.game_roles = game_roles
             
             self.add_item(discord.ui.TextInput(
                 label="Age",
                 placeholder="Enter your age",
                 custom_id="age",
                 min_length=1,
-                max_length=3
+                max_length=3,
+                required=True
             ))
             
             self.add_item(discord.ui.TextInput(
@@ -36,7 +39,8 @@ class DisApps(commands.Cog):
                 placeholder="Enter your location",
                 custom_id="location",
                 min_length=1,
-                max_length=100
+                max_length=100,
+                required=True
             ))
             
             self.add_item(discord.ui.TextInput(
@@ -44,23 +48,58 @@ class DisApps(commands.Cog):
                 placeholder="Enter your Steam ID",
                 custom_id="steam_id",
                 min_length=1,
-                max_length=100
+                max_length=100,
+                required=True
             ))
             
-            self.game_roles = game_roles
+            self.add_item(discord.ui.TextInput(
+                label="Games",
+                placeholder="List the games you play (separate with commas)",
+                custom_id="games",
+                style=discord.TextStyle.paragraph,
+                required=True
+            ))
 
-        async def callback(self, interaction: discord.Interaction):
+        async def on_submit(self, interaction: discord.Interaction):
             embed = discord.Embed(
-                title="Application Submission",
-                color=discord.Color.blue()
+                title="New Application Submission",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
             )
             
-            embed.add_field(name="Age", value=self.children[0].value, inline=False)
-            embed.add_field(name="Location", value=self.children[1].value, inline=False)
-            embed.add_field(name="Steam ID", value=self.children[2].value, inline=False)
+            embed.add_field(name="Applicant", value=interaction.user.mention, inline=False)
+            embed.add_field(name="Age", value=self.children[0].value, inline=True)
+            embed.add_field(name="Location", value=self.children[1].value, inline=True)
+            embed.add_field(name="Steam ID", value=self.children[2].value, inline=True)
+            embed.add_field(name="Games", value=self.children[3].value, inline=False)
             
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            await self.handle_submission(interaction)
+            mod_view = ModeratorButtons(interaction.client.get_cog("DisApps"))
+            
+            await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
+            
+            guild = interaction.guild
+            mod_role_id = await interaction.client.get_cog("DisApps").config.guild(guild).mod_role()
+            mod_role = guild.get_role(mod_role_id)
+            
+            online_mods = [member for member in guild.members 
+                          if mod_role in member.roles and member.status != discord.Status.offline]
+            
+            if online_mods:
+                mod_ping = " ".join([mod.mention for mod in online_mods])
+            else:
+                mod_ping = mod_role.mention
+                
+            await interaction.channel.send(
+                f"{mod_ping} - New application submitted!",
+                embed=embed,
+                view=mod_view
+            )
+
+        async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+            await interaction.response.send_message(
+                "An error occurred while processing your application. Please try again.",
+                ephemeral=True
+            )
 
     class ApplicationButtons(discord.ui.View):
         def __init__(self, cog, game_roles):
@@ -68,14 +107,14 @@ class DisApps(commands.Cog):
             self.cog = cog
             self.game_roles = game_roles
 
-        @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
+        @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green, custom_id="apply_button")
         async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             modal = DisApps.ApplicationForm(self.game_roles)
             await interaction.response.send_modal(modal)
             button.disabled = True
             await interaction.message.edit(view=self)
 
-        @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
+        @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red, custom_id="contact_button")
         async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             guild = interaction.guild
             mod_role_id = await self.cog.config.guild(guild).mod_role()
@@ -93,8 +132,65 @@ class DisApps(commands.Cog):
             else:
                 await interaction.response.send_message(
                     f"{mod_role.mention} - No moderators are currently online.",
-                    ephemeral=True
+                    allowed_mentions=discord.AllowedMentions(roles=True)
                 )
+
+    class ModeratorButtons(discord.ui.View):
+        def __init__(self, cog):
+            super().__init__(timeout=None)
+            self.cog = cog
+
+        @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, custom_id="accept_button")
+        async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.permissions.manage_roles:
+                await interaction.response.send_message("You don't have permission to accept applications.", ephemeral=True)
+                return
+
+            guild = interaction.guild
+            recruit_role_id = await self.cog.config.guild(guild).recruit_role()
+            recruit_role = guild.get_role(recruit_role_id)
+            
+            member = [m for m in interaction.channel.members if not m.bot][0]
+            await member.add_roles(recruit_role)
+            await interaction.response.send_message(
+                f"Application accepted! {member.mention} has been given the {recruit_role.name} role.",
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+            
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, custom_id="reject_button")
+        async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.permissions.kick_members:
+                await interaction.response.send_message("You don't have permission to reject applications.", ephemeral=True)
+                return
+
+            await interaction.response.send_message("Please provide the reason for rejection:", ephemeral=True)
+            
+            try:
+                reason_msg = await self.cog.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
+                    timeout=60
+                )
+                
+                member = [m for m in interaction.channel.members if not m.bot][0]
+                try:
+                    await member.send(f"Your application has been rejected. Reason: {reason_msg.content}")
+                except discord.Forbidden:
+                    await interaction.followup.send("Could not DM the user with the rejection reason.")
+                    
+                await member.kick(reason=f"Application rejected: {reason_msg.content}")
+                await interaction.followup.send(f"Application rejected. User has been kicked.")
+                
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+                
+            except asyncio.TimeoutError:
+                await interaction.followup.send("Rejection timed out.")
 
     @commands.group(aliases=["da"])
     @commands.admin_or_permissions(administrator=True)
@@ -258,55 +354,6 @@ class DisApps(commands.Cog):
             return ctx.guild.get_role(role_id)
         except ValueError:
             return None
-
-class ModeratorButtons(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
-    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        recruit_role_id = await self.cog.config.guild(guild).recruit_role()
-        recruit_role = guild.get_role(recruit_role_id)
-        
-        member = interaction.channel.members[0]  # Get the applicant
-        await member.add_roles(recruit_role)
-        await interaction.response.send_message(f"Application accepted! {member.mention} has been given the {recruit_role.name} role.")
-        
-        # Disable both buttons
-        for child in self.children:
-            child.disabled = True
-        await interaction.message.edit(view=self)
-
-    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
-    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Ask for rejection reason
-        await interaction.response.send_message("Please provide the reason for rejection:", ephemeral=True)
-        
-        try:
-            reason_msg = await self.cog.bot.wait_for(
-                "message",
-                check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
-                timeout=60
-            )
-            
-            member = interaction.channel.members[0]  # Get the applicant
-            try:
-                await member.send(f"Your application has been rejected. Reason: {reason_msg.content}")
-            except discord.Forbidden:
-                await interaction.channel.send("Could not DM the user with the rejection reason.")
-                
-            await member.kick(reason=f"Application rejected: {reason_msg.content}")
-            await interaction.channel.send(f"Application rejected. User has been kicked.")
-            
-            # Disable both buttons
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
-            
-        except asyncio.TimeoutError:
-            await interaction.channel.send("Rejection timed out.")
 
 def setup(bot):
     bot.add_cog(DisApps(bot))
