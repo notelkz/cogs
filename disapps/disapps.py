@@ -49,12 +49,11 @@ class ModButtons(discord.ui.View):
 
             # Send confirmation messages
             await interaction.response.send_message(
-                f"Application accepted! {self.applicant.mention} has been given the {role.name} role.",
-                ephemeral=False
+                f"Application accepted! {self.applicant.mention} has been given the {role.name} role."
             )
             
             try:
-                await self.applicant.send(f"Congratulations! Your application in {interaction.guild.name} has been accepted!")
+                await self.applicant.send(f"Congratulations! Your application to {interaction.guild.name} has been accepted!")
             except discord.Forbidden:
                 await interaction.followup.send("Could not DM the user, but their application has been accepted.")
 
@@ -90,18 +89,16 @@ class ModButtons(discord.ui.View):
             # Send decline message to the applicant
             try:
                 await self.applicant.send(
-                    f"Your application in {interaction.guild.name} has been declined.\n"
+                    f"Your application to {interaction.guild.name} has been declined.\n"
                     f"Reason: {modal.decline_reason}"
                 )
                 await interaction.channel.send(
-                    f"Application declined. A DM has been sent to {self.applicant.mention} with the reason.",
-                    ephemeral=False
+                    f"Application declined. A DM has been sent to {self.applicant.mention} with the reason."
                 )
             except discord.Forbidden:
                 await interaction.channel.send(
                     f"Could not DM the user, but the application has been declined.\n"
-                    f"Reason: {modal.decline_reason}",
-                    ephemeral=False
+                    f"Reason: {modal.decline_reason}"
                 )
 
             # Optional: Close or archive the channel after a delay
