@@ -190,6 +190,25 @@ class ApplicationModal(discord.ui.Modal):
             view=mod_view
         )
 
+        # Get moderator role and check for online moderators
+        mod_role_id = await self.original_view.cog.config.guild(interaction.guild).mod_role()
+        mod_role = interaction.guild.get_role(mod_role_id)
+        
+        # Check for online moderators
+        online_mods = [member for member in interaction.guild.members 
+                      if mod_role in member.roles and member.status != discord.Status.offline]
+        
+        # Send notification
+        if online_mods:
+            mentions = " ".join([mod.mention for mod in online_mods])
+            await interaction.channel.send(
+                f"{mentions}\nNew application submitted by {interaction.user.mention}"
+            )
+        else:
+            await interaction.channel.send(
+                f"{mod_role.mention}\nNew application submitted by {interaction.user.mention} (No moderators are currently online)"
+            )
+
 class ApplicationButtons(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
