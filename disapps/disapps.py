@@ -78,53 +78,66 @@ class ApplicationView(View):
         
         # Wait for the modal to be submitted
         try:
-            await modal.wait()
+            modal_interaction = await modal.wait()
+            if modal_interaction is None:
+                return
         except:
             return
-            
-        # Create and send the application embed
-        embed = discord.Embed(
-            title="Application Submitted",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Age", value=modal.age.value)
-        embed.add_field(name="Location", value=modal.location.value)
-        embed.add_field(name="Steam ID", value=modal.steam_id.value)
-        
-        # Send the embed as a new message
-        await interaction.channel.send(embed=embed)
-        
-        # Disable the Apply Now button
-        self.application_submitted = True
-        button.disabled = True
-        try:
-            await interaction.message.edit(view=self)
-        except:
-            pass
 
-        # Notify moderators
-        mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
-        if mod_role_id:
-            mod_role = interaction.guild.get_role(mod_role_id)
-            if mod_role:
-                online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
-                if online_mods:
-                    mods_mention = " ".join([mod.mention for mod in online_mods])
-                    await interaction.channel.send(
-                        f"{mods_mention}\nNew application submitted by {interaction.user.mention}"
-                    )
-                else:
-                    await interaction.channel.send(
-                        f"{mod_role.mention}\nNew application submitted by {interaction.user.mention}"
-                    )
-        
-        # Create and send game selection view
-        games_roles = await self.cog.config.guild(interaction.guild).games_roles()
-        if games_roles:
-            game_select = GameSelect(games_roles)
-            await interaction.channel.send("Please select the games you play:", view=game_select)
-        else:
-            await interaction.channel.send("No games have been configured yet.")
+        try:
+            # Create and send the application embed
+            embed = discord.Embed(
+                title="Application Submitted",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Age", value=modal.age.value)
+            embed.add_field(name="Location", value=modal.location.value)
+            embed.add_field(name="Steam ID", value=modal.steam_id.value)
+            
+            # Send the embed as a new message
+            await modal_interaction.channel.send(embed=embed)
+            
+            # Disable the Apply Now button
+            self.application_submitted = True
+            button.disabled = True
+            await interaction.message.edit(view=self)
+
+            # Notify moderators
+            mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
+            if mod_role_id:
+                mod_role = interaction.guild.get_role(mod_role_id)
+                if mod_role:
+                    online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
+                    if online_mods:
+                        mods_mention = " ".join([mod.mention for mod in online_mods])
+                        await modal_interaction.channel.send(
+                            f"{mods_mention}\nNew application submitted by {interaction.user.mention}"
+                        )
+                    else:
+                        await modal_interaction.channel.send(
+                            f"{mod_role.mention}\nNew application submitted by {interaction.user.mention}"
+                        )
+            
+            # Create and send game selection view
+            games_roles = await self.cog.config.guild(interaction.guild).games_roles()
+            if games_roles:
+                game_select = GameSelect(games_roles)
+                await modal_interaction.channel.send("Please select the games you play:", view=game_select)
+            else:
+                await modal_interaction.channel.send("No games have been configured yet.")
+
+            # Send confirmation to user
+            try:
+                await modal_interaction.response.send_message("Your application has been submitted successfully!", ephemeral=True)
+            except:
+                pass
+
+        except Exception as e:
+            print(f"Error in application submission: {e}")
+            try:
+                await modal_interaction.response.send_message("Your application has been submitted.", ephemeral=True)
+            except:
+                pass
 
     @discord.ui.button(label="Contact Mod", style=ButtonStyle.red)
     async def contact_mod_button(self, interaction: discord.Interaction, button: Button):
