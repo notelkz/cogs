@@ -152,7 +152,6 @@ class ModButtons(discord.ui.View):
             await interaction.followup.send("The decline action has timed out.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, original_view):
         super().__init__(title="Application Form")
@@ -287,7 +286,6 @@ class ApplicationButtons(discord.ui.View):
         self.contact_mod_used = True
         button.disabled = True
         await interaction.message.edit(view=self)
-
 class DisApps(commands.Cog):
     """Discord Applications Management System"""
 
