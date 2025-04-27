@@ -425,8 +425,6 @@ class DisApps(commands.Cog):
             # User was previously accepted, restore their channel
             channel = guild.get_channel(existing_application['channel_id'])
             if channel:
-                category_id = await self.config.guild(guild).applications_category()
-                category = guild.get_channel(category_id)
                 mod_role_id = await self.config.guild(guild).mod_role()
                 mod_role = guild.get_role(mod_role_id)
 
