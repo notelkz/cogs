@@ -1,51 +1,51 @@
+from redbot.core import commands, Config
+from redbot.core.bot import Red
 import discord
-from discord.ext import commands, tasks
-from discord import app_commands
+from discord.ext import tasks
 import asyncio
-import json
-import os
 from typing import Optional
 from datetime import datetime
 
 class DisApps(commands.Cog):
-    def __init__(self, bot):
+    """Discord Application Management System"""
+    
+    def __init__(self, bot: Red):
         self.bot = bot
-        self.config = {}
-        self.load_config()
-        self.check_rejoins.start()
+        self.config = Config.get_conf(
+            self,
+            identifier=844284468451,  # Random unique identifier
+            force_registration=True
+        )
         
-    def load_config(self):
-        try:
-            with open('disapps_config.json', 'r') as f:
-                self.config = json.load(f)
-        except FileNotFoundError:
-            self.config = {
-                'guild_id': None,
-                'mod_role_id': None,
-                'apps_category_id': None,
-                'archive_category_id': None,
-                'game_roles': {}
-            }
-            self.save_config()
+        default_guild = {
+            'mod_role_id': None,
+            'apps_category_id': None,
+            'archive_category_id': None,
+            'game_roles': {}
+        }
+        
+        self.config.register_guild(**default_guild)
+        self.check_rejoins.start()
 
-    def save_config(self):
-        with open('disapps_config.json', 'w') as f:
-            json.dump(self.config, f, indent=4)
+    def cog_unload(self):
+        self.check_rejoins.cancel()
 
     @commands.group(aliases=['da'])
-    @commands.has_permissions(administrator=True)
+    @commands.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
+        """Discord Application Management Commands"""
         if ctx.invoked_subcommand is None:
             await ctx.send("Available commands: setup, test")
 
     @disapps.command()
+    @commands.admin_or_permissions(administrator=True)
     async def setup(self, ctx):
         """Run through the initial setup process"""
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel
 
-        await ctx.send("Starting setup process. Please mention the Moderator role:")
         try:
+            await ctx.send("Starting setup process. Please mention the Moderator role:")
             msg = await self.bot.wait_for('message', check=check, timeout=60)
             mod_role = msg.role_mentions[0] if msg.role_mentions else None
             if not mod_role:
@@ -73,39 +73,39 @@ class DisApps(commands.Cog):
                     game_name = msg.content.split(' ')[0]
                     game_roles[game_name] = msg.role_mentions[0].id
 
-            self.config = {
-                'guild_id': ctx.guild.id,
-                'mod_role_id': mod_role.id,
-                'apps_category_id': apps_category.id,
-                'archive_category_id': archive_category.id,
-                'game_roles': game_roles
-            }
-            self.save_config()
+            # Save to config
+            async with self.config.guild(ctx.guild).all() as guild_data:
+                guild_data['mod_role_id'] = mod_role.id
+                guild_data['apps_category_id'] = apps_category.id
+                guild_data['archive_category_id'] = archive_category.id
+                guild_data['game_roles'] = game_roles
+
             await ctx.send("Setup completed successfully!")
 
         except asyncio.TimeoutError:
             await ctx.send("Setup timed out. Please try again.")
 
     @disapps.command()
+    @commands.admin_or_permissions(administrator=True)
     async def test(self, ctx):
         """Test the application system"""
         await self.create_application_channel(ctx.author)
         await ctx.send("Test application channel created!")
 
     async def create_application_channel(self, member):
-        guild = self.bot.get_guild(self.config['guild_id'])
-        if not guild:
-            return
-
-        category = guild.get_channel(self.config['apps_category_id'])
+        """Create or restore an application channel for a member"""
+        guild = member.guild
+        guild_data = await self.config.guild(guild).all()
+        
+        category = guild.get_channel(guild_data['apps_category_id'])
         if not category:
             return
 
         channel_name = f"{member.name.lower()}-application"
         
         # Check if channel exists in archive
-        archive_category = guild.get_channel(self.config['archive_category_id'])
-        existing_channel = discord.utils.get(archive_category.channels, name=channel_name)
+        archive_category = guild.get_channel(guild_data['archive_category_id'])
+        existing_channel = discord.utils.get(archive_category.channels, name=channel_name) if archive_category else None
         
         if existing_channel:
             await existing_channel.edit(category=category)
@@ -115,7 +115,7 @@ class DisApps(commands.Cog):
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(read_messages=False),
                 member: discord.PermissionOverwrite(read_messages=True),
-                guild.get_role(self.config['mod_role_id']): discord.PermissionOverwrite(read_messages=True)
+                guild.get_role(guild_data['mod_role_id']): discord.PermissionOverwrite(read_messages=True)
             }
             
             channel = await category.create_text_channel(
@@ -141,7 +141,7 @@ class DisApps(commands.Cog):
 
             @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
             async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                mod_role = interaction.guild.get_role(self.config['mod_role_id'])
+                mod_role = interaction.guild.get_role(guild_data['mod_role_id'])
                 online_mods = [m for m in mod_role.members if m.status != discord.Status.offline]
                 
                 if online_mods:
@@ -167,7 +167,7 @@ class DisApps(commands.Cog):
                             color=discord.Color.green()
                         )
                         
-                        mod_role = interaction.guild.get_role(self.config['mod_role_id'])
+                        mod_role = interaction.guild.get_role(guild_data['mod_role_id'])
                         online_mods = [m for m in mod_role.members if m.status != discord.Status.offline]
                         
                         if online_mods:
@@ -187,39 +187,42 @@ class DisApps(commands.Cog):
     @tasks.loop(hours=1)
     async def check_rejoins(self):
         """Check for users who have rejoined the server"""
-        guild = self.bot.get_guild(self.config['guild_id'])
-        if not guild:
-            return
-
-        archive_category = guild.get_channel(self.config['archive_category_id'])
-        apps_category = guild.get_channel(self.config['apps_category_id'])
-        
-        for channel in archive_category.channels:
-            if channel.name.endswith('-application'):
-                username = channel.name.replace('-application', '')
-                member = discord.utils.get(guild.members, name=username)
+        for guild in self.bot.guilds:
+            guild_data = await self.config.guild(guild).all()
+            
+            archive_category = guild.get_channel(guild_data['archive_category_id'])
+            apps_category = guild.get_channel(guild_data['apps_category_id'])
+            
+            if not (archive_category and apps_category):
+                continue
                 
-                if member:
-                    await channel.edit(category=apps_category)
+            for channel in archive_category.channels:
+                if channel.name.endswith('-application'):
+                    username = channel.name.replace('-application', '')
+                    member = discord.utils.get(guild.members, name=username)
+                    
+                    if member:
+                        await channel.edit(category=apps_category)
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
+        """Handle new member joins"""
         await self.create_application_channel(member)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        """Handle member leaves"""
         guild = member.guild
-        if guild.id != self.config['guild_id']:
-            return
-
-        apps_category = guild.get_channel(self.config['apps_category_id'])
-        archive_category = guild.get_channel(self.config['archive_category_id'])
+        guild_data = await self.config.guild(guild).all()
         
+        apps_category = guild.get_channel(guild_data['apps_category_id'])
+        archive_category = guild.get_channel(guild_data['archive_category_id'])
+        
+        if not (apps_category and archive_category):
+            return
+            
         channel_name = f"{member.name.lower()}-application"
         channel = discord.utils.get(apps_category.channels, name=channel_name)
         
         if channel:
             await channel.edit(category=archive_category)
-
-async def setup(bot):
-    await bot.add_cog(DisApps(bot))
