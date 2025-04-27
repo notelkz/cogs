@@ -294,6 +294,20 @@ class DisApps(commands.Cog):
             await channel.edit(category=archive_category)
             await channel.send(f"Channel archived. Reason: {reason}")
 
+    async def restore_channel(self, channel, guild, member):
+        """Helper function to restore channel from archive"""
+        applications_id = await self.config.guild(guild).applications_category()
+        applications_category = guild.get_channel(applications_id)
+        
+        if applications_category:
+            # Move channel back to applications category
+            await channel.edit(category=applications_category)
+            
+            # Restore user permissions
+            await channel.set_permissions(member, read_messages=True, send_messages=True)
+            
+            await channel.send(f"Channel restored for {member.mention}")
+
     @commands.group(aliases=["da"])
     @checks.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
@@ -389,6 +403,11 @@ class DisApps(commands.Cog):
             await self.move_to_archive(channel, guild, f"User left server while application was pending")
             applications[str(member.id)]['status'] = 'archived'
             
+        elif application_status == 'accepted':
+            # User was accepted but left, keep the channel in archive
+            await self.move_to_archive(channel, guild, f"Accepted user left server on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
+            # Don't delete the application data so we can restore it if they return
+            
         await self.config.guild(guild).applications.set(applications)
 
     @commands.Cog.listener()
@@ -396,7 +415,50 @@ class DisApps(commands.Cog):
         guild = member.guild
         if not await self.config.guild(guild).setup_complete():
             return
-            
+
+        # Get applications data
+        applications = await self.config.guild(guild).applications()
+        existing_application = applications.get(str(member.id), {})
+        
+        if existing_application and existing_application.get('status') == 'accepted':
+            # User was previously accepted, restore their channel
+            channel = guild.get_channel(existing_application['channel_id'])
+            if channel:
+                category_id = await self.config.guild(guild).applications_category()
+                category = guild.get_channel(category_id)
+                mod_role_id = await self.config.guild(guild).mod_role()
+                mod_role = guild.get_role(mod_role_id)
+
+                # Move channel back to applications category and restore permissions
+                await self.restore_channel(channel, guild, member)
+                
+                # Update application status
+                applications[str(member.id)]['status'] = 'pending'
+                await self.config.guild(guild).applications.set(applications)
+
+                # Send notification
+                embed = discord.Embed(
+                    title="Previous Member Returned",
+                    description="This user was previously accepted but left the server. Please review their application again.",
+                    color=discord.Color.yellow()
+                )
+                
+                mod_view = ModButtons(self, member)
+                await channel.send(
+                    content=f"{mod_role.mention}",
+                    embed=embed,
+                    view=mod_view
+                )
+
+                # Notify the user
+                await channel.send(
+                    f"{member.mention} Welcome back! Your previous application channel has been restored. "
+                    "A moderator will review your application again."
+                )
+                
+                return
+
+        # If no previous accepted application exists, proceed with normal application process
         category_id = await self.config.guild(guild).applications_category()
         category = guild.get_channel(category_id)
         
@@ -416,7 +478,6 @@ class DisApps(commands.Cog):
         )
 
         # Store channel information
-        applications = await self.config.guild(guild).applications()
         applications[str(member.id)] = {
             'channel_id': channel.id,
             'status': 'none',
