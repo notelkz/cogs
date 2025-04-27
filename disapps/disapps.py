@@ -29,25 +29,29 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    @commands.admin_commands()
+    @commands.admin()  # Changed from admin_commands
     @commands.group()
     async def disapps(self, ctx):
         """DisApps configuration commands"""
-        pass
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help()
 
     @disapps.command()
+    @commands.admin()  # Added admin check
     async def setcategory(self, ctx, category: discord.CategoryChannel):
         """Set the applications category"""
         await self.config.guild(ctx.guild).application_category.set(category.id)
         await ctx.send(f"Applications category set to {category.name}")
 
     @disapps.command()
+    @commands.admin()  # Added admin check
     async def setrole(self, ctx, role: discord.Role):
         """Set the approved role"""
         await self.config.guild(ctx.guild).approved_role.set(role.id)
         await ctx.send(f"Approved role set to {role.name}")
 
     @disapps.command()
+    @commands.admin()  # Added admin check
     async def setmodrole(self, ctx, role: discord.Role):
         """Set the moderator role"""
         await self.config.guild(ctx.guild).mod_role.set(role.id)
@@ -136,5 +140,5 @@ class DisApps(commands.Cog):
         mod_role = guild.get_role(mod_role_id)
         return mod_role in user.roles
 
-def setup(bot):
-    bot.add_cog(DisApps(bot))
+async def setup(bot):  # Changed from def setup(bot)
+    await bot.add_cog(DisApps(bot))
