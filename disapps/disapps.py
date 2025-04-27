@@ -75,8 +75,14 @@ class ApplicationView(View):
 
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
-        await modal.wait()
         
+        # Wait for the modal to be submitted
+        try:
+            await modal.wait()
+        except:
+            return
+            
+        # Create and send the application embed
         embed = discord.Embed(
             title="Application Submitted",
             color=discord.Color.green()
@@ -85,12 +91,16 @@ class ApplicationView(View):
         embed.add_field(name="Location", value=modal.location.value)
         embed.add_field(name="Steam ID", value=modal.steam_id.value)
         
+        # Send the embed as a new message
         await interaction.channel.send(embed=embed)
         
         # Disable the Apply Now button
         self.application_submitted = True
         button.disabled = True
-        await interaction.message.edit(view=self)
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass
 
         # Notify moderators
         mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
@@ -118,14 +128,16 @@ class ApplicationView(View):
 
     @discord.ui.button(label="Contact Mod", style=ButtonStyle.red)
     async def contact_mod_button(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
+        
         mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
         if not mod_role_id:
-            await interaction.response.send_message("Moderator role not configured.", ephemeral=True)
+            await interaction.followup.send("Moderator role not configured.", ephemeral=True)
             return
 
         mod_role = interaction.guild.get_role(mod_role_id)
         if not mod_role:
-            await interaction.response.send_message("Moderator role not found.", ephemeral=True)
+            await interaction.followup.send("Moderator role not found.", ephemeral=True)
             return
 
         online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
@@ -136,7 +148,7 @@ class ApplicationView(View):
         else:
             await interaction.channel.send(f"{mod_role.mention} - Help requested by {interaction.user.mention}")
         
-        await interaction.response.send_message("A moderator has been notified.", ephemeral=True)
+        await interaction.followup.send("A moderator has been notified.", ephemeral=True)
 
 class DisApps(commands.Cog):
     """A cog for handling Discord applications and game role assignments"""
@@ -243,7 +255,7 @@ class DisApps(commands.Cog):
     async def create_application_embed(self, user):
         embed = discord.Embed(
             title="Zero Lives Left Application",
-            description="[Application information will go here]",
+            description="Welcome to Zero Lives Left! Please click the 'Apply Now' button below to begin your application process.",
             color=discord.Color.blue(),
             timestamp=datetime.utcnow()
         )
