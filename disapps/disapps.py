@@ -91,16 +91,30 @@ class ModButtons(discord.ui.View):
 
             # Update application status
             applications = await self.cog.config.guild(interaction.guild).applications()
-            if str(self.applicant.id) in applications:
-                applications[str(self.applicant.id)]['status'] = 'declined'
-                await self.cog.config.guild(interaction.guild).applications.set(applications)
+            user_application = applications.get(str(self.applicant.id), {})
+            
+            # Check if this is a returning member being declined
+            is_returning = False
+            if user_application.get('status') == 'pending' and user_application.get('previously_accepted', False):
+                is_returning = True
+
+            user_application['status'] = 'declined'
+            await self.cog.config.guild(interaction.guild).applications.set(applications)
 
             # Send decline message to the applicant
             try:
-                await self.applicant.send(
-                    f"Your application to {interaction.guild.name} has been declined.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
+                if is_returning:
+                    await self.applicant.send(
+                        f"Your application to rejoin {interaction.guild.name} has been declined.\n"
+                        f"Reason: {modal.decline_reason}\n\n"
+                        "As this was your second attempt, you will no longer be able to participate in server channels."
+                    )
+                else:
+                    await self.applicant.send(
+                        f"Your application to {interaction.guild.name} has been declined.\n"
+                        f"Reason: {modal.decline_reason}"
+                    )
+                
                 await interaction.channel.send(
                     f"Application declined. A DM has been sent to {self.applicant.mention} with the reason."
                 )
@@ -109,6 +123,22 @@ class ModButtons(discord.ui.View):
                     f"Could not DM the user, but the application has been declined.\n"
                     f"Reason: {modal.decline_reason}"
                 )
+
+            # If this is a returning member being declined, remove their permissions
+            if is_returning:
+                try:
+                    # Remove permissions from all channels
+                    for channel in interaction.guild.channels:
+                        if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
+                            await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
+                    
+                    await interaction.channel.send(
+                        f"As this was a returning member, {self.applicant.mention}'s permissions have been removed from all channels."
+                    )
+                except discord.Forbidden:
+                    await interaction.channel.send(
+                        "Failed to remove user's permissions. Please check bot permissions."
+                    )
 
             # Move to archive
             await self.cog.move_to_archive(interaction.channel, interaction.guild, f"Application declined: {modal.decline_reason}")
@@ -431,9 +461,11 @@ class DisApps(commands.Cog):
                 # Move channel back to applications category and restore permissions
                 await self.restore_channel(channel, guild, member)
                 
-                # Update application status
+                # Update application status and mark as previously accepted
                 applications[str(member.id)]['status'] = 'pending'
+                applications[str(member.id)]['previously_accepted'] = True
                 await self.config.guild(guild).applications.set(applications)
+
 
                 # Send notification
                 embed = discord.Embed(
