@@ -1,228 +1,200 @@
-from redbot.core import commands, Config
-from redbot.core.bot import Red
 import discord
-from discord.ext import tasks
-import asyncio
+from redbot.core import commands, Config
+from redbot.core.utils.predicates import MessagePredicate
+from redbot.core.utils.chat_formatting import box
 from typing import Optional
+import asyncio
 from datetime import datetime
 
 class DisApps(commands.Cog):
-    """Discord Application Management System"""
-    
-    def __init__(self, bot: Red):
+    def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(
-            self,
-            identifier=844284468451,  # Random unique identifier
-            force_registration=True
-        )
-        
+        self.config = Config.get_conf(self, identifier=1234567890)
         default_guild = {
-            'mod_role_id': None,
-            'apps_category_id': None,
-            'archive_category_id': None,
-            'game_roles': {}
+            "mod_role": None,
+            "apps_category": None,
+            "archive_category": None,
+            "game_roles": {},
+            "setup_complete": False
         }
-        
         self.config.register_guild(**default_guild)
-        self.check_rejoins.start()
+        self.check_channels.start()
 
     def cog_unload(self):
-        self.check_rejoins.cancel()
+        self.check_channels.cancel()
 
-    @commands.group(aliases=['da'])
+    @tasks.loop(hours=1)
+    async def check_channels(self):
+        for guild in self.bot.guilds:
+            config = await self.config.guild(guild).all()
+            if not config["setup_complete"]:
+                continue
+
+            apps_category = guild.get_channel(config["apps_category"])
+            archive_category = guild.get_channel(config["archive_category"])
+
+            if not apps_category or not archive_category:
+                continue
+
+            for channel in archive_category.channels:
+                user_id = int(channel.name.split("-")[0])
+                member = guild.get_member(user_id)
+                if member:
+                    await channel.edit(category=apps_category)
+
+    @commands.group(aliases=["da"])
     @commands.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
-        """Discord Application Management Commands"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send("Available commands: setup, test")
+        """DisApps management commands"""
+        pass
 
     @disapps.command()
-    @commands.admin_or_permissions(administrator=True)
     async def setup(self, ctx):
-        """Run through the initial setup process"""
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel
-
-        try:
-            await ctx.send("Starting setup process. Please mention the Moderator role:")
-            msg = await self.bot.wait_for('message', check=check, timeout=60)
-            mod_role = msg.role_mentions[0] if msg.role_mentions else None
-            if not mod_role:
-                return await ctx.send("No role mentioned. Setup cancelled.")
-
-            await ctx.send("Please create or mention the Applications category:")
-            msg = await self.bot.wait_for('message', check=check, timeout=60)
-            apps_category = msg.channel_mentions[0].category if msg.channel_mentions else None
-            if not apps_category:
-                return await ctx.send("No category mentioned. Setup cancelled.")
-
-            await ctx.send("Please create or mention the Archive category:")
-            msg = await self.bot.wait_for('message', check=check, timeout=60)
-            archive_category = msg.channel_mentions[0].category if msg.channel_mentions else None
-            if not archive_category:
-                return await ctx.send("No category mentioned. Setup cancelled.")
-
-            await ctx.send("Enter game names and mention their corresponding roles (one per message, type 'done' when finished):")
-            game_roles = {}
-            while True:
-                msg = await self.bot.wait_for('message', check=check, timeout=60)
-                if msg.content.lower() == 'done':
-                    break
-                if msg.role_mentions:
-                    game_name = msg.content.split(' ')[0]
-                    game_roles[game_name] = msg.role_mentions[0].id
-
-            # Save to config
-            async with self.config.guild(ctx.guild).all() as guild_data:
-                guild_data['mod_role_id'] = mod_role.id
-                guild_data['apps_category_id'] = apps_category.id
-                guild_data['archive_category_id'] = archive_category.id
-                guild_data['game_roles'] = game_roles
-
-            await ctx.send("Setup completed successfully!")
-
-        except asyncio.TimeoutError:
-            await ctx.send("Setup timed out. Please try again.")
-
-    @disapps.command()
-    @commands.admin_or_permissions(administrator=True)
-    async def test(self, ctx):
-        """Test the application system"""
-        await self.create_application_channel(ctx.author)
-        await ctx.send("Test application channel created!")
-
-    async def create_application_channel(self, member):
-        """Create or restore an application channel for a member"""
-        guild = member.guild
-        guild_data = await self.config.guild(guild).all()
+        """Initial setup for DisApps"""
+        guild = ctx.guild
         
-        category = guild.get_channel(guild_data['apps_category_id'])
+        await ctx.send("Starting setup process. Please mention the Moderator role:")
+        try:
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+            mod_role = await commands.RoleConverter().convert(ctx, msg.content)
+        except:
+            return await ctx.send("Setup failed: Invalid moderator role")
+
+        await ctx.send("Please enter the Applications category ID:")
+        try:
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+            apps_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
+        except:
+            return await ctx.send("Setup failed: Invalid category ID")
+
+        await ctx.send("Please enter the Archive category ID:")
+        try:
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+            archive_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
+        except:
+            return await ctx.send("Setup failed: Invalid category ID")
+
+        await ctx.send("Enter game roles in format 'Game Name: @role' (one per message, type 'done' when finished):")
+        game_roles = {}
+        while True:
+            try:
+                msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+                if msg.content.lower() == "done":
+                    break
+                game_name, role_mention = msg.content.split(":", 1)
+                role = await commands.RoleConverter().convert(ctx, role_mention.strip())
+                game_roles[game_name.strip()] = role.id
+            except:
+                await ctx.send("Invalid format, try again or type 'done'")
+
+        await self.config.guild(guild).mod_role.set(mod_role.id)
+        await self.config.guild(guild).apps_category.set(apps_category.id)
+        await self.config.guild(guild).archive_category.set(archive_category.id)
+        await self.config.guild(guild).game_roles.set(game_roles)
+        await self.config.guild(guild).setup_complete.set(True)
+
+        await ctx.send("Setup complete!")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        guild = member.guild
+        config = await self.config.guild(guild).all()
+        if not config["setup_complete"]:
+            return
+
+        category = guild.get_channel(config["apps_category"])
         if not category:
             return
 
         channel_name = f"{member.name.lower()}-application"
-        
-        # Check if channel exists in archive
-        archive_category = guild.get_channel(guild_data['archive_category_id'])
-        existing_channel = discord.utils.get(archive_category.channels, name=channel_name) if archive_category else None
-        
-        if existing_channel:
-            await existing_channel.edit(category=category)
-            channel = existing_channel
-        else:
-            # Create new channel
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                member: discord.PermissionOverwrite(read_messages=True),
-                guild.get_role(guild_data['mod_role_id']): discord.PermissionOverwrite(read_messages=True)
-            }
-            
-            channel = await category.create_text_channel(
-                name=channel_name,
-                overwrites=overwrites
-            )
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            member: discord.PermissionOverwrite(read_messages=True),
+            guild.get_role(config["mod_role"]): discord.PermissionOverwrite(read_messages=True)
+        }
 
+        channel = await category.create_text_channel(channel_name, overwrites=overwrites)
+        await self.send_application_message(channel, member, config)
+
+    async def send_application_message(self, channel, member, config):
         embed = discord.Embed(
-            title="Welcome to Zero Lives Left!",
+            title="Welcome to Zero Lives Left",
             description="[Your server description here]",
             color=discord.Color.blue()
         )
 
         class ApplicationButtons(discord.ui.View):
-            def __init__(self):
+            def __init__(self, cog):
                 super().__init__(timeout=None)
+                self.cog = cog
 
             @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
             async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                await self.show_application_form(interaction)
+                await self.cog.show_application_form(interaction, config)
                 button.disabled = True
                 await interaction.message.edit(view=self)
 
             @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
             async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                mod_role = interaction.guild.get_role(guild_data['mod_role_id'])
-                online_mods = [m for m in mod_role.members if m.status != discord.Status.offline]
-                
-                if online_mods:
-                    await interaction.response.send_message(
-                        f"Online moderators: {', '.join([m.mention for m in online_mods])}"
-                    )
-                else:
-                    await interaction.response.send_message(f"{mod_role.mention} No moderators are currently online.")
+                await self.cog.contact_moderator(interaction, config)
 
-            async def show_application_form(self, interaction):
-                class ApplicationForm(discord.ui.Modal, title="Application Form"):
-                    age = discord.ui.TextInput(label="Age")
-                    location = discord.ui.TextInput(label="Location")
-                    steam_id = discord.ui.TextInput(label="Steam ID")
-                    
-                    async def on_submit(self, interaction: discord.Interaction):
-                        embed = discord.Embed(
-                            title="New Application",
-                            description=f"From: {interaction.user.mention}\n"
-                                      f"Age: {self.age.value}\n"
-                                      f"Location: {self.location.value}\n"
-                                      f"Steam ID: {self.steam_id.value}",
-                            color=discord.Color.green()
-                        )
-                        
-                        mod_role = interaction.guild.get_role(guild_data['mod_role_id'])
-                        online_mods = [m for m in mod_role.members if m.status != discord.Status.offline]
-                        
-                        if online_mods:
-                            ping_str = ", ".join([m.mention for m in online_mods])
-                        else:
-                            ping_str = mod_role.mention
-                            
-                        await interaction.response.send_message(
-                            f"{ping_str} New application submitted!",
-                            embed=embed
-                        )
+        await channel.send(f"{member.mention}", embed=embed, view=ApplicationButtons(self))
 
-                await interaction.response.send_modal(ApplicationForm())
+    async def show_application_form(self, interaction: discord.Interaction, config):
+        modal = ApplicationModal(self, config)
+        await interaction.response.send_modal(modal)
 
-        await channel.send(f"{member.mention}", embed=embed, view=ApplicationButtons())
-
-    @tasks.loop(hours=1)
-    async def check_rejoins(self):
-        """Check for users who have rejoined the server"""
-        for guild in self.bot.guilds:
-            guild_data = await self.config.guild(guild).all()
-            
-            archive_category = guild.get_channel(guild_data['archive_category_id'])
-            apps_category = guild.get_channel(guild_data['apps_category_id'])
-            
-            if not (archive_category and apps_category):
-                continue
-                
-            for channel in archive_category.channels:
-                if channel.name.endswith('-application'):
-                    username = channel.name.replace('-application', '')
-                    member = discord.utils.get(guild.members, name=username)
-                    
-                    if member:
-                        await channel.edit(category=apps_category)
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member):
-        """Handle new member joins"""
-        await self.create_application_channel(member)
-
-    @commands.Cog.listener()
-    async def on_member_remove(self, member):
-        """Handle member leaves"""
-        guild = member.guild
-        guild_data = await self.config.guild(guild).all()
+    async def contact_moderator(self, interaction: discord.Interaction, config):
+        guild = interaction.guild
+        online_mods = [m for m in guild.members if any(r.id == config["mod_role"] for r in m.roles) and m.status != discord.Status.offline]
         
-        apps_category = guild.get_channel(guild_data['apps_category_id'])
-        archive_category = guild.get_channel(guild_data['archive_category_id'])
+        if online_mods:
+            mod_mentions = " ".join(m.mention for m in online_mods)
+            await interaction.response.send_message(f"Contacting online moderators: {mod_mentions}")
+        else:
+            mod_role = guild.get_role(config["mod_role"])
+            await interaction.response.send_message(f"No moderators are currently online. {mod_role.mention}")
+
+class ApplicationModal(discord.ui.Modal):
+    def __init__(self, cog, config):
+        super().__init__(title="Application Form")
+        self.cog = cog
+        self.config = config
+
+        self.add_item(discord.ui.TextInput(label="Age", placeholder="Enter your age"))
+        self.add_item(discord.ui.TextInput(label="Location", placeholder="Enter your location"))
+        self.add_item(discord.ui.TextInput(label="Steam ID", placeholder="Enter your Steam ID"))
         
-        if not (apps_category and archive_category):
-            return
-            
-        channel_name = f"{member.name.lower()}-application"
-        channel = discord.utils.get(apps_category.channels, name=channel_name)
+        games_text = "\n".join(f"[ ] {game}" for game in config["game_roles"].keys())
+        self.add_item(discord.ui.TextInput(
+            label="Games (Check with [x])",
+            style=discord.TextStyle.paragraph,
+            placeholder="Check the games you play",
+            default=games_text
+        ))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        selected_games = []
+        games_input = self.children[3].value.split("\n")
         
-        if channel:
-            await channel.edit(category=archive_category)
+        for game_line in games_input:
+            if "[x]" in game_line.lower():
+                game_name = game_line[game_line.find("]")+1:].strip()
+                if game_name in self.config["game_roles"]:
+                    role_id = self.config["game_roles"][game_name]
+                    role = interaction.guild.get_role(role_id)
+                    if role:
+                        await interaction.user.add_roles(role)
+                        selected_games.append(game_name)
+
+        embed = discord.Embed(
+            title="Application Submitted",
+            description=f"Age: {self.children[0].value}\nLocation: {self.children[1].value}\nSteam ID: {self.children[2].value}\nGames: {', '.join(selected_games)}",
+            color=discord.Color.green()
+        )
+
+        await interaction.response.send_message(embed=embed)
+        await self.cog.contact_moderator(interaction, self.config)
+
+def setup(bot):
+    bot.add_cog(DisApps(bot))
