@@ -280,26 +280,19 @@ class DisApps(commands.Cog):
             mod_role_id = await self.config.guild(guild).mod_role()
             mod_role = guild.get_role(mod_role_id)
             
-            # Set up new overwrites for the archived channel
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            }
-            
             # Find the user overwrite (there should only be one non-role member)
-            user_overwrite = None
+            user = None
             for target, _ in channel.overwrites.items():
                 if isinstance(target, discord.Member):
-                    user_overwrite = target
-                    overwrites[target] = discord.PermissionOverwrite(read_messages=True, send_messages=False)
+                    user = target
                     break
             
-            # Apply new overwrites and move to archive
-            await channel.edit(
-                category=archive_category,
-                overwrites=overwrites
-            )
+            if user:
+                # Set permissions: user can read but not send messages
+                await channel.set_permissions(user, read_messages=True, send_messages=False)
+            
+            # Move to archive category
+            await channel.edit(category=archive_category)
             await channel.send(f"Channel archived. Reason: {reason}")
 
     async def restore_channel(self, channel, guild, member):
@@ -308,23 +301,11 @@ class DisApps(commands.Cog):
         applications_category = guild.get_channel(applications_id)
         
         if applications_category:
-            # Get the moderator role
-            mod_role_id = await self.config.guild(guild).mod_role()
-            mod_role = guild.get_role(mod_role_id)
+            # Restore user's ability to send messages
+            await channel.set_permissions(member, read_messages=True, send_messages=True)
             
-            # Set up new overwrites for the restored channel
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True),
-                member: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            }
-            
-            # Apply new overwrites and move back to applications category
-            await channel.edit(
-                category=applications_category,
-                overwrites=overwrites
-            )
+            # Move channel back to applications category
+            await channel.edit(category=applications_category)
             
             await channel.send(f"Channel restored for {member.mention}")
 
