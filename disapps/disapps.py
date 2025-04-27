@@ -65,9 +65,14 @@ class ApplicationView(View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
+        self.application_submitted = False
 
-    @discord.ui.button(label="Apply Now", style=ButtonStyle.green)
+    @discord.ui.button(label="Apply Now", style=ButtonStyle.green, custom_id="apply_now")
     async def apply_button(self, interaction: discord.Interaction, button: Button):
+        if self.application_submitted:
+            await interaction.response.send_message("You have already submitted an application.", ephemeral=True)
+            return
+
         modal = ApplicationModal()
         await interaction.response.send_modal(modal)
         await modal.wait()
@@ -81,6 +86,27 @@ class ApplicationView(View):
         embed.add_field(name="Steam ID", value=modal.steam_id.value)
         
         await interaction.channel.send(embed=embed)
+        
+        # Disable the Apply Now button
+        self.application_submitted = True
+        button.disabled = True
+        await interaction.message.edit(view=self)
+
+        # Notify moderators
+        mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
+        if mod_role_id:
+            mod_role = interaction.guild.get_role(mod_role_id)
+            if mod_role:
+                online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
+                if online_mods:
+                    mods_mention = " ".join([mod.mention for mod in online_mods])
+                    await interaction.channel.send(
+                        f"{mods_mention}\nNew application submitted by {interaction.user.mention}"
+                    )
+                else:
+                    await interaction.channel.send(
+                        f"{mod_role.mention}\nNew application submitted by {interaction.user.mention}"
+                    )
         
         # Create and send game selection view
         games_roles = await self.cog.config.guild(interaction.guild).games_roles()
@@ -105,8 +131,8 @@ class ApplicationView(View):
         online_mods = [member for member in mod_role.members if member.status != discord.Status.offline]
         
         if online_mods:
-            mod = online_mods[0]
-            await interaction.channel.send(f"{mod.mention} - Help requested by {interaction.user.mention}")
+            mods_mention = " ".join([mod.mention for mod in online_mods])
+            await interaction.channel.send(f"{mods_mention} - Help requested by {interaction.user.mention}")
         else:
             await interaction.channel.send(f"{mod_role.mention} - Help requested by {interaction.user.mention}")
         
