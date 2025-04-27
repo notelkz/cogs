@@ -19,9 +19,66 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    class ApplicationForm(discord.ui.Modal, title="Application Form"):
+    class ModeratorButtons(discord.ui.View):
+        def __init__(self, cog):
+            super().__init__(timeout=None)
+            self.cog = cog
+
+        @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, custom_id="accept_button")
+        async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.permissions.manage_roles:
+                await interaction.response.send_message("You don't have permission to accept applications.", ephemeral=True)
+                return
+
+            guild = interaction.guild
+            recruit_role_id = await self.cog.config.guild(guild).recruit_role()
+            recruit_role = guild.get_role(recruit_role_id)
+            
+            member = [m for m in interaction.channel.members if not m.bot][0]
+            await member.add_roles(recruit_role)
+            await interaction.response.send_message(
+                f"Application accepted! {member.mention} has been given the {recruit_role.name} role.",
+                allowed_mentions=discord.AllowedMentions(users=True)
+            )
+            
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+
+        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, custom_id="reject_button")
+        async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not interaction.permissions.kick_members:
+                await interaction.response.send_message("You don't have permission to reject applications.", ephemeral=True)
+                return
+
+            await interaction.response.send_message("Please provide the reason for rejection:", ephemeral=True)
+            
+            try:
+                reason_msg = await self.cog.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
+                    timeout=60
+                )
+                
+                member = [m for m in interaction.channel.members if not m.bot][0]
+                try:
+                    await member.send(f"Your application has been rejected. Reason: {reason_msg.content}")
+                except discord.Forbidden:
+                    await interaction.followup.send("Could not DM the user with the rejection reason.")
+                    
+                await member.kick(reason=f"Application rejected: {reason_msg.content}")
+                await interaction.followup.send(f"Application rejected. User has been kicked.")
+                
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+                
+            except asyncio.TimeoutError:
+                await interaction.followup.send("Rejection timed out.")
+
+    class ApplicationForm(discord.ui.Modal):
         def __init__(self, game_roles):
-            super().__init__()
+            super().__init__(title="Application Form")
             
             self.game_roles = game_roles
             
@@ -75,7 +132,7 @@ class DisApps(commands.Cog):
                 embed.add_field(name="Games", value=self.games.value, inline=False)
                 
                 # Create moderator buttons view
-                mod_view = ModeratorButtons(interaction.client.get_cog("DisApps"))
+                mod_view = DisApps.ModeratorButtons(interaction.client.get_cog("DisApps"))
                 
                 # Send confirmation to applicant
                 await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
@@ -167,63 +224,6 @@ class DisApps(commands.Cog):
                     "An error occurred while contacting moderators. Please try again.",
                     ephemeral=True
                 )
-
-    class ModeratorButtons(discord.ui.View):
-        def __init__(self, cog):
-            super().__init__(timeout=None)
-            self.cog = cog
-
-        @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, custom_id="accept_button")
-        async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            if not interaction.permissions.manage_roles:
-                await interaction.response.send_message("You don't have permission to accept applications.", ephemeral=True)
-                return
-
-            guild = interaction.guild
-            recruit_role_id = await self.cog.config.guild(guild).recruit_role()
-            recruit_role = guild.get_role(recruit_role_id)
-            
-            member = [m for m in interaction.channel.members if not m.bot][0]
-            await member.add_roles(recruit_role)
-            await interaction.response.send_message(
-                f"Application accepted! {member.mention} has been given the {recruit_role.name} role.",
-                allowed_mentions=discord.AllowedMentions(users=True)
-            )
-            
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
-
-        @discord.ui.button(label="Reject", style=discord.ButtonStyle.red, custom_id="reject_button")
-        async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            if not interaction.permissions.kick_members:
-                await interaction.response.send_message("You don't have permission to reject applications.", ephemeral=True)
-                return
-
-            await interaction.response.send_message("Please provide the reason for rejection:", ephemeral=True)
-            
-            try:
-                reason_msg = await self.cog.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
-                    timeout=60
-                )
-                
-                member = [m for m in interaction.channel.members if not m.bot][0]
-                try:
-                    await member.send(f"Your application has been rejected. Reason: {reason_msg.content}")
-                except discord.Forbidden:
-                    await interaction.followup.send("Could not DM the user with the rejection reason.")
-                    
-                await member.kick(reason=f"Application rejected: {reason_msg.content}")
-                await interaction.followup.send(f"Application rejected. User has been kicked.")
-                
-                for child in self.children:
-                    child.disabled = True
-                await interaction.message.edit(view=self)
-                
-            except asyncio.TimeoutError:
-                await interaction.followup.send("Rejection timed out.")
 
     @commands.group(aliases=["da"])
     @commands.admin_or_permissions(administrator=True)
