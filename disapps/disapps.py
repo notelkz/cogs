@@ -294,7 +294,6 @@ class DisApps(commands.Cog):
             await channel.edit(category=archive_category)
             await channel.send(f"Channel archived. Reason: {reason}")
 
-
     @commands.group(aliases=["da"])
     @checks.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
@@ -426,10 +425,20 @@ class DisApps(commands.Cog):
         await self.config.guild(guild).applications.set(applications)
 
         embed = discord.Embed(
-            title="Welcome to the Application Process!",
-            description="Please click the buttons below to begin.",
-            color=discord.Color.blue()
+            title="Welcome to Zero Lives Left",
+            description="Unfortunately, due to timewasters, spam bots and other annoyances we've had to implement an application system in Discord.\n\n**If you are interested in joining us for any of the games we're currently playing, please click the button below and fill out the short form.**",
+            color=3447003,
+            timestamp=datetime.fromisoformat("2025-04-27T22:54:00.000Z")
         )
+        
+        # Set author
+        embed.set_author(name="elkz - Admin")
+        
+        # Set thumbnail
+        embed.set_thumbnail(url="https://notelkz.net/images/discordicon.png")
+        
+        # Set footer
+        embed.set_footer(text="If you have any issues, use the 'Contact Mod' button.")
 
         await channel.send(content=member.mention, embed=embed, view=ApplicationButtons(self))
 
