@@ -19,83 +19,97 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    class ApplicationForm(discord.ui.Modal):
+    class ApplicationForm(discord.ui.Modal, title="Application Form"):
         def __init__(self, game_roles):
-            super().__init__(title="Application Form")
+            super().__init__()
             
             self.game_roles = game_roles
             
-            self.add_item(discord.ui.TextInput(
+            self.age = discord.ui.TextInput(
                 label="Age",
                 placeholder="Enter your age",
-                custom_id="age",
                 min_length=1,
                 max_length=3,
                 required=True
-            ))
+            )
+            self.add_item(self.age)
             
-            self.add_item(discord.ui.TextInput(
+            self.location = discord.ui.TextInput(
                 label="Location",
                 placeholder="Enter your location",
-                custom_id="location",
                 min_length=1,
                 max_length=100,
                 required=True
-            ))
+            )
+            self.add_item(self.location)
             
-            self.add_item(discord.ui.TextInput(
+            self.steam_id = discord.ui.TextInput(
                 label="Steam ID",
                 placeholder="Enter your Steam ID",
-                custom_id="steam_id",
                 min_length=1,
                 max_length=100,
                 required=True
-            ))
+            )
+            self.add_item(self.steam_id)
             
-            self.add_item(discord.ui.TextInput(
+            self.games = discord.ui.TextInput(
                 label="Games",
                 placeholder="List the games you play (separate with commas)",
-                custom_id="games",
                 style=discord.TextStyle.paragraph,
                 required=True
-            ))
+            )
+            self.add_item(self.games)
 
         async def on_submit(self, interaction: discord.Interaction):
-            embed = discord.Embed(
-                title="New Application Submission",
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
-            )
-            
-            embed.add_field(name="Applicant", value=interaction.user.mention, inline=False)
-            embed.add_field(name="Age", value=self.children[0].value, inline=True)
-            embed.add_field(name="Location", value=self.children[1].value, inline=True)
-            embed.add_field(name="Steam ID", value=self.children[2].value, inline=True)
-            embed.add_field(name="Games", value=self.children[3].value, inline=False)
-            
-            mod_view = ModeratorButtons(interaction.client.get_cog("DisApps"))
-            
-            await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
-            
-            guild = interaction.guild
-            mod_role_id = await interaction.client.get_cog("DisApps").config.guild(guild).mod_role()
-            mod_role = guild.get_role(mod_role_id)
-            
-            online_mods = [member for member in guild.members 
-                          if mod_role in member.roles and member.status != discord.Status.offline]
-            
-            if online_mods:
-                mod_ping = " ".join([mod.mention for mod in online_mods])
-            else:
-                mod_ping = mod_role.mention
+            try:
+                embed = discord.Embed(
+                    title="New Application Submission",
+                    color=discord.Color.blue(),
+                    timestamp=discord.utils.utcnow()
+                )
                 
-            await interaction.channel.send(
-                f"{mod_ping} - New application submitted!",
-                embed=embed,
-                view=mod_view
-            )
+                embed.add_field(name="Applicant", value=interaction.user.mention, inline=False)
+                embed.add_field(name="Age", value=self.age.value, inline=True)
+                embed.add_field(name="Location", value=self.location.value, inline=True)
+                embed.add_field(name="Steam ID", value=self.steam_id.value, inline=True)
+                embed.add_field(name="Games", value=self.games.value, inline=False)
+                
+                # Create moderator buttons view
+                mod_view = ModeratorButtons(interaction.client.get_cog("DisApps"))
+                
+                # Send confirmation to applicant
+                await interaction.response.send_message("Your application has been submitted!", ephemeral=True)
+                
+                # Get mod role and ping online mods
+                guild = interaction.guild
+                cog = interaction.client.get_cog("DisApps")
+                mod_role_id = await cog.config.guild(guild).mod_role()
+                mod_role = guild.get_role(mod_role_id)
+                
+                online_mods = [member for member in guild.members 
+                              if mod_role in member.roles and member.status != discord.Status.offline]
+                
+                if online_mods:
+                    mod_ping = " ".join([mod.mention for mod in online_mods])
+                else:
+                    mod_ping = mod_role.mention
+                
+                # Send application to channel
+                await interaction.channel.send(
+                    f"{mod_ping} - New application submitted!",
+                    embed=embed,
+                    view=mod_view
+                )
+                
+            except Exception as e:
+                print(f"Error in application submission: {str(e)}")  # For debugging
+                await interaction.response.send_message(
+                    "An error occurred while processing your application. Please try again.",
+                    ephemeral=True
+                )
 
         async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+            print(f"Modal error: {str(error)}")  # For debugging
             await interaction.response.send_message(
                 "An error occurred while processing your application. Please try again.",
                 ephemeral=True
@@ -109,30 +123,49 @@ class DisApps(commands.Cog):
 
         @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green, custom_id="apply_button")
         async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            modal = DisApps.ApplicationForm(self.game_roles)
-            await interaction.response.send_modal(modal)
-            button.disabled = True
-            await interaction.message.edit(view=self)
+            try:
+                # Create and send the application form
+                modal = DisApps.ApplicationForm(self.game_roles)
+                await interaction.response.send_modal(modal)
+                
+                # Disable the apply button after submission
+                button.disabled = True
+                await interaction.message.edit(view=self)
+                
+            except Exception as e:
+                print(f"Error in apply button: {str(e)}")  # For debugging
+                await interaction.response.send_message(
+                    "An error occurred while opening the application form. Please try again.",
+                    ephemeral=True
+                )
 
         @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red, custom_id="contact_button")
         async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            guild = interaction.guild
-            mod_role_id = await self.cog.config.guild(guild).mod_role()
-            mod_role = guild.get_role(mod_role_id)
-            
-            online_mods = [member for member in guild.members 
-                          if mod_role in member.roles and member.status != discord.Status.offline]
-            
-            if online_mods:
-                mod_mentions = " ".join([mod.mention for mod in online_mods])
+            try:
+                guild = interaction.guild
+                mod_role_id = await self.cog.config.guild(guild).mod_role()
+                mod_role = guild.get_role(mod_role_id)
+                
+                online_mods = [member for member in guild.members 
+                              if mod_role in member.roles and member.status != discord.Status.offline]
+                
+                if online_mods:
+                    mod_mentions = " ".join([mod.mention for mod in online_mods])
+                    await interaction.response.send_message(
+                        f"Contacting online moderators: {mod_mentions}",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.response.send_message(
+                        f"{mod_role.mention} - No moderators are currently online.",
+                        allowed_mentions=discord.AllowedMentions(roles=True)
+                    )
+                    
+            except Exception as e:
+                print(f"Error in contact button: {str(e)}")  # For debugging
                 await interaction.response.send_message(
-                    f"Contacting online moderators: {mod_mentions}",
+                    "An error occurred while contacting moderators. Please try again.",
                     ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    f"{mod_role.mention} - No moderators are currently online.",
-                    allowed_mentions=discord.AllowedMentions(roles=True)
                 )
 
     class ModeratorButtons(discord.ui.View):
