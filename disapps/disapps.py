@@ -47,6 +47,12 @@ class ModButtons(discord.ui.View):
             role = interaction.guild.get_role(role_id)
             await self.applicant.add_roles(role)
 
+            # Update application status
+            applications = await self.cog.config.guild(interaction.guild).applications()
+            if str(self.applicant.id) in applications:
+                applications[str(self.applicant.id)]['status'] = 'accepted'
+                await self.cog.config.guild(interaction.guild).applications.set(applications)
+
             # Send confirmation messages
             await interaction.response.send_message(
                 f"Application accepted! {self.applicant.mention} has been given the {role.name} role."
@@ -57,11 +63,8 @@ class ModButtons(discord.ui.View):
             except discord.Forbidden:
                 await interaction.followup.send("Could not DM the user, but their application has been accepted.")
 
-            # Optional: Close or archive the channel after a delay
-            await asyncio.sleep(300)  # 5 minute delay
-            await interaction.channel.send("This channel will be archived in 1 minute...")
-            await asyncio.sleep(60)
-            await interaction.channel.edit(archived=True)
+            # Move to archive
+            await self.cog.move_to_archive(interaction.channel, interaction.guild, "Application accepted")
 
         except discord.Forbidden:
             await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
@@ -86,6 +89,12 @@ class ModButtons(discord.ui.View):
             self.decline_button.disabled = True
             await interaction.message.edit(view=self)
 
+            # Update application status
+            applications = await self.cog.config.guild(interaction.guild).applications()
+            if str(self.applicant.id) in applications:
+                applications[str(self.applicant.id)]['status'] = 'declined'
+                await self.cog.config.guild(interaction.guild).applications.set(applications)
+
             # Send decline message to the applicant
             try:
                 await self.applicant.send(
@@ -101,11 +110,8 @@ class ModButtons(discord.ui.View):
                     f"Reason: {modal.decline_reason}"
                 )
 
-            # Optional: Close or archive the channel after a delay
-            await asyncio.sleep(300)  # 5 minute delay
-            await interaction.channel.send("This channel will be archived in 1 minute...")
-            await asyncio.sleep(60)
-            await interaction.channel.edit(archived=True)
+            # Move to archive
+            await self.cog.move_to_archive(interaction.channel, interaction.guild, f"Application declined: {modal.decline_reason}")
 
         except asyncio.TimeoutError:
             await interaction.followup.send("The decline action has timed out.", ephemeral=True)
@@ -159,6 +165,12 @@ class ApplicationModal(discord.ui.Modal):
             self.original_view.apply_button.disabled = False
             await self.original_view.message.edit(view=self.original_view)
             return
+
+        # Update application status
+        applications = await self.original_view.cog.config.guild(interaction.guild).applications()
+        if str(interaction.user.id) in applications:
+            applications[str(interaction.user.id)]['status'] = 'pending'
+            await self.original_view.cog.config.guild(interaction.guild).applications.set(applications)
 
         embed = discord.Embed(
             title="Application Submitted",
@@ -233,9 +245,20 @@ class DisApps(commands.Cog):
             "accepted_role": None,
             "assignable_roles": [],
             "applications_category": None,
-            "setup_complete": False
+            "archive_category": None,
+            "setup_complete": False,
+            "applications": {}
         }
         self.config.register_guild(**default_guild)
+
+    async def move_to_archive(self, channel, guild, reason=""):
+        """Helper function to move channels to archive"""
+        archive_id = await self.config.guild(guild).archive_category()
+        archive_category = guild.get_channel(archive_id)
+        
+        if archive_category:
+            await channel.edit(category=archive_category)
+            await channel.send(f"Channel archived. Reason: {reason}")
 
     @commands.group(aliases=["da"])
     @checks.admin_or_permissions(administrator=True)
@@ -278,12 +301,61 @@ class DisApps(commands.Cog):
             except:
                 await ctx.send("Invalid category. Setup cancelled.")
                 return
+
+            await ctx.send("Please mention the Archive category or provide its ID (only moderators will see this):")
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30.0)
+            try:
+                archive_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
+                await self.config.guild(guild).archive_category.set(archive_category.id)
+                
+                # Set archive category permissions for moderators only
+                await archive_category.set_permissions(guild.default_role, read_messages=False)
+                await archive_category.set_permissions(mod_role, read_messages=True)
+                await archive_category.set_permissions(guild.me, read_messages=True)
+                
+            except:
+                await ctx.send("Invalid category. Setup cancelled.")
+                return
             
             await self.config.guild(guild).setup_complete.set(True)
             await ctx.send("Setup complete!")
             
         except asyncio.TimeoutError:
             await ctx.send("Setup timed out.")
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        """Handle member leaves"""
+        guild = member.guild
+        if not await self.config.guild(guild).setup_complete():
+            return
+
+        # Get applications data
+        applications = await self.config.guild(guild).applications()
+        channel_id = applications.get(str(member.id), {}).get('channel_id')
+        
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        application_status = applications.get(str(member.id), {}).get('status', 'none')
+
+        if application_status == 'none':
+            # No application submitted, delete channel
+            await channel.delete()
+            del applications[str(member.id)]
+            
+        elif application_status == 'pending':
+            # Application submitted but not reviewed, archive after 24 hours
+            await channel.send(f"{member.name} has left the server. This channel will be archived in 24 hours.")
+            await asyncio.sleep(86400)  # 24 hours
+            await self.move_to_archive(channel, guild, f"User left server while application was pending")
+            applications[str(member.id)]['status'] = 'archived'
+            
+        await self.config.guild(guild).applications.set(applications)
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
@@ -308,6 +380,15 @@ class DisApps(commands.Cog):
                 mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
             }
         )
+
+        # Store channel information
+        applications = await self.config.guild(guild).applications()
+        applications[str(member.id)] = {
+            'channel_id': channel.id,
+            'status': 'none',
+            'timestamp': datetime.utcnow().timestamp()
+        }
+        await self.config.guild(guild).applications.set(applications)
 
         embed = discord.Embed(
             title="Welcome to the Application Process!",
