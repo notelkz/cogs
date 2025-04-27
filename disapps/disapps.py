@@ -276,22 +276,30 @@ class DisApps(commands.Cog):
         archive_category = guild.get_channel(archive_id)
         
         if archive_category:
-            # Get the current overwrites
-            overwrites = channel.overwrites
+            # Get the moderator role
+            mod_role_id = await self.config.guild(guild).mod_role()
+            mod_role = guild.get_role(mod_role_id)
+            
+            # Set up new overwrites for the archived channel
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
             
             # Find the user overwrite (there should only be one non-role member)
             user_overwrite = None
-            for target, _ in overwrites.items():
+            for target, _ in channel.overwrites.items():
                 if isinstance(target, discord.Member):
                     user_overwrite = target
+                    overwrites[target] = discord.PermissionOverwrite(read_messages=True, send_messages=False)
                     break
             
-            if user_overwrite:
-                # Remove user's permissions
-                await channel.set_permissions(user_overwrite, read_messages=True, send_messages=False)
-            
-            # Move channel to archive
-            await channel.edit(category=archive_category)
+            # Apply new overwrites and move to archive
+            await channel.edit(
+                category=archive_category,
+                overwrites=overwrites
+            )
             await channel.send(f"Channel archived. Reason: {reason}")
 
     async def restore_channel(self, channel, guild, member):
@@ -300,11 +308,23 @@ class DisApps(commands.Cog):
         applications_category = guild.get_channel(applications_id)
         
         if applications_category:
-            # Move channel back to applications category
-            await channel.edit(category=applications_category)
+            # Get the moderator role
+            mod_role_id = await self.config.guild(guild).mod_role()
+            mod_role = guild.get_role(mod_role_id)
             
-            # Restore user permissions
-            await channel.set_permissions(member, read_messages=True, send_messages=True)
+            # Set up new overwrites for the restored channel
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True),
+                member: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
+            
+            # Apply new overwrites and move back to applications category
+            await channel.edit(
+                category=applications_category,
+                overwrites=overwrites
+            )
             
             await channel.send(f"Channel restored for {member.mention}")
 
