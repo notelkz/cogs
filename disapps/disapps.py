@@ -38,6 +38,12 @@ class DisApps(commands.Cog):
             guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
         }
 
+        # Add moderator role permissions if set
+        if config["moderator_role"]:
+            mod_role = guild.get_role(config["moderator_role"])
+            if mod_role:
+                overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
         channel = await category.create_text_channel(channel_name, overwrites=overwrites)
         
         embed = discord.Embed(
@@ -46,13 +52,36 @@ class DisApps(commands.Cog):
             color=discord.Color.blue()
         )
 
-        apply_button = discord.ui.Button(style=discord.ButtonStyle.green, label="Apply Now", custom_id="apply_button")
-        contact_mod_button = discord.ui.Button(style=discord.ButtonStyle.red, label="Contact Mod", custom_id="contact_mod")
+        class ApplicationView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=None)
 
-        view = discord.ui.View()
-        view.add_item(apply_button)
-        view.add_item(contact_mod_button)
+            @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green, custom_id="apply_button")
+            async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+                modal = ApplicationModal()
+                await interaction.response.send_modal(modal)
+                button.disabled = True
+                await interaction.message.edit(view=self)
 
+            @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red, custom_id="contact_mod")
+            async def contact_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
+                config = await self.bot.get_cog("DisApps").config.guild(interaction.guild).all()
+                mod_role = interaction.guild.get_role(config["moderator_role"])
+                
+                if not mod_role:
+                    await interaction.response.send_message("Moderator role not configured.", ephemeral=True)
+                    return
+
+                online_mods = [member for member in mod_role.members 
+                             if member.status != discord.Status.offline]
+
+                if online_mods:
+                    await interaction.response.send_message(
+                        f"Contacting online moderators: {', '.join([mod.mention for mod in online_mods])}")
+                else:
+                    await interaction.response.send_message(f"{mod_role.mention} No moderators are currently online.")
+
+        view = ApplicationView()
         await channel.send(f"{member.mention}", embed=embed, view=view)
         
         async with self.config.guild(guild).application_channels() as channels:
@@ -123,71 +152,84 @@ class DisApps(commands.Cog):
         await self.create_application_channel(member.guild, member)
 
     @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        if not interaction.type == discord.InteractionType.component:
-            return
-
-        if interaction.custom_id == "apply_button":
-            # Create application modal
-            modal = ApplicationModal()
-            await interaction.response.send_modal(modal)
-
-        elif interaction.custom_id == "contact_mod":
-            config = await self.config.guild(interaction.guild).all()
-            mod_role = interaction.guild.get_role(config["moderator_role"])
-            
-            online_mods = [member for member in mod_role.members 
-                         if member.status != discord.Status.offline]
-
-            if online_mods:
-                await interaction.response.send_message(
-                    f"Contacting online moderators: {', '.join([mod.mention for mod in online_mods])}")
-            else:
-                await interaction.response.send_message(f"{mod_role.mention} No moderators are currently online.")
-
-class ApplicationModal(discord.ui.Modal):
-    def __init__(self):
-        super().__init__(title="Application Form")
+    async def on_member_remove(self, member: discord.Member):
+        config = await self.config.guild(member.guild).all()
+        channels = config["application_channels"]
         
-        self.add_item(discord.ui.TextInput(
+        if str(member.id) in channels:
+            channel = member.guild.get_channel(channels[str(member.id)])
+            if channel:
+                archive_category = member.guild.get_channel(config["archive_category"])
+                if archive_category:
+                    await channel.edit(category=archive_category)
+
+class ApplicationModal(discord.ui.Modal, title="Application Form"):
+    def __init__(self):
+        super().__init__()
+        
+        self.age = discord.ui.TextInput(
             label="Age",
             placeholder="Enter your age",
-            custom_id="age",
-            style=discord.TextStyle.short
-        ))
-        
-        self.add_item(discord.ui.TextInput(
+            required=True,
+            min_length=1,
+            max_length=3
+        )
+        self.add_item(self.age)
+
+        self.location = discord.ui.TextInput(
             label="Location",
             placeholder="Enter your location",
-            custom_id="location",
-            style=discord.TextStyle.short
-        ))
-        
-        self.add_item(discord.ui.TextInput(
+            required=True
+        )
+        self.add_item(self.location)
+
+        self.steam_id = discord.ui.TextInput(
             label="Steam ID",
             placeholder="Enter your Steam ID",
-            custom_id="steam_id",
-            style=discord.TextStyle.short
-        ))
+            required=True
+        )
+        self.add_item(self.steam_id)
 
     async def on_submit(self, interaction: discord.Interaction):
         embed = discord.Embed(
-            title="New Application",
-            color=discord.Color.green()
+            title="New Application Submitted",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
         )
         
-        embed.add_field(name="Age", value=self.children[0].value)
-        embed.add_field(name="Location", value=self.children[1].value)
-        embed.add_field(name="Steam ID", value=self.children[2].value)
+        embed.add_field(name="User", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Age", value=self.age.value, inline=True)
+        embed.add_field(name="Location", value=self.location.value, inline=True)
+        embed.add_field(name="Steam ID", value=self.steam_id.value, inline=True)
+
+        # Get config for moderator role
+        config = await interaction.client.get_cog("DisApps").config.guild(interaction.guild).all()
+        mod_role = interaction.guild.get_role(config["moderator_role"])
         
-        await interaction.response.send_message(embed=embed)
-        
-        # Disable the Apply Now button
-        for item in interaction.message.components[0].children:
-            if item.custom_id == "apply_button":
-                item.disabled = True
-        
-        await interaction.message.edit(view=interaction.message.components[0])
+        if mod_role:
+            online_mods = [member for member in mod_role.members 
+                         if member.status != discord.Status.offline]
+            
+            if online_mods:
+                ping_text = ", ".join([mod.mention for mod in online_mods])
+            else:
+                ping_text = mod_role.mention
+                
+            await interaction.response.send_message(
+                f"{ping_text}\nNew application submitted:",
+                embed=embed
+            )
+        else:
+            await interaction.response.send_message(
+                "Application submitted:",
+                embed=embed
+            )
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        await interaction.response.send_message(
+            "An error occurred while processing your application. Please try again later.",
+            ephemeral=True
+        )
 
 async def setup(bot):
     await bot.add_cog(DisApps(bot))
