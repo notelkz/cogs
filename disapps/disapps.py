@@ -1,4 +1,3 @@
-# disapps.py
 import discord
 from redbot.core import commands, Config
 from redbot.core.bot import Red
@@ -29,30 +28,26 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    @commands.admin()  # Changed from admin_commands
     @commands.group()
+    @commands.admin()
     async def disapps(self, ctx):
-        """DisApps configuration commands"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help()
+        """Configuration commands for the DisApps system"""
+        pass
 
-    @disapps.command()
-    @commands.admin()  # Added admin check
-    async def setcategory(self, ctx, category: discord.CategoryChannel):
+    @disapps.command(name="setcategory")
+    async def disapps_setcategory(self, ctx, category: discord.CategoryChannel):
         """Set the applications category"""
         await self.config.guild(ctx.guild).application_category.set(category.id)
         await ctx.send(f"Applications category set to {category.name}")
 
-    @disapps.command()
-    @commands.admin()  # Added admin check
-    async def setrole(self, ctx, role: discord.Role):
+    @disapps.command(name="setrole")
+    async def disapps_setrole(self, ctx, role: discord.Role):
         """Set the approved role"""
         await self.config.guild(ctx.guild).approved_role.set(role.id)
         await ctx.send(f"Approved role set to {role.name}")
 
-    @disapps.command()
-    @commands.admin()  # Added admin check
-    async def setmodrole(self, ctx, role: discord.Role):
+    @disapps.command(name="setmodrole")
+    async def disapps_setmodrole(self, ctx, role: discord.Role):
         """Set the moderator role"""
         await self.config.guild(ctx.guild).mod_role.set(role.id)
         await ctx.send(f"Moderator role set to {role.name}")
@@ -140,5 +135,13 @@ class DisApps(commands.Cog):
         mod_role = guild.get_role(mod_role_id)
         return mod_role in user.roles
 
-async def setup(bot):  # Changed from def setup(bot)
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        channel = await self.create_application_channel(member.guild, member)
+        if channel:
+            embed = await self.create_application_embed(member)
+            view = await self.create_application_buttons()
+            await channel.send(f"{member.mention}", embed=embed, view=view)
+
+async def setup(bot):
     await bot.add_cog(DisApps(bot))
