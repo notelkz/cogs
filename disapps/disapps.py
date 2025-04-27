@@ -1,4 +1,5 @@
 import discord
+from discord.ext import tasks
 from redbot.core import commands, Config
 from redbot.core.utils.predicates import MessagePredicate
 from redbot.core.utils.chat_formatting import box
@@ -37,10 +38,15 @@ class DisApps(commands.Cog):
                 continue
 
             for channel in archive_category.channels:
-                user_id = int(channel.name.split("-")[0])
-                member = guild.get_member(user_id)
-                if member:
-                    await channel.edit(category=apps_category)
+                if "-application" not in channel.name:
+                    continue
+                try:
+                    user_id = int(channel.name.split("-")[0])
+                    member = guild.get_member(user_id)
+                    if member:
+                        await channel.edit(category=apps_category)
+                except ValueError:
+                    continue
 
     @commands.group(aliases=["da"])
     @commands.admin_or_permissions(administrator=True)
@@ -55,21 +61,21 @@ class DisApps(commands.Cog):
         
         await ctx.send("Starting setup process. Please mention the Moderator role:")
         try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
             mod_role = await commands.RoleConverter().convert(ctx, msg.content)
         except:
             return await ctx.send("Setup failed: Invalid moderator role")
 
         await ctx.send("Please enter the Applications category ID:")
         try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
             apps_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
         except:
             return await ctx.send("Setup failed: Invalid category ID")
 
         await ctx.send("Please enter the Archive category ID:")
         try:
-            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+            msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
             archive_category = await commands.CategoryChannelConverter().convert(ctx, msg.content)
         except:
             return await ctx.send("Setup failed: Invalid category ID")
@@ -78,12 +84,14 @@ class DisApps(commands.Cog):
         game_roles = {}
         while True:
             try:
-                msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=30)
+                msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30)
                 if msg.content.lower() == "done":
                     break
                 game_name, role_mention = msg.content.split(":", 1)
                 role = await commands.RoleConverter().convert(ctx, role_mention.strip())
                 game_roles[game_name.strip()] = role.id
+            except asyncio.TimeoutError:
+                return await ctx.send("Setup timed out")
             except:
                 await ctx.send("Invalid format, try again or type 'done'")
 
@@ -94,6 +102,28 @@ class DisApps(commands.Cog):
         await self.config.guild(guild).setup_complete.set(True)
 
         await ctx.send("Setup complete!")
+
+    @disapps.command()
+    async def test(self, ctx):
+        """Test the application system"""
+        config = await self.config.guild(ctx.guild).all()
+        if not config["setup_complete"]:
+            return await ctx.send("Please complete setup first using `!disapps setup`")
+
+        category = ctx.guild.get_channel(config["apps_category"])
+        if not category:
+            return await ctx.send("Applications category not found")
+
+        channel_name = f"test-application"
+        overwrites = {
+            ctx.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            ctx.author: discord.PermissionOverwrite(read_messages=True),
+            ctx.guild.get_role(config["mod_role"]): discord.PermissionOverwrite(read_messages=True)
+        }
+
+        channel = await category.create_text_channel(channel_name, overwrites=overwrites)
+        await self.send_application_message(channel, ctx.author, config)
+        await ctx.send(f"Test channel created: {channel.mention}")
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
