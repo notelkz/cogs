@@ -115,19 +115,48 @@ class ModButtons(discord.ui.View):
 class ApplicationModal(discord.ui.Modal):
     def __init__(self):
         super().__init__(title="Application Form")
-        self.add_item(discord.ui.TextInput(label="Age", required=True))
-        self.add_item(discord.ui.TextInput(label="Location", required=True))
-        self.add_item(discord.ui.TextInput(label="Gaming Username", required=True))
+        self.add_item(
+            discord.ui.TextInput(
+                label="Age",
+                placeholder="Enter your age (13-99)",
+                min_length=2,
+                max_length=2,
+                required=True
+            )
+        )
+        self.add_item(
+            discord.ui.TextInput(
+                label="Location",
+                placeholder="Enter your location",
+                max_length=50,
+                required=True
+            )
+        )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Validate age
+        try:
+            age = int(self.children[0].value)
+            if age < 13 or age > 99:
+                await interaction.response.send_message("Age must be between 13 and 99.", ephemeral=True)
+                return
+        except ValueError:
+            await interaction.response.send_message("Age must be a number.", ephemeral=True)
+            return
+
+        # Validate location (text only)
+        location = self.children[1].value
+        if not location.replace(" ", "").isalpha():
+            await interaction.response.send_message("Location must contain only letters and spaces.", ephemeral=True)
+            return
+
         embed = discord.Embed(
             title="Application Submitted",
             description="A moderator will review your application shortly.",
             color=discord.Color.green()
         )
-        embed.add_field(name="Age", value=self.children[0].value)
-        embed.add_field(name="Location", value=self.children[1].value)
-        embed.add_field(name="Gaming Username", value=self.children[2].value)
+        embed.add_field(name="Age", value=age)
+        embed.add_field(name="Location", value=location)
         embed.set_footer(text=f"Submitted by {interaction.user}")
         
         await interaction.response.send_message(embed=embed)
@@ -138,6 +167,7 @@ class ApplicationModal(discord.ui.Modal):
             "Moderator Controls (buttons will be disabled after use):",
             view=mod_view
         )
+
 
 class ApplicationButtons(discord.ui.View):
     def __init__(self, cog):
