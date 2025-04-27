@@ -5,6 +5,8 @@ from typing import Optional
 import asyncio
 
 class DisApps(commands.Cog):
+    """Discord Application System"""
+    
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
@@ -17,11 +19,89 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
+    class ApplicationForm(discord.ui.Modal):
+        def __init__(self, game_roles, *args, **kwargs):
+            super().__init__(title="Application Form", *args, **kwargs)
+            
+            self.add_item(discord.ui.TextInput(
+                label="Age",
+                placeholder="Enter your age",
+                custom_id="age",
+                min_length=1,
+                max_length=3
+            ))
+            
+            self.add_item(discord.ui.TextInput(
+                label="Location",
+                placeholder="Enter your location",
+                custom_id="location",
+                min_length=1,
+                max_length=100
+            ))
+            
+            self.add_item(discord.ui.TextInput(
+                label="Steam ID",
+                placeholder="Enter your Steam ID",
+                custom_id="steam_id",
+                min_length=1,
+                max_length=100
+            ))
+            
+            self.game_roles = game_roles
+
+        async def callback(self, interaction: discord.Interaction):
+            embed = discord.Embed(
+                title="Application Submission",
+                color=discord.Color.blue()
+            )
+            
+            embed.add_field(name="Age", value=self.children[0].value, inline=False)
+            embed.add_field(name="Location", value=self.children[1].value, inline=False)
+            embed.add_field(name="Steam ID", value=self.children[2].value, inline=False)
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await self.handle_submission(interaction)
+
+    class ApplicationButtons(discord.ui.View):
+        def __init__(self, cog, game_roles):
+            super().__init__(timeout=None)
+            self.cog = cog
+            self.game_roles = game_roles
+
+        @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
+        async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            modal = DisApps.ApplicationForm(self.game_roles)
+            await interaction.response.send_modal(modal)
+            button.disabled = True
+            await interaction.message.edit(view=self)
+
+        @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
+        async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+            guild = interaction.guild
+            mod_role_id = await self.cog.config.guild(guild).mod_role()
+            mod_role = guild.get_role(mod_role_id)
+            
+            online_mods = [member for member in guild.members 
+                          if mod_role in member.roles and member.status != discord.Status.offline]
+            
+            if online_mods:
+                mod_mentions = " ".join([mod.mention for mod in online_mods])
+                await interaction.response.send_message(
+                    f"Contacting online moderators: {mod_mentions}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    f"{mod_role.mention} - No moderators are currently online.",
+                    ephemeral=True
+                )
+
     @commands.group(aliases=["da"])
     @commands.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
         """DisApps configuration commands."""
-        pass
+        if ctx.invoked_subcommand is None:
+            await ctx.send("Please specify a subcommand. Use `!help disapps` for more information.")
 
     @disapps.command()
     async def setup(self, ctx):
@@ -104,6 +184,27 @@ class DisApps(commands.Cog):
         await ctx.send("Setup completed successfully!")
 
     @disapps.command()
+    async def reset(self, ctx):
+        """Reset all DisApps configuration for this server."""
+        await ctx.send("Are you sure you want to reset all DisApps configuration? This cannot be undone.\nType `yes` to confirm.")
+        
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30
+            )
+            
+            if msg.content.lower() == "yes":
+                await self.config.guild(ctx.guild).clear()
+                await ctx.send("All DisApps configuration has been reset. Use `!disapps setup` to configure again.")
+            else:
+                await ctx.send("Reset cancelled.")
+                
+        except asyncio.TimeoutError:
+            await ctx.send("Reset timed out.")
+
+    @disapps.command()
     async def test(self, ctx):
         """Test the application system with a fake new member."""
         if not await self.config.guild(ctx.guild).setup_complete():
@@ -138,14 +239,15 @@ class DisApps(commands.Cog):
             color=discord.Color.blue()
         )
 
-        apply_button = discord.ui.Button(style=discord.ButtonStyle.green, label="Apply Now")
-        contact_mod_button = discord.ui.Button(style=discord.ButtonStyle.red, label="Contact Mod")
-
-        view = discord.ui.View()
-        view.add_item(apply_button)
-        view.add_item(contact_mod_button)
-
+        game_roles = await self.config.guild(guild).game_roles()
+        view = self.ApplicationButtons(self, game_roles)
         await channel.send(f"{member.mention}", embed=embed, view=view)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        """Create application channel when a new member joins."""
+        if await self.config.guild(member.guild).setup_complete():
+            await self.create_application_channel(member)
 
     async def get_role_from_message(self, ctx, message) -> Optional[discord.Role]:
         """Helper function to get a role from a message."""
@@ -156,6 +258,55 @@ class DisApps(commands.Cog):
             return ctx.guild.get_role(role_id)
         except ValueError:
             return None
+
+class ModeratorButtons(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        recruit_role_id = await self.cog.config.guild(guild).recruit_role()
+        recruit_role = guild.get_role(recruit_role_id)
+        
+        member = interaction.channel.members[0]  # Get the applicant
+        await member.add_roles(recruit_role)
+        await interaction.response.send_message(f"Application accepted! {member.mention} has been given the {recruit_role.name} role.")
+        
+        # Disable both buttons
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.red)
+    async def reject_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Ask for rejection reason
+        await interaction.response.send_message("Please provide the reason for rejection:", ephemeral=True)
+        
+        try:
+            reason_msg = await self.cog.bot.wait_for(
+                "message",
+                check=lambda m: m.author == interaction.user and m.channel == interaction.channel,
+                timeout=60
+            )
+            
+            member = interaction.channel.members[0]  # Get the applicant
+            try:
+                await member.send(f"Your application has been rejected. Reason: {reason_msg.content}")
+            except discord.Forbidden:
+                await interaction.channel.send("Could not DM the user with the rejection reason.")
+                
+            await member.kick(reason=f"Application rejected: {reason_msg.content}")
+            await interaction.channel.send(f"Application rejected. User has been kicked.")
+            
+            # Disable both buttons
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+            
+        except asyncio.TimeoutError:
+            await interaction.channel.send("Rejection timed out.")
 
 def setup(bot):
     bot.add_cog(DisApps(bot))
