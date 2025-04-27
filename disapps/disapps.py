@@ -113,8 +113,9 @@ class ModButtons(discord.ui.View):
             await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 
 class ApplicationModal(discord.ui.Modal):
-    def __init__(self):
+    def __init__(self, original_view):
         super().__init__(title="Application Form")
+        self.original_view = original_view  # Store reference to the original view
         self.add_item(
             discord.ui.TextInput(
                 label="Age",
@@ -139,15 +140,24 @@ class ApplicationModal(discord.ui.Modal):
             age = int(self.children[0].value)
             if age < 13 or age > 99:
                 await interaction.response.send_message("Age must be between 13 and 99.", ephemeral=True)
+                # Re-enable the Apply Now button
+                self.original_view.apply_button.disabled = False
+                await self.original_view.message.edit(view=self.original_view)
                 return
         except ValueError:
             await interaction.response.send_message("Age must be a number.", ephemeral=True)
+            # Re-enable the Apply Now button
+            self.original_view.apply_button.disabled = False
+            await self.original_view.message.edit(view=self.original_view)
             return
 
         # Validate location (text only)
         location = self.children[1].value
         if not location.replace(" ", "").isalpha():
             await interaction.response.send_message("Location must contain only letters and spaces.", ephemeral=True)
+            # Re-enable the Apply Now button
+            self.original_view.apply_button.disabled = False
+            await self.original_view.message.edit(view=self.original_view)
             return
 
         embed = discord.Embed(
@@ -168,22 +178,29 @@ class ApplicationModal(discord.ui.Modal):
             view=mod_view
         )
 
-
 class ApplicationButtons(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
         self.contact_mod_used = False
+        self.message = None  # Store the message reference
 
     @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
     async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        modal = ApplicationModal()
+        # Store the message reference when the button is first clicked
+        if not self.message:
+            self.message = interaction.message
+        
+        modal = ApplicationModal(self)  # Pass the view instance to the modal
         await interaction.response.send_modal(modal)
         button.disabled = True
         await interaction.message.edit(view=self)
 
     @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
     async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.message:
+            self.message = interaction.message
+            
         if self.contact_mod_used:
             await interaction.response.send_message("This button has already been used.", ephemeral=True)
             return
