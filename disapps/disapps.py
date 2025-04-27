@@ -276,8 +276,24 @@ class DisApps(commands.Cog):
         archive_category = guild.get_channel(archive_id)
         
         if archive_category:
+            # Get the current overwrites
+            overwrites = channel.overwrites
+            
+            # Find the user overwrite (there should only be one non-role member)
+            user_overwrite = None
+            for target, _ in overwrites.items():
+                if isinstance(target, discord.Member):
+                    user_overwrite = target
+                    break
+            
+            if user_overwrite:
+                # Remove user's permissions
+                await channel.set_permissions(user_overwrite, read_messages=True, send_messages=False)
+            
+            # Move channel to archive
             await channel.edit(category=archive_category)
             await channel.send(f"Channel archived. Reason: {reason}")
+
 
     @commands.group(aliases=["da"])
     @checks.admin_or_permissions(administrator=True)
