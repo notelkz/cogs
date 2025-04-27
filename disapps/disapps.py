@@ -5,6 +5,179 @@ from redbot.core.utils.menus import start_adding_reactions
 from datetime import datetime
 import asyncio
 
+class DeclineModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Decline Application")
+        self.add_item(
+            discord.ui.TextInput(
+                label="Reason for Declining",
+                style=discord.TextStyle.paragraph,
+                placeholder="Please provide a detailed reason for declining this application...",
+                required=True,
+                max_length=1000
+            )
+        )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        self.decline_reason = self.children[0].value
+
+class ModButtons(discord.ui.View):
+    def __init__(self, cog, applicant):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.applicant = applicant
+        self.accept_button.disabled = False
+        self.decline_button.disabled = False
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_roles:
+            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
+            return
+
+        try:
+            # Disable both buttons
+            self.accept_button.disabled = True
+            self.decline_button.disabled = True
+            await interaction.message.edit(view=self)
+
+            # Add the accepted role
+            role_id = await self.cog.config.guild(interaction.guild).accepted_role()
+            role = interaction.guild.get_role(role_id)
+            await self.applicant.add_roles(role)
+
+            # Send confirmation messages
+            await interaction.response.send_message(
+                f"Application accepted! {self.applicant.mention} has been given the {role.name} role.",
+                ephemeral=False
+            )
+            
+            try:
+                await self.applicant.send(f"Congratulations! Your application in {interaction.guild.name} has been accepted!")
+            except discord.Forbidden:
+                await interaction.followup.send("Could not DM the user, but their application has been accepted.")
+
+            # Optional: Close or archive the channel after a delay
+            await asyncio.sleep(300)  # 5 minute delay
+            await interaction.channel.send("This channel will be archived in 1 minute...")
+            await asyncio.sleep(60)
+            await interaction.channel.edit(archived=True)
+
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
+    async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_roles:
+            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
+            return
+
+        # Create and send the decline modal
+        modal = DeclineModal()
+        await interaction.response.send_modal(modal)
+        
+        try:
+            await modal.wait()  # Wait for the modal to be submitted
+            
+            # Disable both buttons
+            self.accept_button.disabled = True
+            self.decline_button.disabled = True
+            await interaction.message.edit(view=self)
+
+            # Send decline message to the applicant
+            try:
+                await self.applicant.send(
+                    f"Your application in {interaction.guild.name} has been declined.\n"
+                    f"Reason: {modal.decline_reason}"
+                )
+                await interaction.channel.send(
+                    f"Application declined. A DM has been sent to {self.applicant.mention} with the reason.",
+                    ephemeral=False
+                )
+            except discord.Forbidden:
+                await interaction.channel.send(
+                    f"Could not DM the user, but the application has been declined.\n"
+                    f"Reason: {modal.decline_reason}",
+                    ephemeral=False
+                )
+
+            # Optional: Close or archive the channel after a delay
+            await asyncio.sleep(300)  # 5 minute delay
+            await interaction.channel.send("This channel will be archived in 1 minute...")
+            await asyncio.sleep(60)
+            await interaction.channel.edit(archived=True)
+
+        except asyncio.TimeoutError:
+            await interaction.followup.send("The decline action has timed out.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
+
+class ApplicationModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Application Form")
+        self.add_item(discord.ui.TextInput(label="Age", required=True))
+        self.add_item(discord.ui.TextInput(label="Location", required=True))
+        self.add_item(discord.ui.TextInput(label="Gaming Username", required=True))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="Application Submitted",
+            description="A moderator will review your application shortly.",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Age", value=self.children[0].value)
+        embed.add_field(name="Location", value=self.children[1].value)
+        embed.add_field(name="Gaming Username", value=self.children[2].value)
+        embed.set_footer(text=f"Submitted by {interaction.user}")
+        
+        await interaction.response.send_message(embed=embed)
+
+        # Add moderator buttons with the applicant parameter
+        mod_view = ModButtons(interaction.client.get_cog("DisApps"), interaction.user)
+        await interaction.channel.send(
+            "Moderator Controls (buttons will be disabled after use):",
+            view=mod_view
+        )
+
+class ApplicationButtons(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.contact_mod_used = False
+
+    @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
+    async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ApplicationModal()
+        await interaction.response.send_modal(modal)
+        button.disabled = True
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
+    async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if self.contact_mod_used:
+            await interaction.response.send_message("This button has already been used.", ephemeral=True)
+            return
+
+        mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
+        mod_role = interaction.guild.get_role(mod_role_id)
+        
+        # Check for online moderators
+        online_mods = [member for member in interaction.guild.members 
+                      if mod_role in member.roles and member.status != discord.Status.offline]
+        
+        if online_mods:
+            mentions = " ".join([mod.mention for mod in online_mods])
+            await interaction.response.send_message(f"Online moderators: {mentions}")
+        else:
+            await interaction.response.send_message(f"{mod_role.mention} - No moderators are currently online.")
+
+        self.contact_mod_used = True
+        button.disabled = True
+        await interaction.message.edit(view=self)
+
 class DisApps(commands.Cog):
     """Discord Applications Management System"""
 
@@ -92,69 +265,6 @@ class DisApps(commands.Cog):
             description="Please click the buttons below to begin.",
             color=discord.Color.blue()
         )
-        
-        class ApplicationButtons(discord.ui.View):
-            def __init__(self, cog):
-                super().__init__(timeout=None)
-                self.cog = cog
-
-            @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
-            async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                modal = ApplicationModal()
-                await interaction.response.send_modal(modal)
-                button.disabled = True
-                await interaction.message.edit(view=self)
-
-            @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
-            async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-                mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
-                mod_role = interaction.guild.get_role(mod_role_id)
-                await interaction.response.send_message(f"{mod_role.mention} - Help needed!")
-                button.disabled = True
-                await interaction.message.edit(view=self)
-
-        class ApplicationModal(discord.ui.Modal):
-            def __init__(self):
-                super().__init__(title="Application Form")
-                self.add_item(discord.ui.TextInput(label="Age", required=True))
-                self.add_item(discord.ui.TextInput(label="Location", required=True))
-                self.add_item(discord.ui.TextInput(label="Gaming Username", required=True))
-
-            async def on_submit(self, interaction: discord.Interaction):
-                embed = discord.Embed(
-                    title="Application Submitted",
-                    description="A moderator will review your application shortly.",
-                    color=discord.Color.green()
-                )
-                await interaction.response.send_message(embed=embed)
-
-                # Add moderator buttons
-                class ModButtons(discord.ui.View):
-                    def __init__(self, cog):
-                        super().__init__(timeout=None)
-                        self.cog = cog
-
-                    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
-                    async def accept_button(self, mod_interaction: discord.Interaction, button: discord.ui.Button):
-                        role_id = await self.cog.config.guild(mod_interaction.guild).accepted_role()
-                        role = mod_interaction.guild.get_role(role_id)
-                        await interaction.user.add_roles(role)
-                        await mod_interaction.response.send_message("Application accepted!")
-
-                    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
-                    async def decline_button(self, mod_interaction: discord.Interaction, button: discord.ui.Button):
-                        await mod_interaction.response.send_message("Please provide a reason for declining:")
-                        try:
-                            reason_msg = await self.cog.bot.wait_for(
-                                "message",
-                                check=lambda m: m.author == mod_interaction.user,
-                                timeout=60.0
-                            )
-                            await interaction.user.send(f"Your application was declined. Reason: {reason_msg.content}")
-                        except asyncio.TimeoutError:
-                            await mod_interaction.followup.send("No reason provided, application remains pending.")
-
-                await interaction.channel.send("Moderator Controls:", view=ModButtons(interaction.client.get_cog("DisApps")))
 
         await channel.send(content=member.mention, embed=embed, view=ApplicationButtons(self))
 
