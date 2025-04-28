@@ -146,11 +146,59 @@ class MemberTracker(commands.Cog):
         await ctx.send("All role configurations have been reset.")
 
     @memtrack.command()
-    async def list(self, ctx):
-        """List all configured role tracks"""
+    async def list(self, ctx, member: discord.Member = None):
+        """
+        List all configured role tracks or check a specific user's role duration.
+        Usage: 
+        !mt list - Show all role tracks
+        !mt list @user - Show user's current tracked roles and their duration
+        """
         guild = ctx.guild
         role_tracks = await self.config.guild(guild).role_tracks()
         
+        if member:
+            # Show specific user's role information
+            active_tracks = await self.config.guild(guild).active_tracks()
+            user_tracks = active_tracks.get(str(member.id), {})
+            
+            if not user_tracks:
+                await ctx.send(f"{member.mention} has no actively tracked roles.")
+                return
+
+            response = f"**Tracked Roles for {member.mention}:**\n\n"
+            current_time = datetime.utcnow().timestamp()
+            
+            for role_id, track_info in user_tracks.items():
+                role = guild.get_role(int(role_id))
+                if not role:
+                    continue
+
+                # Calculate time had role
+                start_time = track_info["start_time"]
+                time_had = current_time - start_time
+                days_had = time_had / (24 * 60 * 60)
+                
+                # Calculate time remaining
+                total_duration = track_info["duration"]
+                time_remaining = total_duration - time_had
+                days_remaining = time_remaining / (24 * 60 * 60)
+                
+                response += f"Role: {role.name}\n"
+                response += f"Time had: {days_had:.1f} days\n"
+                response += f"Time remaining: {days_remaining:.1f} days\n"
+                
+                if track_info["action"] == 1:
+                    response += "Action: Role will be removed\n"
+                else:
+                    new_role = guild.get_role(track_info["new_role_id"])
+                    response += f"Action: Will be upgraded to {new_role.name if new_role else 'deleted role'}\n"
+                
+                response += "\n"
+                
+            await ctx.send(response)
+            return
+
+        # Original list functionality for showing all tracks
         if not role_tracks:
             await ctx.send("No role tracks configured.")
             return
