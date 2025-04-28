@@ -481,6 +481,75 @@ class EFreeGames(commands.Cog):
         await ctx.send("Check complete!")
 
     @efreegames.command()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def forcepost(self, ctx):
+        """Force post all current free games to the set channel."""
+        try:
+            guild_data = await self.config.guild(ctx.guild).all()
+            
+            if not guild_data["channel_id"]:
+                await ctx.send("No notification channel set. Use `setchannel` first.")
+                return
+                
+            channel = self.bot.get_channel(guild_data["channel_id"])
+            if not channel:
+                await ctx.send("Could not find the configured notification channel. Please set it again.")
+                return
+
+            await ctx.send("Fetching and posting all current free games...")
+            
+            free_games = []
+            enabled_services = guild_data["enabled_services"]
+            
+            # Fetch games from each enabled service
+            if enabled_services.get("epic", False):
+                epic_games = await self.fetch_epic_games()
+                free_games.extend(epic_games)
+                log.info(f"Found {len(epic_games)} Epic games")
+            
+            if enabled_services.get("steam", False):
+                steam_games = await self.fetch_steam_games()
+                free_games.extend(steam_games)
+                log.info(f"Found {len(steam_games)} Steam games")
+            
+            if enabled_services.get("gog", False):
+                gog_games = await self.fetch_gog_games()
+                free_games.extend(gog_games)
+                log.info(f"Found {len(gog_games)} GOG games")
+
+            if not free_games:
+                await ctx.send("No free games found from enabled services.")
+                return
+
+            posted_count = 0
+            for game in free_games:
+                if await self.should_notify(ctx.guild.id, game):
+                    try:
+                        embed = await self.create_game_embed(game)
+                        
+                        content = None
+                        if guild_data.get("ping_role"):
+                            role = ctx.guild.get_role(guild_data["ping_role"])
+                            if role:
+                                content = role.mention
+                                
+                        await channel.send(content=content, embed=embed)
+                        posted_count += 1
+                        
+                        # Add small delay between posts to avoid rate limits
+                        await asyncio.sleep(1)
+                        
+                    except Exception as e:
+                        log.error(f"Error posting game {game.title}: {e}")
+                        continue
+
+            await ctx.send(f"Posted {posted_count} free games to {channel.mention}")
+            
+        except Exception as e:
+            log.error(f"Error in forcepost: {e}")
+            await ctx.send("An error occurred while trying to post free games.")
+
+    @efreegames.command()
     async def status(self, ctx):
         """Show current configuration"""
         config = await self.config.guild(ctx.guild).all()
