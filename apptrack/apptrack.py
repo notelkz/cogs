@@ -126,7 +126,6 @@ class AppTrack(commands.Cog):
                 await ctx.send(f"Update complete! Found {new_count} new activities. Use `!at discover` to see all activities.")
             else:
                 await ctx.send("Update complete! No new activities found.")
-
     @apptrack.command(name="discover")
     async def discover_activities(self, ctx: commands.Context):
         """List all discovered Discord Activities in the server."""
@@ -310,19 +309,46 @@ class AppTrack(commands.Cog):
             
         await ctx.send(f"Unlinked role from activity '{activity_name}'")
 
+    @apptrack.command(name="removerole")
+    @commands.mod_or_permissions(manage_roles=True)
+    async def remove_activity_role(self, ctx: commands.Context, member: discord.Member, *, activity_name: str):
+        """Manually remove an activity role from a member. Admin/Mod only."""
+        activity_roles = await self.config.guild(ctx.guild).activity_roles()
+        
+        if activity_name not in activity_roles:
+            await ctx.send(f"No role is linked to activity '{activity_name}'.")
+            return
+            
+        role_id = activity_roles[activity_name]
+        role = ctx.guild.get_role(role_id)
+        
+        if not role:
+            await ctx.send(f"Could not find the role linked to activity '{activity_name}'.")
+            return
+            
+        if role not in member.roles:
+            await ctx.send(f"{member.name} doesn't have the role for '{activity_name}'.")
+            return
+            
+        try:
+            await member.remove_roles(role, reason=f"Manual removal of activity role: {activity_name}")
+            await ctx.send(f"Removed role '{role.name}' from {member.name}")
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to remove that role.")
+
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
-        """Handle activity changes and role assignments."""
+        """Handle activity changes and role assignments. Only adds roles, never removes them."""
         if before.guild is None:
             return
             
         tracked_activities = await self.config.guild(before.guild).tracked_activities()
         activity_roles = await self.config.guild(before.guild).activity_roles()
         
-        before_activities = set(self.get_valid_activities(before))
+        # Only check for new activities to add roles
         after_activities = set(self.get_valid_activities(after))
         
-        # Handle new activities
+        # Handle new activities - only add roles, never remove
         for activity_name in after_activities:
             if activity_name in tracked_activities:
                 role_id = activity_roles.get(activity_name)
@@ -331,19 +357,9 @@ class AppTrack(commands.Cog):
                     if role and role not in after.roles:
                         try:
                             await after.add_roles(role, reason=f"Started activity: {activity_name}")
+                            logging.info(f"Added role {role.name} to {after.name} for activity {activity_name}")
                         except discord.Forbidden:
-                            continue
-
-        # Handle stopped activities
-        for activity_name in before_activities:
-            if activity_name in tracked_activities and activity_name not in after_activities:
-                role_id = activity_roles.get(activity_name)
-                if role_id:
-                    role = before.guild.get_role(role_id)
-                    if role and role in after.roles:
-                        try:
-                            await after.remove_roles(role, reason=f"Stopped activity: {activity_name}")
-                        except discord.Forbidden:
+                            logging.error(f"Failed to add role {role.name} to {after.name}")
                             continue
 
         # Update discovered activities
