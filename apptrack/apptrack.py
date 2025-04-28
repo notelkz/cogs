@@ -25,9 +25,32 @@ class AppTrack(commands.Cog):
 
     def is_valid_activity(self, activity: discord.Activity) -> bool:
         """Check if the activity is valid for tracking."""
-        return (activity.type != discord.ActivityType.custom and 
+        if activity is None:
+            return False
+            
+        # Check for valid activity types (playing games, streaming, etc.)
+        valid_types = [
+            discord.ActivityType.playing,
+            discord.ActivityType.streaming,
+            discord.ActivityType.listening,
+            discord.ActivityType.watching,
+            discord.ActivityType.competing
+        ]
+        
+        return (activity.type in valid_types and 
                 activity.name is not None and 
-                activity.name.strip() != "")
+                activity.name.strip() != "" and
+                not activity.name.startswith("Custom Status"))
+
+    def get_valid_activities(self, member: discord.Member) -> List[str]:
+        """Get all valid activities for a member."""
+        valid_activities = []
+        
+        for activity in member.activities:
+            if self.is_valid_activity(activity):
+                valid_activities.append(activity.name)
+                
+        return valid_activities
 
     async def update_activities(self, guild: discord.Guild) -> tuple[set, int]:
         """Update the activities list for a guild and return new activities."""
@@ -36,9 +59,8 @@ class AppTrack(commands.Cog):
         
         # Collect activities from all members
         for member in guild.members:
-            for activity in member.activities:
-                if self.is_valid_activity(activity):
-                    current_activities.add(activity.name)
+            activities = self.get_valid_activities(member)
+            current_activities.update(activities)
                     
         async with self.config.guild(guild).discovered_activities() as discovered:
             for activity in current_activities:
@@ -122,11 +144,11 @@ class AppTrack(commands.Cog):
         current_activities = {}
         
         for member in ctx.guild.members:
-            for activity in member.activities:
-                if self.is_valid_activity(activity):
-                    if activity.name not in current_activities:
-                        current_activities[activity.name] = []
-                    current_activities[activity.name].append(member.name)
+            activities = self.get_valid_activities(member)
+            for activity_name in activities:
+                if activity_name not in current_activities:
+                    current_activities[activity_name] = []
+                current_activities[activity_name].append(member.name)
         
         if not current_activities:
             await ctx.send("No activities are currently running in the server.")
@@ -235,28 +257,36 @@ class AppTrack(commands.Cog):
         tracked_activities = await self.config.guild(before.guild).tracked_activities()
         activity_roles = await self.config.guild(before.guild).activity_roles()
         
-        # Check for new activities
-        for activity in after.activities:
-            if self.is_valid_activity(activity) and activity.name in tracked_activities:
-                role_id = activity_roles.get(activity.name)
+        # Get activities before and after update
+        before_activities = set(self.get_valid_activities(before))
+        after_activities = set(self.get_valid_activities(after))
+        
+        # Handle new activities
+        for activity_name in after_activities:
+            if activity_name in tracked_activities:
+                role_id = activity_roles.get(activity_name)
                 if role_id:
                     role = before.guild.get_role(role_id)
                     if role and role not in after.roles:
                         try:
-                            await after.add_roles(role, reason="Activity detected")
+                            await after.add_roles(role, reason=f"Started activity: {activity_name}")
                         except discord.Forbidden:
                             continue
 
-        # Remove roles for stopped activities
-        for activity in before.activities:
-            if (self.is_valid_activity(activity) and 
-                activity.name in tracked_activities and 
-                activity.name not in [a.name for a in after.activities if self.is_valid_activity(a)]):
-                role_id = activity_roles.get(activity.name)
+        # Handle stopped activities
+        for activity_name in before_activities:
+            if activity_name in tracked_activities and activity_name not in after_activities:
+                role_id = activity_roles.get(activity_name)
                 if role_id:
                     role = before.guild.get_role(role_id)
                     if role and role in after.roles:
                         try:
-                            await after.remove_roles(role, reason="Activity ended")
+                            await after.remove_roles(role, reason=f"Stopped activity: {activity_name}")
                         except discord.Forbidden:
                             continue
+
+        # Update discovered activities
+        async with self.config.guild(before.guild).discovered_activities() as discovered:
+            for activity_name in after_activities:
+                if activity_name not in discovered:
+                    discovered[activity_name] = str(datetime.datetime.now())
