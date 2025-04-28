@@ -58,6 +58,155 @@ class MemberTracker(commands.Cog):
             await self.config.guild(guild).configured_roles.set(configured_roles)
 
     @memtrack.command()
+    async def trackexisting(self, ctx, role: discord.Role = None):
+        """
+        Start tracking users who already have a configured role.
+        Usage:
+        !mt trackexisting - Track all configured roles
+        !mt trackexisting @role - Track specific role
+        """
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+        active_tracks = await self.config.guild(guild).active_tracks()
+        
+        if not role_tracks:
+            await ctx.send("No role tracks configured. Please set up role tracking first.")
+            return
+
+        tracked_count = 0
+        already_tracked = 0
+        
+        if role:
+            # Check if role is configured
+            track_config = None
+            for track in role_tracks:
+                if track["role_id"] == role.id:
+                    track_config = track
+                    break
+            
+            if not track_config:
+                await ctx.send(f"The role {role.mention} is not configured for tracking.")
+                return
+                
+            await ctx.send(f"Checking members with {role.name}...")
+            
+            # Track existing role assignments
+            for member in role.members:
+                if str(member.id) not in active_tracks:
+                    active_tracks[str(member.id)] = {}
+                
+                # Check if already tracking this role for this member
+                if str(role.id) in active_tracks[str(member.id)]:
+                    already_tracked += 1
+                    continue
+                    
+                active_tracks[str(member.id)][str(role.id)] = {
+                    "start_time": datetime.utcnow().timestamp(),
+                    "duration": track_config["duration"],
+                    "action": track_config["action"],
+                    "new_role_id": track_config["new_role_id"]
+                }
+                tracked_count += 1
+                
+                # Start the expiration task
+                self.bot.loop.create_task(self.check_role_expiration(member, role, track_config))
+        
+        else:
+            # Track all configured roles
+            await ctx.send("Checking members for all configured roles...")
+            
+            for track in role_tracks:
+                role = guild.get_role(track["role_id"])
+                if not role:
+                    continue
+                    
+                for member in role.members:
+                    if str(member.id) not in active_tracks:
+                        active_tracks[str(member.id)] = {}
+                    
+                    # Check if already tracking this role for this member
+                    if str(role.id) in active_tracks[str(member.id)]:
+                        already_tracked += 1
+                        continue
+                        
+                    active_tracks[str(member.id)][str(role.id)] = {
+                        "start_time": datetime.utcnow().timestamp(),
+                        "duration": track["duration"],
+                        "action": track["action"],
+                        "new_role_id": track["new_role_id"]
+                    }
+                    tracked_count += 1
+                    
+                    # Start the expiration task
+                    self.bot.loop.create_task(self.check_role_expiration(member, role, track))
+        
+        # Save updated tracking data
+        await self.config.guild(guild).active_tracks.set(active_tracks)
+        
+        # Send summary
+        response = f"Tracking started for {tracked_count} role assignments.\n"
+        if already_tracked > 0:
+            response += f"{already_tracked} role assignments were already being tracked."
+        await ctx.send(response)
+
+    @memtrack.command()
+    async def trackuser(self, ctx, member: discord.Member):
+        """
+        Start tracking all configured roles that a specific user has.
+        Usage: !mt trackuser @user
+        """
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+        active_tracks = await self.config.guild(guild).active_tracks()
+        
+        if not role_tracks:
+            await ctx.send("No role tracks configured. Please set up role tracking first.")
+            return
+
+        tracked_count = 0
+        already_tracked = 0
+        
+        # Get all configured role IDs
+        configured_role_ids = [track["role_id"] for track in role_tracks]
+        
+        # Check each of the member's roles
+        for role in member.roles:
+            if role.id in configured_role_ids:
+                # Find the track configuration for this role
+                track_config = next((track for track in role_tracks if track["role_id"] == role.id), None)
+                
+                if str(member.id) not in active_tracks:
+                    active_tracks[str(member.id)] = {}
+                
+                # Check if already tracking this role for this member
+                if str(role.id) in active_tracks[str(member.id)]:
+                    already_tracked += 1
+                    continue
+                    
+                active_tracks[str(member.id)][str(role.id)] = {
+                    "start_time": datetime.utcnow().timestamp(),
+                    "duration": track_config["duration"],
+                    "action": track_config["action"],
+                    "new_role_id": track_config["new_role_id"]
+                }
+                tracked_count += 1
+                
+                # Start the expiration task
+                self.bot.loop.create_task(self.check_role_expiration(member, role, track_config))
+        
+        # Save updated tracking data
+        await self.config.guild(guild).active_tracks.set(active_tracks)
+        
+        # Send summary
+        if tracked_count == 0 and already_tracked == 0:
+            await ctx.send(f"{member.mention} has no configured roles to track.")
+            return
+            
+        response = f"Started tracking {tracked_count} roles for {member.mention}.\n"
+        if already_tracked > 0:
+            response += f"{already_tracked} roles were already being tracked."
+        await ctx.send(response)
+    @memtrack.command()
     async def duplicates(self, ctx, remove: bool = False):
         """
         Check for duplicate role configurations.
