@@ -64,6 +64,17 @@ class MemberTracker(commands.Cog):
         Skip the waiting period for a user's tracked roles.
         Usage: !mt skip @user
         """
+
+    @memtrack.command()  # Add the new addtime command here
+    @commands.mod_or_permissions(manage_roles=True)
+        async def addtime(self, ctx, member: discord.Member, role: discord.Role, time: str):
+        """
+        Add time to a user's tracked role duration.
+        Usage: !mt addtime @user @role <time>
+        Time format: 1d, 2d, etc. (days)
+        """
+        # ... new addtime command code ...
+
         guild = ctx.guild
         active_tracks = await self.config.guild(guild).active_tracks()
         user_tracks = active_tracks.get(str(member.id), {})
