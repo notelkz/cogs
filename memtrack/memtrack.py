@@ -23,71 +23,21 @@ class MemberTracker(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send("Please use `!memtrack setup` to configure role tracking.")
 
-    @memtrack.command()
-    async def test(self, ctx, member: discord.Member = None):
-        """Test role tracking with a 30-second timer using configured roles or test roles"""
-        if member is None:
-            member = ctx.author
-
+    async def run_test(self, ctx, role_tracks):
+        """Helper function to run a test of the role tracking system"""
+        member = ctx.author
         guild = ctx.guild
-        role_tracks = await self.config.guild(guild).role_tracks()
-
-        async def cleanup_test_roles(test_roles, member, added_roles):
-            """Helper function to clean up temporary test roles and remove roles from member"""
-            await ctx.send("Cleaning up test roles and removing added roles...")
-            # First remove roles from member
-            try:
-                for role in added_roles:
-                    if role in member.roles:
-                        await member.remove_roles(role)
-            except discord.HTTPException:
-                pass
-
-            # Then delete temporary roles
-            for role in test_roles:
-                try:
-                    await role.delete()
-                except discord.HTTPException:
-                    pass
-            await ctx.send("Test cleanup completed!")
+        added_roles = []  # Track roles added during testing
 
         try:
-            test_roles = []  # Roles we created for testing
-            added_roles = []  # Roles we added to the member during testing
+            # Use first configured track for testing
+            track = role_tracks[0]
+            initial_role = guild.get_role(track["role_id"])
+            upgrade_role = guild.get_role(track["new_role_id"]) if track["action"] == 2 else None
 
-            if role_tracks:
-                # Use existing configuration
-                track = role_tracks[0]  # Use first configured track
-                initial_role = guild.get_role(track["role_id"])
-                upgrade_role = guild.get_role(track["new_role_id"]) if track["action"] == 2 else None
-
-                if not initial_role or (track["action"] == 2 and not upgrade_role):
-                    await ctx.send("Configured roles not found. Creating temporary test roles...")
-                    # Fall back to creating temporary roles
-                    initial_role = await guild.create_role(name="MemberTracker Test Role")
-                    test_roles.append(initial_role)
-                    if track["action"] == 2:
-                        upgrade_role = await guild.create_role(name="MemberTracker Test Role 2")
-                        test_roles.append(upgrade_role)
-                else:
-                    await ctx.send(f"Using configured roles for testing:\nInitial Role: {initial_role.name}")
-                    if upgrade_role:
-                        await ctx.send(f"Upgrade Role: {upgrade_role.name}")
-
-            else:
-                # No configurations found, create temporary test roles
-                await ctx.send("No role configurations found. Creating temporary test roles...")
-                initial_role = await guild.create_role(name="MemberTracker Test Role")
-                test_roles.append(initial_role)
-                upgrade_role = await guild.create_role(name="MemberTracker Test Role 2")
-                test_roles.append(upgrade_role)
-                
-                track = {
-                    "role_id": initial_role.id,
-                    "duration": 30,  # 30 seconds
-                    "action": 2,
-                    "new_role_id": upgrade_role.id
-                }
+            if not initial_role or (track["action"] == 2 and not upgrade_role):
+                await ctx.send("Configured roles not found. Test cancelled.")
+                return
 
             # Start the test
             await ctx.send(f"Starting role tracking test for {member.mention}")
@@ -95,7 +45,7 @@ class MemberTracker(commands.Cog):
             await member.add_roles(initial_role)
             added_roles.append(initial_role)
             
-            # Wait for duration
+            # Wait for 30 seconds
             await ctx.send("Waiting 30 seconds...")
             await asyncio.sleep(30)
 
@@ -110,18 +60,32 @@ class MemberTracker(commands.Cog):
 
             await ctx.send("Test completed!")
 
-            # Cleanup all roles and remove them from member
+            # Cleanup - remove all added roles
             await asyncio.sleep(5)  # Wait a bit before cleaning up
-            await cleanup_test_roles(test_roles, member, added_roles)
+            await ctx.send("Cleaning up test roles...")
+            for role in added_roles:
+                if role in member.roles:
+                    await member.remove_roles(role)
+            await ctx.send("Test cleanup completed!")
 
         except discord.Forbidden:
             await ctx.send("I don't have permission to manage roles!")
-            if test_roles or added_roles:
-                await cleanup_test_roles(test_roles, member, added_roles)
+            # Try to clean up
+            for role in added_roles:
+                try:
+                    if role in member.roles:
+                        await member.remove_roles(role)
+                except discord.HTTPException:
+                    pass
         except discord.HTTPException as e:
             await ctx.send(f"An error occurred: {str(e)}")
-            if test_roles or added_roles:
-                await cleanup_test_roles(test_roles, member, added_roles)
+            # Try to clean up
+            for role in added_roles:
+                try:
+                    if role in member.roles:
+                        await member.remove_roles(role)
+                except discord.HTTPException:
+                    pass
 
     @memtrack.command()
     async def setup(self, ctx):
@@ -215,6 +179,23 @@ class MemberTracker(commands.Cog):
         # Save all configurations
         await self.config.guild(guild).role_tracks.set(role_tracks)
         await ctx.send("Role tracking setup complete!")
+
+        # Ask if they want to run a test
+        await ctx.send("Would you like to run a test of the role tracking system? (yes/no)")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            
+            if msg.content.lower() == "yes":
+                await self.run_test(ctx, role_tracks)
+            else:
+                await ctx.send("Setup completed without testing.")
+        
+        except asyncio.TimeoutError:
+            await ctx.send("No response received. Setup completed without testing.")
 
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
