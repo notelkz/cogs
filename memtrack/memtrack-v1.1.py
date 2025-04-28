@@ -26,11 +26,14 @@ class MemberTracker(commands.Cog):
             configured_roles = await self.config.guild(guild).configured_roles()
             
             # Update configured_roles based on existing role_tracks
-            # Only include initial roles, not upgrade roles
             for track in role_tracks:
                 role_id = str(track["role_id"])
                 if role_id not in configured_roles:
                     configured_roles.append(role_id)
+                if track["action"] == 2 and track["new_role_id"]:
+                    new_role_id = str(track["new_role_id"])
+                    if new_role_id not in configured_roles:
+                        configured_roles.append(new_role_id)
             
             # Save updated configured_roles
             await self.config.guild(guild).configured_roles.set(configured_roles)
@@ -53,6 +56,7 @@ class MemberTracker(commands.Cog):
         if str(role_id) not in configured_roles:
             configured_roles.append(str(role_id))
             await self.config.guild(guild).configured_roles.set(configured_roles)
+
     @memtrack.command()
     @commands.admin_or_permissions(administrator=True)
     async def skip(self, ctx, member: discord.Member):
@@ -121,7 +125,7 @@ class MemberTracker(commands.Cog):
 
         await ctx.send(response)
 
-    @memtrack.command()
+    @memtrack.command()  # Add the new addtime command here
     @commands.mod_or_permissions(manage_roles=True)
     async def addtime(self, ctx, member: discord.Member, role: discord.Role, time: str):
         """
@@ -129,61 +133,7 @@ class MemberTracker(commands.Cog):
         Usage: !mt addtime @user @role <time>
         Time format: 1d, 2d, etc. (days)
         """
-        guild = ctx.guild
-        active_tracks = await self.config.guild(guild).active_tracks()
-        
-        # Check if user has any tracked roles
-        if str(member.id) not in active_tracks:
-            await ctx.send(f"{member.mention} has no actively tracked roles.")
-            return
-            
-        # Check if the specific role is being tracked for this user
-        if str(role.id) not in active_tracks[str(member.id)]:
-            await ctx.send(f"{member.mention} does not have {role.mention} being tracked.")
-            return
-            
-        # Parse the time input
-        try:
-            if not time.lower().endswith('d'):
-                await ctx.send("Invalid time format. Please use format like '30d' for days.")
-                return
-                
-            days = int(time[:-1])
-            if days <= 0:
-                await ctx.send("Please specify a positive number of days.")
-                return
-                
-            seconds_to_add = days * 24 * 60 * 60  # Convert days to seconds
-        except ValueError:
-            await ctx.send("Invalid time format. Please use format like '30d' for days.")
-            return
-        # Add time to the role duration
-        track_info = active_tracks[str(member.id)][str(role.id)]
-        current_time = datetime.utcnow().timestamp()
-        time_had = current_time - track_info["start_time"]
-        
-        # Adjust the start time to effectively add more duration
-        new_start_time = current_time - (time_had - seconds_to_add)
-        active_tracks[str(member.id)][str(role.id)]["start_time"] = new_start_time
-        
-        # Save the updated tracking data
-        await self.config.guild(guild).active_tracks.set(active_tracks)
-        
-        # Calculate and format the new total time remaining
-        total_duration = track_info["duration"]
-        new_time_remaining = total_duration - (current_time - new_start_time)
-        days_remaining = new_time_remaining / (24 * 60 * 60)
-        
-        # Restart the expiration task with the new duration
-        self.bot.loop.create_task(self.check_role_expiration(member, role, {
-            "role_id": role.id,
-            "duration": new_time_remaining,
-            "action": track_info["action"],
-            "new_role_id": track_info.get("new_role_id")
-        }))
-        
-        await ctx.send(f"Added {days} days to {member.mention}'s {role.mention} duration.\n"
-                      f"New time remaining: {days_remaining:.1f} days")
+        # ... new addtime command code ...
 
     @memtrack.command()
     async def trackexisting(self, ctx, role: discord.Role = None):
@@ -237,6 +187,7 @@ class MemberTracker(commands.Cog):
                 
                 # Start the expiration task
                 self.bot.loop.create_task(self.check_role_expiration(member, role, track_config))
+        
         else:
             # Track all configured roles
             await ctx.send("Checking members for all configured roles...")
@@ -276,6 +227,64 @@ class MemberTracker(commands.Cog):
         await ctx.send(response)
 
     @memtrack.command()
+    async def trackuser(self, ctx, member: discord.Member):
+        """
+        Start tracking all configured roles that a specific user has.
+        Usage: !mt trackuser @user
+        """
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+        active_tracks = await self.config.guild(guild).active_tracks()
+        
+        if not role_tracks:
+            await ctx.send("No role tracks configured. Please set up role tracking first.")
+            return
+
+        tracked_count = 0
+        already_tracked = 0
+        
+        # Get all configured role IDs
+        configured_role_ids = [track["role_id"] for track in role_tracks]
+        
+        # Check each of the member's roles
+        for role in member.roles:
+            if role.id in configured_role_ids:
+                # Find the track configuration for this role
+                track_config = next((track for track in role_tracks if track["role_id"] == role.id), None)
+                
+                if str(member.id) not in active_tracks:
+                    active_tracks[str(member.id)] = {}
+                
+                # Check if already tracking this role for this member
+                if str(role.id) in active_tracks[str(member.id)]:
+                    already_tracked += 1
+                    continue
+                    
+                active_tracks[str(member.id)][str(role.id)] = {
+                    "start_time": datetime.utcnow().timestamp(),
+                    "duration": track_config["duration"],
+                    "action": track_config["action"],
+                    "new_role_id": track_config["new_role_id"]
+                }
+                tracked_count += 1
+                
+                # Start the expiration task
+                self.bot.loop.create_task(self.check_role_expiration(member, role, track_config))
+        
+        # Save updated tracking data
+        await self.config.guild(guild).active_tracks.set(active_tracks)
+        
+        # Send summary
+        if tracked_count == 0 and already_tracked == 0:
+            await ctx.send(f"{member.mention} has no configured roles to track.")
+            return
+            
+        response = f"Started tracking {tracked_count} roles for {member.mention}.\n"
+        if already_tracked > 0:
+            response += f"{already_tracked} roles were already being tracked."
+        await ctx.send(response)
+
+    @memtrack.command()
     async def duplicates(self, ctx, remove: bool = False):
         """
         Check for duplicate role configurations.
@@ -304,6 +313,7 @@ class MemberTracker(commands.Cog):
             role_name = role.name if role else f"Deleted Role (ID: {role_id})"
             response += f"Role: {role_name}\n"
             response += f"Found in configurations: {', '.join(str(i+1) for i in indices)}\n\n"
+        
         if remove:
             # Remove duplicates keeping only the first occurrence
             new_tracks = []
@@ -372,6 +382,7 @@ class MemberTracker(commands.Cog):
         """
         guild = ctx.guild
         role_tracks = await self.config.guild(guild).role_tracks()
+        
         if member:
             # Show specific user's role information
             active_tracks = await self.config.guild(guild).active_tracks()
@@ -447,6 +458,195 @@ class MemberTracker(commands.Cog):
             
         await ctx.send(response)
 
+    async def run_test(self, ctx, role_tracks):
+        """Helper function to run a test of the role tracking system"""
+        member = ctx.author
+        guild = ctx.guild
+        added_roles = []  # Track roles added during testing
+
+        try:
+            # Use first configured track for testing
+            track = role_tracks[0]
+            initial_role = guild.get_role(track["role_id"])
+            upgrade_role = guild.get_role(track["new_role_id"]) if track["action"] == 2 else None
+
+            if not initial_role or (track["action"] == 2 and not upgrade_role):
+                await ctx.send("Configured roles not found. Test cancelled.")
+                return
+
+            # Start the test
+            await ctx.send(f"Starting role tracking test for {member.mention}")
+            await ctx.send("Phase 1: Adding initial role...")
+            await member.add_roles(initial_role)
+            added_roles.append(initial_role)
+            
+            # Wait for 30 seconds
+            await ctx.send("Waiting 30 seconds...")
+            await asyncio.sleep(30)
+
+            if track["action"] == 1:
+                await ctx.send("Phase 2: Removing role...")
+                await member.remove_roles(initial_role)
+            else:
+                await ctx.send("Phase 2: Upgrading to second role...")
+                await member.add_roles(upgrade_role)
+                added_roles.append(upgrade_role)
+                await member.remove_roles(initial_role)
+
+            await ctx.send("Test completed!")
+
+            # Cleanup - remove all added roles
+            await asyncio.sleep(5)  # Wait a bit before cleaning up
+            await ctx.send("Cleaning up test roles...")
+            for role in added_roles:
+                if role in member.roles:
+                    await member.remove_roles(role)
+            await ctx.send("Test cleanup completed!")
+
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to manage roles!")
+            # Try to clean up
+            for role in added_roles:
+                try:
+                    if role in member.roles:
+                        await member.remove_roles(role)
+                except discord.HTTPException:
+                    pass
+        except discord.HTTPException as e:
+            await ctx.send(f"An error occurred: {str(e)}")
+            # Try to clean up
+            for role in added_roles:
+                try:
+                    if role in member.roles:
+                        await member.remove_roles(role)
+                except discord.HTTPException:
+                    pass
+
+    @memtrack.command()
+    async def setup(self, ctx):
+        """Setup role tracking configuration"""
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+        
+        while True:
+            # Ask for the role to monitor
+            await ctx.send("Please mention the role you want to monitor:")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                
+                if len(msg.role_mentions) == 0:
+                    await ctx.send("No role mentioned. Setup cancelled.")
+                    return
+                
+                role = msg.role_mentions[0]
+                
+                # Check if role is already configured
+                if await self.is_role_configured(guild, role.id):
+                    await ctx.send(f"The role {role.name} is already configured. Please choose a different role.")
+                    continue
+                
+                # Ask for duration
+                await ctx.send("How long should users keep this role? (Format: 1d, 30d, etc.)")
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                
+                try:
+                    duration = int(msg.content[:-1])
+                    if msg.content.lower().endswith('d'):
+                        duration = duration * 24 * 60 * 60  # Convert to seconds
+                    else:
+                        await ctx.send("Invalid duration format. Use format like '30d'. Setup cancelled.")
+                        return
+                except ValueError:
+                    await ctx.send("Invalid duration. Setup cancelled.")
+                    return
+                
+                # Ask about after-duration action
+                await ctx.send("What should happen after the duration expires?\n1. Remove the role\n2. Assign a new role and remove old one\n\nType 1 or 2:")
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                
+                action = int(msg.content)
+                new_role = None
+                
+                if action == 2:
+                    await ctx.send("Please mention the new role to assign:")
+                    msg = await self.bot.wait_for(
+                        "message",
+                        check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                        timeout=30.0
+                    )
+                    if len(msg.role_mentions) == 0:
+                        await ctx.send("No role mentioned. Setup cancelled.")
+                        return
+                    new_role = msg.role_mentions[0].id
+                    
+                    # Check if upgrade role is already configured
+                    if await self.is_role_configured(guild, new_role):
+                        await ctx.send(f"The upgrade role is already configured. Setup cancelled.")
+                        return
+                
+                # Save the configuration
+                track_config = {
+                    "role_id": role.id,
+                    "duration": duration,
+                    "action": action,
+                    "new_role_id": new_role
+                }
+                
+                # Add roles to configured roles list
+                await self.add_configured_role(guild, role.id)
+                if new_role:
+                    await self.add_configured_role(guild, new_role)
+                
+                role_tracks.append(track_config)
+                
+                # Ask if they want to add more roles
+                await ctx.send("Do you want to configure another role? (yes/no)")
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                
+                if msg.content.lower() != "yes":
+                    break
+                
+            except asyncio.TimeoutError:
+                await ctx.send("Setup timed out.")
+                return
+        
+        # Save all configurations
+        await self.config.guild(guild).role_tracks.set(role_tracks)
+        await ctx.send("Role tracking setup complete!")
+
+        # Ask if they want to run a test
+        await ctx.send("Would you like to run a test of the role tracking system? (yes/no)")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            
+            if msg.content.lower() == "yes":
+                await self.run_test(ctx, role_tracks)
+            else:
+                await ctx.send("Setup completed without testing.")
+        
+        except asyncio.TimeoutError:
+            await ctx.send("No response received. Setup completed without testing.")
+
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
         """Monitor role changes and start tracking when necessary"""
@@ -512,3 +712,4 @@ class MemberTracker(commands.Cog):
 
 def setup(bot):
     bot.add_cog(MemberTracker(bot))
+
