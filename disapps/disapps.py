@@ -107,7 +107,7 @@ class ModButtons(discord.ui.View):
                     await self.applicant.send(
                         f"Your application to rejoin {interaction.guild.name} has been declined.\n"
                         f"Reason: {modal.decline_reason}\n\n"
-                        "As this was your second attempt, you will no longer be able to participate in server channels."
+                        "Your second application was denied, you will no longer be able to participate in the Discord."
                     )
                 else:
                     await self.applicant.send(
