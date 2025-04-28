@@ -1,7 +1,8 @@
 from .disapps import DisApps
 
-async def setup(bot):
-    await bot.add_cog(DisApps(bot))
+def setup(bot):
+    bot.add_cog(DisApps(bot))
+
     def __init__(self, bot):
     self.bot = bot
     self.config = Config.get_conf(self, identifier=1234567890)
