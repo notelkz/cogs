@@ -1,5 +1,8 @@
-from .memtrack import MemTrack
-from .memtrack import setup
+import os
+import sys
+from pathlib import Path
 
-async def setup(bot):
-    await bot.add_cog(MemTrack(bot))
+sys.path.append(str(Path(__file__).parent))
+from memtrack import setup
+
+__all__ = ["setup"]
