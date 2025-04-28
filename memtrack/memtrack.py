@@ -12,7 +12,8 @@ class MemberTracker(commands.Cog):
         self.config = Config.get_conf(self, identifier=1234567890)
         default_guild = {
             "role_tracks": [],  # List of role tracking configurations
-            "active_tracks": {} # Dictionary of active role assignments
+            "active_tracks": {}, # Dictionary of active role assignments
+            "configured_roles": set()  # Set of role IDs that have been configured
         }
         self.config.register_guild(**default_guild)
 
@@ -22,6 +23,48 @@ class MemberTracker(commands.Cog):
         """Member role tracking commands"""
         if ctx.invoked_subcommand is None:
             await ctx.send("Please use `!memtrack setup` to configure role tracking.")
+
+    async def is_role_configured(self, guild: discord.Guild, role_id: int) -> bool:
+        """Check if a role is already configured"""
+        configured_roles = await self.config.guild(guild).configured_roles()
+        return str(role_id) in configured_roles
+
+    async def add_configured_role(self, guild: discord.Guild, role_id: int):
+        """Add a role to the configured roles set"""
+        configured_roles = await self.config.guild(guild).configured_roles()
+        configured_roles_set = set(configured_roles)
+        configured_roles_set.add(str(role_id))
+        await self.config.guild(guild).configured_roles.set(list(configured_roles_set))
+
+    @memtrack.command()
+    async def list(self, ctx):
+        """List all configured role tracks"""
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+        
+        if not role_tracks:
+            await ctx.send("No role tracks configured.")
+            return
+
+        response = "**Configured Role Tracks:**\n\n"
+        for i, track in enumerate(role_tracks, 1):
+            role = guild.get_role(track["role_id"])
+            if not role:
+                continue
+                
+            duration_days = track["duration"] / (24 * 60 * 60)
+            
+            if track["action"] == 1:
+                action = "Remove role"
+            else:
+                new_role = guild.get_role(track["new_role_id"])
+                action = f"Upgrade to {new_role.name if new_role else 'deleted role'}"
+                
+            response += f"{i}. Role: {role.name}\n"
+            response += f"   Duration: {duration_days} days\n"
+            response += f"   Action: {action}\n\n"
+            
+        await ctx.send(response)
 
     async def run_test(self, ctx, role_tracks):
         """Helper function to run a test of the role tracking system"""
@@ -91,7 +134,7 @@ class MemberTracker(commands.Cog):
     async def setup(self, ctx):
         """Setup role tracking configuration"""
         guild = ctx.guild
-        role_tracks = []
+        role_tracks = await self.config.guild(guild).role_tracks()
         
         while True:
             # Ask for the role to monitor
@@ -108,6 +151,11 @@ class MemberTracker(commands.Cog):
                     return
                 
                 role = msg.role_mentions[0]
+                
+                # Check if role is already configured
+                if await self.is_role_configured(guild, role.id):
+                    await ctx.send(f"The role {role.name} is already configured. Please choose a different role.")
+                    continue
                 
                 # Ask for duration
                 await ctx.send("How long should users keep this role? (Format: 1d, 30d, etc.)")
@@ -150,6 +198,11 @@ class MemberTracker(commands.Cog):
                         await ctx.send("No role mentioned. Setup cancelled.")
                         return
                     new_role = msg.role_mentions[0].id
+                    
+                    # Check if upgrade role is already configured
+                    if await self.is_role_configured(guild, new_role):
+                        await ctx.send(f"The upgrade role is already configured. Setup cancelled.")
+                        return
                 
                 # Save the configuration
                 track_config = {
@@ -158,6 +211,11 @@ class MemberTracker(commands.Cog):
                     "action": action,
                     "new_role_id": new_role
                 }
+                
+                # Add roles to configured roles set
+                await self.add_configured_role(guild, role.id)
+                if new_role:
+                    await self.add_configured_role(guild, new_role)
                 
                 role_tracks.append(track_config)
                 
