@@ -1,0 +1,15 @@
+{
+    "name": "EFreeGames",
+    "short": "Track and notify about free games from various platforms",
+    "description": "Tracks free games from Steam, Epic Games, GOG and other platforms. Sends notifications to a specified channel when new free games are available.",
+    "end_user_data_statement": "This cog does not persistently store data about users.",
+    "install_msg": "Thanks for installing EFreeGames! Use `[p]help efreegames` to see all commands.",
+    "author": ["YourName"],
+    "required_cogs": {},
+    "requirements": ["feedparser"],
+    "tags": ["games", "notifications", "free", "steam", "epic", "gog"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
+}
