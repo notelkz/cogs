@@ -30,6 +30,7 @@ class ModButtons(discord.ui.View):
         self.accept_button.disabled = False
         self.decline_button.disabled = False
 
+
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
         async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
             if not interaction.user.guild_permissions.manage_roles:
