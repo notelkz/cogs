@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 import re
+import json
 
 log = logging.getLogger("red.efreegames")
 
@@ -151,60 +152,70 @@ class EFreeGames(commands.Cog):
             log.error(f"Error fetching Steam games: {e}")
             return []
 
-    async def fetch_gog_games(self) -> List[GameDeal]:
+        async def fetch_gog_games(self) -> List[GameDeal]:
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "application/json"
+                "Accept": "application/json",
+                "Referer": "https://www.gog.com/",
+                "Origin": "https://www.gog.com"
             }
-            
-            # First, get the CSRF token
-            async with self.session.get("https://www.gog.com", headers=headers) as resp:
-                if resp.status != 200:
-                    log.error(f"GOG main page returned status {resp.status}")
-                    return []
-                
-            # Now fetch the free games
+
+            # Use the correct GOG API endpoint
+            url = "https://www.gog.com/api/v2/games/feed"
             params = {
-                "category": "game",
-                "price": "free",
-                "sort": "popularity",
+                "category": "free",
+                "limit": 48,
                 "page": 1,
-                "limit": 50
+                "sort": "popularity"
             }
             
-            async with self.session.get(
-                "https://www.gog.com/api/products", 
-                headers=headers,
-                params=params
-            ) as resp:
+            async with self.session.get(url, headers=headers, params=params) as resp:
                 if resp.status != 200:
                     log.error(f"GOG API returned status {resp.status}")
+                    log.error(f"GOG API response: {await resp.text()}")
                     return []
                     
                 try:
                     data = await resp.json()
+                    free_games = []
+                    
+                    for product in data.get("results", []):
+                        # Check if the game is actually free
+                        price_info = product.get("price", {})
+                        if price_info.get("isFree", False) or price_info.get("amount", "1") == "0":
+                            game_title = product.get("title", "Unknown")
+                            game_slug = product.get("slug", "")
+                            
+                            free_games.append(GameDeal(
+                                title=game_title,
+                                url=f"https://www.gog.com/en/game/{game_slug}",
+                                image=product.get("coverHorizontal", ""),
+                                platform="GOG",
+                                original_price=f"${price_info.get('baseAmount', 'N/A')}",
+                                description=product.get("description", game_title),
+                                deal_type="game"
+                            ))
+                    
+                    log.info(f"Found {len(free_games)} free games on GOG")
+                    return free_games
+                    
                 except Exception as e:
                     log.error(f"Failed to parse GOG response: {e}")
+                    log.error(f"Response content type: {resp.content_type}")
+                    log.error(f"Response headers: {resp.headers}")
                     log.error(f"Response content: {await resp.text()}")
                     return []
-                    
-                free_games = []
-                for product in data.get("products", []):
-                    if product.get("price", {}).get("isFree", False) or product.get("price", {}).get("amount") == "0.00":
-                        free_games.append(GameDeal(
-                            title=product.get("title", "Unknown"),
-                            url=f"https://www.gog.com/game/{product.get('slug', '')}",
-                            image=product.get("coverHorizontal", ""),
-                            platform="GOG",
-                            original_price=str(product.get("price", {}).get("baseAmount", "N/A")),
-                            description=product.get("description", ""),
-                            deal_type="game"
-                        ))
-                return free_games
                 
         except Exception as e:
             log.error(f"Error fetching GOG games: {e}")
+            log.error(f"Full error: {str(e)}")
+            return []
+
+                
+        except Exception as e:
+            log.error(f"Error fetching GOG games: {e}")
+            log.error(f"Full error: {str(e)}")
             return []
 
     async def should_notify(self, guild_id: int, game: GameDeal) -> bool:
