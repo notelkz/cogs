@@ -29,7 +29,6 @@ class ModButtons(discord.ui.View):
         self.applicant = applicant
         self.accept_button.disabled = False
         self.decline_button.disabled = False
-
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.manage_roles:
@@ -70,6 +69,7 @@ class ModButtons(discord.ui.View):
             await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
+
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
     async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.manage_roles:
@@ -481,7 +481,7 @@ class DisApps(commands.Cog):
             
         await self.config.guild(guild).applications.set(applications)
 
-        @commands.Cog.listener()
+    @commands.Cog.listener()
     async def on_member_join(self, member):
         guild = member.guild
         if not await self.config.guild(guild).setup_complete():
@@ -606,24 +606,6 @@ class DisApps(commands.Cog):
         embed.set_footer(text="If you have any issues, use the 'Contact Mod' button.")
 
         await channel.send(content=member.mention, embed=embed, view=ApplicationButtons(self))
-
-# Check if user has left before and wasn't accepted
-if existing_application and existing_application.get('status') != 'accepted':
-    try:
-        await member.send(
-            "You have previously left the server during the application process. "
-            "You are not eligible to submit a new application."
-        )
-    except discord.Forbidden:
-        pass
-    
-    # Kick the member
-    try:
-        await member.kick(reason="Left during previous application")
-    except discord.Forbidden:
-        pass
-    return
-
 
     @disapps.command()
     async def test(self, ctx):
