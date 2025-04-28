@@ -48,9 +48,10 @@ class ModButtons(discord.ui.View):
 
             # Update application status
             applications = await self.cog.config.guild(interaction.guild).applications()
-            if str(self.applicant.id) in applications:
-                applications[str(self.applicant.id)]['status'] = 'accepted'
-                await self.cog.config.guild(interaction.guild).applications.set(applications)
+            if str(self.applicant.id) not in applications:
+                applications[str(self.applicant.id)] = {}
+            applications[str(self.applicant.id)]['status'] = 'accepted'
+            await self.cog.config.guild(interaction.guild).applications.set(applications)
 
             # Send confirmation messages
             await interaction.response.send_message(
@@ -95,8 +96,12 @@ class ModButtons(discord.ui.View):
             # Track number of declines and check if previously accepted
             declines = user_application.get('declines', 0) + 1
             previously_accepted = user_application.get('previously_accepted', False)
-            user_application['declines'] = declines
-            user_application['status'] = 'declined'
+            
+            # Update the application with new decline count
+            if str(self.applicant.id) not in applications:
+                applications[str(self.applicant.id)] = {}
+            applications[str(self.applicant.id)]['declines'] = declines
+            applications[str(self.applicant.id)]['status'] = 'declined'
             await self.cog.config.guild(interaction.guild).applications.set(applications)
 
             try:
@@ -340,6 +345,45 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
+    async def move_to_archive(self, channel, guild, reason=""):
+        """Helper function to move channels to archive"""
+        archive_id = await self.config.guild(guild).archive_category()
+        archive_category = guild.get_channel(archive_id)
+        
+        if archive_category:
+            # Get the moderator role
+            mod_role_id = await self.config.guild(guild).mod_role()
+            mod_role = guild.get_role(mod_role_id)
+            
+            # Find the user overwrite (there should only be one non-role member)
+            user = None
+            for target, _ in channel.overwrites.items():
+                if isinstance(target, discord.Member):
+                    user = target
+                    break
+            
+            if user:
+                # Set permissions: user can read but not send messages
+                await channel.set_permissions(user, read_messages=True, send_messages=False)
+            
+            # Move to archive category
+            await channel.edit(category=archive_category)
+            await channel.send(f"Channel archived. Reason: {reason}")
+
+    async def restore_channel(self, channel, guild, member):
+        """Helper function to restore channel from archive"""
+        applications_id = await self.config.guild(guild).applications_category()
+        applications_category = guild.get_channel(applications_id)
+        
+        if applications_category:
+            # Restore user's ability to send messages
+            await channel.set_permissions(member, read_messages=True, send_messages=True)
+            
+            # Move channel back to applications category
+            await channel.edit(category=applications_category)
+            
+            await channel.send(f"Channel restored for {member.mention}")
+
     @commands.group(aliases=["da"])
     @checks.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
@@ -357,11 +401,14 @@ class DisApps(commands.Cog):
             await ctx.send(f"{user.mention} has no application history in this server.")
             return
             
-        # Reset their application status
+        # Completely reset their application status while preserving the channel_id if it exists
+        channel_id = applications[str(user.id)].get('channel_id', None)
         applications[str(user.id)] = {
+            'channel_id': channel_id,
             'status': 'none',
             'declines': 0,
-            'previously_accepted': False
+            'previously_accepted': False,
+            'timestamp': datetime.utcnow().timestamp()
         }
         await self.config.guild(guild).applications.set(applications)
         
@@ -373,6 +420,8 @@ class DisApps(commands.Cog):
             timestamp=datetime.utcnow()
         )
         embed.add_field(name="Moderator", value=ctx.author.mention)
+        embed.add_field(name="Previous Status", value="Reset to None", inline=True)
+        embed.add_field(name="Declines Reset", value="Yes", inline=True)
         
         await ctx.send(embed=embed)
         
@@ -422,11 +471,18 @@ class DisApps(commands.Cog):
         
         # Calculate if they're banned
         is_banned = (user_app.get('declines', 0) >= 2 or 
-                    (user_app.get('status') != 'accepted' and user_app.get('status') != 'none'))
+                    (user_app.get('status') not in ['accepted', 'none']))
+        
+        ban_reason = ""
+        if is_banned:
+            if user_app.get('declines', 0) >= 2:
+                ban_reason = "Too many declined applications"
+            elif user_app.get('status') not in ['accepted', 'none']:
+                ban_reason = f"Left during {user_app.get('status')} status"
         
         embed.add_field(
             name="Can Apply?",
-            value="No - Currently Banned" if is_banned else "Yes",
+            value=f"No - {ban_reason}" if is_banned else "Yes",
             inline=False
         )
         
@@ -563,7 +619,7 @@ class DisApps(commands.Cog):
             return
 
         # Check if user has left before and wasn't accepted
-        if existing_application and existing_application.get('status') != 'accepted':
+        if existing_application and existing_application.get('status') not in ['accepted', 'none']:
             try:
                 await member.send(
                     "You have previously left the server during the application process. "
@@ -666,42 +722,3 @@ class DisApps(commands.Cog):
         """Test the application system with a fake member join"""
         await self.on_member_join(ctx.author)
         await ctx.send("Test application created!")
-
-    async def move_to_archive(self, channel, guild, reason=""):
-        """Helper function to move channels to archive"""
-        archive_id = await self.config.guild(guild).archive_category()
-        archive_category = guild.get_channel(archive_id)
-        
-        if archive_category:
-            # Get the moderator role
-            mod_role_id = await self.config.guild(guild).mod_role()
-            mod_role = guild.get_role(mod_role_id)
-            
-            # Find the user overwrite (there should only be one non-role member)
-            user = None
-            for target, _ in channel.overwrites.items():
-                if isinstance(target, discord.Member):
-                    user = target
-                    break
-            
-            if user:
-                # Set permissions: user can read but not send messages
-                await channel.set_permissions(user, read_messages=True, send_messages=False)
-            
-            # Move to archive category
-            await channel.edit(category=archive_category)
-            await channel.send(f"Channel archived. Reason: {reason}")
-
-    async def restore_channel(self, channel, guild, member):
-        """Helper function to restore channel from archive"""
-        applications_id = await self.config.guild(guild).applications_category()
-        applications_category = guild.get_channel(applications_id)
-        
-        if applications_category:
-            # Restore user's ability to send messages
-            await channel.set_permissions(member, read_messages=True, send_messages=True)
-            
-            # Move channel back to applications category
-            await channel.edit(category=applications_category)
-            
-            await channel.send(f"Channel restored for {member.mention}")
