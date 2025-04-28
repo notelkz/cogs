@@ -26,14 +26,11 @@ class MemberTracker(commands.Cog):
             configured_roles = await self.config.guild(guild).configured_roles()
             
             # Update configured_roles based on existing role_tracks
+            # Only include initial roles, not upgrade roles
             for track in role_tracks:
                 role_id = str(track["role_id"])
                 if role_id not in configured_roles:
                     configured_roles.append(role_id)
-                if track["action"] == 2 and track["new_role_id"]:
-                    new_role_id = str(track["new_role_id"])
-                    if new_role_id not in configured_roles:
-                        configured_roles.append(new_role_id)
             
             # Save updated configured_roles
             await self.config.guild(guild).configured_roles.set(configured_roles)
@@ -471,9 +468,9 @@ class MemberTracker(commands.Cog):
                 
                 role = msg.role_mentions[0]
                 
-                # Check if role is already configured
+                # Check if role is already configured as an initial role
                 if await self.is_role_configured(guild, role.id):
-                    await ctx.send(f"The role {role.name} is already configured. Please choose a different role.")
+                    await ctx.send(f"The role {role.name} is already configured as a base role. Please choose a different role.")
                     continue
                 
                 # Ask for duration
@@ -517,11 +514,6 @@ class MemberTracker(commands.Cog):
                         await ctx.send("No role mentioned. Setup cancelled.")
                         return
                     new_role = msg.role_mentions[0].id
-                    
-                    # Check if upgrade role is already configured
-                    if await self.is_role_configured(guild, new_role):
-                        await ctx.send(f"The upgrade role is already configured. Setup cancelled.")
-                        return
                 
                 # Save the configuration
                 track_config = {
@@ -531,10 +523,8 @@ class MemberTracker(commands.Cog):
                     "new_role_id": new_role
                 }
                 
-                # Add roles to configured roles list
+                # Only add the initial role to configured roles list
                 await self.add_configured_role(guild, role.id)
-                if new_role:
-                    await self.add_configured_role(guild, new_role)
                 
                 role_tracks.append(track_config)
                 
