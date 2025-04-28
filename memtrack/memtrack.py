@@ -58,6 +58,74 @@ class MemberTracker(commands.Cog):
             await self.config.guild(guild).configured_roles.set(configured_roles)
 
     @memtrack.command()
+    @commands.admin_or_permissions(administrator=True)
+    async def skip(self, ctx, member: discord.Member):
+        """
+        Skip the waiting period for a user's tracked roles.
+        Usage: !mt skip @user
+        """
+        guild = ctx.guild
+        active_tracks = await self.config.guild(guild).active_tracks()
+        user_tracks = active_tracks.get(str(member.id), {})
+        
+        if not user_tracks:
+            await ctx.send(f"{member.mention} has no actively tracked roles.")
+            return
+
+        skipped_roles = []
+        failed_roles = []
+        
+        for role_id, track_info in user_tracks.items():
+            role = guild.get_role(int(role_id))
+            if not role:
+                continue
+
+            try:
+                if track_info["action"] == 1:
+                    # Remove the role
+                    await member.remove_roles(role)
+                    skipped_roles.append(f"{role.name} (removed)")
+                elif track_info["action"] == 2:
+                    # Remove old role and add new one
+                    new_role = guild.get_role(track_info["new_role_id"])
+                    if new_role:
+                        await member.add_roles(new_role)
+                        await member.remove_roles(role)
+                        skipped_roles.append(f"{role.name} → {new_role.name}")
+                    else:
+                        failed_roles.append(f"{role.name} (upgrade role not found)")
+                        continue
+            except discord.Forbidden:
+                failed_roles.append(f"{role.name} (permission denied)")
+                continue
+            except discord.HTTPException:
+                failed_roles.append(f"{role.name} (error occurred)")
+                continue
+
+        # Remove the tracked roles from active_tracks
+        if str(member.id) in active_tracks:
+            del active_tracks[str(member.id)]
+            await self.config.guild(guild).active_tracks.set(active_tracks)
+
+        # Build response message
+        response = f"**Role Skip Results for {member.mention}:**\n\n"
+        
+        if skipped_roles:
+            response += "Successfully processed:\n"
+            for role in skipped_roles:
+                response += f"- {role}\n"
+            
+        if failed_roles:
+            response += "\nFailed to process:\n"
+            for role in failed_roles:
+                response += f"- {role}\n"
+                
+        if not skipped_roles and not failed_roles:
+            response += "No roles were processed."
+
+        await ctx.send(response)
+
+    @memtrack.command()
     async def trackexisting(self, ctx, role: discord.Role = None):
         """
         Start tracking users who already have a configured role.
@@ -75,7 +143,6 @@ class MemberTracker(commands.Cog):
 
         tracked_count = 0
         already_tracked = 0
-        
         if role:
             # Check if role is configured
             track_config = None
@@ -206,6 +273,7 @@ class MemberTracker(commands.Cog):
         if already_tracked > 0:
             response += f"{already_tracked} roles were already being tracked."
         await ctx.send(response)
+
     @memtrack.command()
     async def duplicates(self, ctx, remove: bool = False):
         """
@@ -380,31 +448,6 @@ class MemberTracker(commands.Cog):
             
         await ctx.send(response)
 
-        # Original list functionality for showing all tracks
-        if not role_tracks:
-            await ctx.send("No role tracks configured.")
-            return
-
-        response = "**Configured Role Tracks:**\n\n"
-        for i, track in enumerate(role_tracks, 1):
-            role = guild.get_role(track["role_id"])
-            if not role:
-                continue
-                
-            duration_days = track["duration"] / (24 * 60 * 60)
-            
-            if track["action"] == 1:
-                action = "Remove role"
-            else:
-                new_role = guild.get_role(track["new_role_id"])
-                action = f"Upgrade to {new_role.name if new_role else 'deleted role'}"
-                
-            response += f"{i}. Role: {role.name}\n"
-            response += f"   Duration: {duration_days} days\n"
-            response += f"   Action: {action}\n\n"
-            
-        await ctx.send(response)
-
     async def run_test(self, ctx, role_tracks):
         """Helper function to run a test of the role tracking system"""
         member = ctx.author
@@ -469,74 +512,6 @@ class MemberTracker(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-        @memtrack.command()
-    @commands.admin_or_permissions(administrator=True)
-    async def skip(self, ctx, member: discord.Member):
-        """
-        Skip the waiting period for a user's tracked roles.
-        Usage: !mt skip @user
-        """
-        guild = ctx.guild
-        active_tracks = await self.config.guild(guild).active_tracks()
-        user_tracks = active_tracks.get(str(member.id), {})
-        
-        if not user_tracks:
-            await ctx.send(f"{member.mention} has no actively tracked roles.")
-            return
-
-        skipped_roles = []
-        failed_roles = []
-        
-        for role_id, track_info in user_tracks.items():
-            role = guild.get_role(int(role_id))
-            if not role:
-                continue
-
-            try:
-                if track_info["action"] == 1:
-                    # Remove the role
-                    await member.remove_roles(role)
-                    skipped_roles.append(f"{role.name} (removed)")
-                elif track_info["action"] == 2:
-                    # Remove old role and add new one
-                    new_role = guild.get_role(track_info["new_role_id"])
-                    if new_role:
-                        await member.add_roles(new_role)
-                        await member.remove_roles(role)
-                        skipped_roles.append(f"{role.name} → {new_role.name}")
-                    else:
-                        failed_roles.append(f"{role.name} (upgrade role not found)")
-                        continue
-            except discord.Forbidden:
-                failed_roles.append(f"{role.name} (permission denied)")
-                continue
-            except discord.HTTPException:
-                failed_roles.append(f"{role.name} (error occurred)")
-                continue
-
-        # Remove the tracked roles from active_tracks
-        if str(member.id) in active_tracks:
-            del active_tracks[str(member.id)]
-            await self.config.guild(guild).active_tracks.set(active_tracks)
-
-        # Build response message
-        response = f"**Role Skip Results for {member.mention}:**\n\n"
-        
-        if skipped_roles:
-            response += "Successfully processed:\n"
-            for role in skipped_roles:
-                response += f"- {role}\n"
-            
-        if failed_roles:
-            response += "\nFailed to process:\n"
-            for role in failed_roles:
-                response += f"- {role}\n"
-                
-        if not skipped_roles and not failed_roles:
-            response += "No roles were processed."
-
-        await ctx.send(response)
-    
     @memtrack.command()
     async def setup(self, ctx):
         """Setup role tracking configuration"""
@@ -727,3 +702,4 @@ class MemberTracker(commands.Cog):
 
 def setup(bot):
     bot.add_cog(MemberTracker(bot))
+
