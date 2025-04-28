@@ -3,18 +3,18 @@ from .disapps import DisApps
 async def setup(bot):
     await bot.add_cog(DisApps(bot))
     def __init__(self, bot):
-        self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890)
-        default_guild = {
-            "mod_role": None,
-            "accepted_role": None,
-            "assignable_roles": [],
-            "applications_category": None,
-            "archive_category": None,
-            "setup_complete": False,
-            "applications": {},
-            "version": "1.0.0"  # Add version tracking
-        }
+    self.bot = bot
+    self.config = Config.get_conf(self, identifier=1234567890)
+    default_guild = {
+        "mod_role": None,
+        "accepted_role": None,
+        "assignable_roles": [],
+        "applications_category": None,
+        "archive_category": None,
+        "setup_complete": False,
+        "applications": {},
+        "decline_counts": {}  # Add this new field
+    }
         self.config.register_guild(**default_guild)
         self.bot.loop.create_task(self.initialize())
 
