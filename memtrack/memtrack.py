@@ -327,13 +327,21 @@ class MemberTracker(commands.Cog):
                 time_had = current_time - start_time
                 days_had = time_had / (24 * 60 * 60)
                 
+                # Format time had
+                if days_had < 1:
+                    hours = int(time_had // 3600)
+                    minutes = int((time_had % 3600) // 60)
+                    time_had_str = f"{hours} hours, {minutes} minutes"
+                else:
+                    time_had_str = f"{days_had:.1f} days"
+                
                 # Calculate time remaining
                 total_duration = track_info["duration"]
                 time_remaining = total_duration - time_had
                 days_remaining = time_remaining / (24 * 60 * 60)
                 
                 response += f"Role: {role.name}\n"
-                response += f"Time had: {days_had:.1f} days\n"
+                response += f"Time had: {time_had_str}\n"
                 response += f"Time remaining: {days_remaining:.1f} days\n"
                 
                 if track_info["action"] == 1:
@@ -346,6 +354,31 @@ class MemberTracker(commands.Cog):
                 
             await ctx.send(response)
             return
+
+        # Original list functionality for showing all tracks
+        if not role_tracks:
+            await ctx.send("No role tracks configured.")
+            return
+
+        response = "**Configured Role Tracks:**\n\n"
+        for i, track in enumerate(role_tracks, 1):
+            role = guild.get_role(track["role_id"])
+            if not role:
+                continue
+                
+            duration_days = track["duration"] / (24 * 60 * 60)
+            
+            if track["action"] == 1:
+                action = "Remove role"
+            else:
+                new_role = guild.get_role(track["new_role_id"])
+                action = f"Upgrade to {new_role.name if new_role else 'deleted role'}"
+                
+            response += f"{i}. Role: {role.name}\n"
+            response += f"   Duration: {duration_days} days\n"
+            response += f"   Action: {action}\n\n"
+            
+        await ctx.send(response)
 
         # Original list functionality for showing all tracks
         if not role_tracks:
