@@ -81,7 +81,7 @@ class EFreeGames(commands.Cog):
                 log.error(f"Error in free games check loop: {e}")
                 await asyncio.sleep(300)
 
-    async def fetch_epic_games(self) -> List[GameDeal]:
+        async def fetch_epic_games(self) -> List[GameDeal]:
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -101,21 +101,11 @@ class EFreeGames(commands.Cog):
                             end_date = datetime.fromisoformat(promo["endDate"][:-1])
                             
                             # Get the correct store URL
-                            product_slug = game.get('productSlug', '')
-                            if not product_slug:
-                                product_slug = game.get('urlSlug', '')
-                            if not product_slug and game.get('catalogNs', {}).get('mappings'):
-                                # Try to get it from mappings
-                                for mapping in game['catalogNs']['mappings']:
-                                    if mapping.get('pageSlug'):
-                                        product_slug = mapping['pageSlug']
-                                        break
+                            offer_id = game.get('id', '')
+                            namespace = game.get('namespace', '')
                             
-                            # Construct the store URL
-                            if product_slug:
-                                store_url = f"https://store.epicgames.com/en-US/p/{product_slug}"
-                            else:
-                                store_url = "https://store.epicgames.com"
+                            # Construct the store URL using the offer ID and namespace
+                            store_url = f"https://store.epicgames.com/en-US/offers/{offer_id}"
                             
                             free_games.append(GameDeal(
                                 title=game["title"],
@@ -127,10 +117,13 @@ class EFreeGames(commands.Cog):
                                 description=game.get("description", ""),
                                 deal_type="dlc" if game.get("categories", [{}])[0].get("path") == "addons/dlc" else "game"
                             ))
+                            
+                            log.info(f"Added Epic game: {game['title']} with URL: {store_url}")
                 return free_games
         except Exception as e:
             log.error(f"Error fetching Epic Games: {e}")
             return []
+
 
 
     async def fetch_steam_games(self) -> List[GameDeal]:
