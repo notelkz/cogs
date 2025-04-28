@@ -30,94 +30,46 @@ class ModButtons(discord.ui.View):
         self.accept_button.disabled = False
         self.decline_button.disabled = False
 
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_roles:
+            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
+            return
 
-    @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
-        async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-            if not interaction.user.guild_permissions.manage_roles:
-                await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
-        return
-
-    # Create and send the decline modal
-    modal = DeclineModal()
-    await interaction.response.send_modal(modal)
-    
-    try:
-        await modal.wait()
-        
-        # Disable both buttons
-        self.accept_button.disabled = True
-        self.decline_button.disabled = True
-        await interaction.message.edit(view=self)
-
-        # Update application status
-        applications = await self.cog.config.guild(interaction.guild).applications()
-        user_application = applications.get(str(self.applicant.id), {})
-        
-        # Track number of declines
-        declines = user_application.get('declines', 0) + 1
-        user_application['declines'] = declines
-        user_application['status'] = 'declined'
-        await self.cog.config.guild(interaction.guild).applications.set(applications)
-
-        # Send appropriate decline message based on number of declines
         try:
-            if declines >= 2:
-                # Remove all permissions except for the current channel
-                for channel in interaction.guild.channels:
-                    if channel != interaction.channel:  # Skip the current application channel
-                        if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
-                            try:
-                                await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
-                            except discord.Forbidden:
-                                continue
+            # Disable both buttons
+            self.accept_button.disabled = True
+            self.decline_button.disabled = True
+            await interaction.message.edit(view=self)
 
-                # Set permissions for current channel to read-only
-                await interaction.channel.set_permissions(self.applicant, read_messages=True, send_messages=False)
+            # Add the accepted role
+            role_id = await self.cog.config.guild(interaction.guild).accepted_role()
+            role = interaction.guild.get_role(role_id)
+            await self.applicant.add_roles(role)
 
-                await self.applicant.send(
-                    f"Your application to {interaction.guild.name} has been declined.\n"
-                    f"Reason: {modal.decline_reason}\n\n"
-                    "As this is your second declined application, you will not be able to apply again in the future. "
-                    "Your access to the server has been restricted."
-                )
+            # Update application status
+            applications = await self.cog.config.guild(interaction.guild).applications()
+            if str(self.applicant.id) in applications:
+                applications[str(self.applicant.id)]['status'] = 'accepted'
+                await self.cog.config.guild(interaction.guild).applications.set(applications)
 
-                await interaction.channel.send(
-                    f"Application declined. This was {self.applicant.mention}'s second decline.\n"
-                    "Their permissions have been restricted, and they can no longer apply again.\n"
-                    f"Decline reason: {modal.decline_reason}"
-                )
+            # Send confirmation messages
+            await interaction.response.send_message(
+                f"Application accepted! {self.applicant.mention} has been given the {role.name} role."
+            )
+            
+            try:
+                await self.applicant.send(f"Congratulations! Your application to {interaction.guild.name} has been accepted!")
+            except discord.Forbidden:
+                await interaction.followup.send("Could not DM the user, but their application has been accepted.")
 
-            else:
-                await self.applicant.send(
-                    f"Your application to {interaction.guild.name} has been declined.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
-                
-                await interaction.channel.send(
-                    f"Application declined. A DM has been sent to {self.applicant.mention} with the reason."
-                )
+            # Move to archive
+            await self.cog.move_to_archive(interaction.channel, interaction.guild, "Application accepted")
 
         except discord.Forbidden:
-            if declines >= 2:
-                await interaction.channel.send(
-                    f"Could not DM the user, but their application has been declined.\n"
-                    f"This was their second decline. Their permissions have been restricted.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
-            else:
-                await interaction.channel.send(
-                    f"Could not DM the user, but the application has been declined.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
-
-        # Move to archive
-        await self.cog.move_to_archive(interaction.channel, interaction.guild, f"Application declined: {modal.decline_reason}")
-
-    except asyncio.TimeoutError:
-        await interaction.followup.send("The decline action has timed out.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-
+            await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
     async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -150,33 +102,53 @@ class ModButtons(discord.ui.View):
             # Send appropriate decline message based on number of declines
             try:
                 if declines >= 2:
+                    # Remove all permissions except for the current channel
+                    for channel in interaction.guild.channels:
+                        if channel != interaction.channel:  # Skip the current application channel
+                            if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
+                                try:
+                                    await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
+                                except discord.Forbidden:
+                                    continue
+
+                    # Set permissions for current channel to read-only
+                    await interaction.channel.set_permissions(self.applicant, read_messages=True, send_messages=False)
+
                     await self.applicant.send(
                         f"Your application to {interaction.guild.name} has been declined.\n"
                         f"Reason: {modal.decline_reason}\n\n"
-                        "As this is your second declined application, you will not be able to apply again in the future."
+                        "As this is your second declined application, you will not be able to apply again in the future. "
+                        "Your access to the server has been restricted."
                     )
-                    
-                    # Remove permissions from all channels
-                    try:
-                        for channel in interaction.guild.channels:
-                            if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
-                                await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
-                    except discord.Forbidden:
-                        await interaction.channel.send("Failed to remove user's permissions. Please check bot permissions.")
+
+                    await interaction.channel.send(
+                        f"Application declined. This was {self.applicant.mention}'s second decline.\n"
+                        "Their permissions have been restricted, and they can no longer apply again.\n"
+                        f"Decline reason: {modal.decline_reason}"
+                    )
+
                 else:
                     await self.applicant.send(
                         f"Your application to {interaction.guild.name} has been declined.\n"
                         f"Reason: {modal.decline_reason}"
                     )
-                
-                await interaction.channel.send(
-                    f"Application declined. A DM has been sent to {self.applicant.mention} with the reason."
-                )
+                    
+                    await interaction.channel.send(
+                        f"Application declined. A DM has been sent to {self.applicant.mention} with the reason."
+                    )
+
             except discord.Forbidden:
-                await interaction.channel.send(
-                    f"Could not DM the user, but the application has been declined.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
+                if declines >= 2:
+                    await interaction.channel.send(
+                        f"Could not DM the user, but their application has been declined.\n"
+                        f"This was their second decline. Their permissions have been restricted.\n"
+                        f"Reason: {modal.decline_reason}"
+                    )
+                else:
+                    await interaction.channel.send(
+                        f"Could not DM the user, but the application has been declined.\n"
+                        f"Reason: {modal.decline_reason}"
+                    )
 
             # Move to archive
             await self.cog.move_to_archive(interaction.channel, interaction.guild, f"Application declined: {modal.decline_reason}")
@@ -188,7 +160,7 @@ class ModButtons(discord.ui.View):
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, original_view):
         super().__init__(title="Application Form")
-        self.original_view = original_view  # Store reference to the original view
+        self.original_view = original_view
         self.add_item(
             discord.ui.TextInput(
                 label="Age",
@@ -281,15 +253,14 @@ class ApplicationButtons(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         self.contact_mod_used = False
-        self.message = None  # Store the message reference
+        self.message = None
 
     @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
     async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Store the message reference when the button is first clicked
         if not self.message:
             self.message = interaction.message
         
-        modal = ApplicationModal(self)  # Pass the view instance to the modal
+        modal = ApplicationModal(self)
         await interaction.response.send_modal(modal)
         button.disabled = True
         await interaction.message.edit(view=self)
@@ -591,6 +562,3 @@ class DisApps(commands.Cog):
         """Test the application system with a fake member join"""
         await self.on_member_join(ctx.author)
         await ctx.send("Test application created!")
-
-def setup(bot):
-    bot.add_cog(DisApps(bot))
