@@ -81,7 +81,7 @@ class EFreeGames(commands.Cog):
                 log.error(f"Error in free games check loop: {e}")
                 await asyncio.sleep(300)
 
-        async def fetch_epic_games(self) -> List[GameDeal]:
+    async def fetch_epic_games(self) -> List[GameDeal]:
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
@@ -104,13 +104,22 @@ class EFreeGames(commands.Cog):
                             offer_id = game.get('id', '')
                             namespace = game.get('namespace', '')
                             
-                            # Construct the store URL using the offer ID and namespace
-                            store_url = f"https://store.epicgames.com/en-US/offers/{offer_id}"
+                            # Construct the store URL using the offer ID
+                            store_url = f"https://store.epicgames.com/en-US/p/{offer_id}"
+                            
+                            # Get the best image
+                            image_url = ""
+                            for img in game.get("keyImages", []):
+                                if img.get("type") == "OfferImageWide":
+                                    image_url = img.get("url", "")
+                                    break
+                            if not image_url and game.get("keyImages"):
+                                image_url = game["keyImages"][0].get("url", "")
                             
                             free_games.append(GameDeal(
                                 title=game["title"],
                                 url=store_url,
-                                image=game.get("keyImages", [{}])[0].get("url", ""),
+                                image=image_url,
                                 platform="Epic Games",
                                 end_date=end_date,
                                 original_price=game.get("price", {}).get("totalPrice", {}).get("fmtPrice", {}).get("originalPrice", "N/A"),
@@ -123,8 +132,6 @@ class EFreeGames(commands.Cog):
         except Exception as e:
             log.error(f"Error fetching Epic Games: {e}")
             return []
-
-
 
     async def fetch_steam_games(self) -> List[GameDeal]:
         try:
@@ -159,80 +166,13 @@ class EFreeGames(commands.Cog):
                                     description=data.get("short_description"),
                                     deal_type="dlc" if data.get("type") == "dlc" else "game"
                                 ))
+                                
+                                log.info(f"Added Steam game: {data['name']} with URL: {url}")
                 return free_games
         except Exception as e:
             log.error(f"Error fetching Steam games: {e}")
             return []
 
-    # GOG Implementation Version 1 (try this first)
-    async def fetch_gog_games(self) -> List[GameDeal]:
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "application/json"
-            }
-
-            # First get the store page
-            url = "https://www.gog.com/partner/free_games"
-            
-            async with self.session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    log.error(f"GOG store page returned status {resp.status}")
-                    return []
-                
-                # Now get the actual data from their store API
-                store_url = "https://store.gog.com/v1/catalog"
-                params = {
-                    "limit": 50,
-                    "order": "desc:trending",
-                    "productType": "game",
-                    "price": "free"
-                }
-                
-                async with self.session.get(store_url, headers=headers, params=params) as store_resp:
-                    if store_resp.status != 200:
-                        log.error(f"GOG store API returned status {store_resp.status}")
-                        return []
-                        
-                    try:
-                        data = await store_resp.json()
-                        free_games = []
-                        
-                        for product in data.get("items", []):
-                            # Check if the game is actually free
-                            price = product.get("price", {})
-                            if price.get("final", 0) == 0:
-                                game_title = product.get("title", "Unknown")
-                                game_id = product.get("id", "")
-                                
-                                free_games.append(GameDeal(
-                                    title=game_title,
-                                    url=f"https://www.gog.com/game/{game_id}",
-                                    image=product.get("image", ""),
-                                    platform="GOG",
-                                    original_price=f"${price.get('base', 'N/A')}",
-                                    description=product.get("description", ""),
-                                    deal_type="game"
-                                ))
-                        
-                        log.info(f"Found {len(free_games)} free games on GOG")
-                        return free_games
-                        
-                    except Exception as e:
-                        log.error(f"Failed to parse GOG response: {e}")
-                        log.error(f"Response content type: {store_resp.content_type}")
-                        log.error(f"Response headers: {store_resp.headers}")
-                        content = await store_resp.text()
-                        log.error(f"Response content: {content[:500]}...")  # Log first 500 chars
-                        return []
-                    
-        except Exception as e:
-            log.error(f"Error fetching GOG games: {e}")
-            log.error(f"Full error: {str(e)}")
-            return []
-
-    # GOG Implementation Version 2 (try this if Version 1 doesn't work)
-    """
     async def fetch_gog_games(self) -> List[GameDeal]:
         try:
             headers = {
@@ -260,17 +200,19 @@ class EFreeGames(commands.Cog):
                     
                     for product in data.get("products", []):
                         if product.get("isDiscounted") and product.get("price", {}).get("amount") == "0.00":
+                            store_url = f"https://www.gog.com{product.get('url', '')}"
                             free_games.append(GameDeal(
                                 title=product.get("title", "Unknown"),
-                                url=f"https://www.gog.com{product.get('url', '')}",
+                                url=store_url,
                                 image=product.get("image", ""),
                                 platform="GOG",
                                 original_price=f"${product.get('price', {}).get('baseAmount', 'N/A')}",
                                 description=product.get("title", ""),
                                 deal_type="game"
                             ))
+                            
+                            log.info(f"Added GOG game: {product.get('title', 'Unknown')} with URL: {store_url}")
                     
-                    log.info(f"Found {len(free_games)} free games on GOG")
                     return free_games
                     
                 except Exception as e:
@@ -285,7 +227,6 @@ class EFreeGames(commands.Cog):
             log.error(f"Error fetching GOG games: {e}")
             log.error(f"Full error: {str(e)}")
             return []
-    """
 
     async def should_notify(self, guild_id: int, game: GameDeal) -> bool:
         """Check if we should notify about this game based on guild settings."""
