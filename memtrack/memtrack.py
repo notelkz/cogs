@@ -24,6 +24,66 @@ class MemberTracker(commands.Cog):
             await ctx.send("Please use `!memtrack setup` to configure role tracking.")
 
     @memtrack.command()
+    async def test(self, ctx, member: discord.Member = None):
+        """Test role tracking with a 30-second timer"""
+        if member is None:
+            member = ctx.author
+
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+
+        if not role_tracks:
+            await ctx.send("No role tracking configurations found. Please run setup first.")
+            return
+
+        # Create test roles
+        try:
+            test_role = await guild.create_role(name="MemberTracker Test Role")
+            if any(track["action"] == 2 for track in role_tracks):
+                test_role_2 = await guild.create_role(name="MemberTracker Test Role 2")
+            else:
+                test_role_2 = None
+
+            # Create temporary test configuration
+            test_track = {
+                "role_id": test_role.id,
+                "duration": 30,  # 30 seconds
+                "action": 2 if test_role_2 else 1,
+                "new_role_id": test_role_2.id if test_role_2 else None
+            }
+
+            await ctx.send(f"Starting role tracking test for {member.mention}")
+            await ctx.send("Phase 1: Adding initial test role...")
+            await member.add_roles(test_role)
+            
+            # Wait for duration
+            await ctx.send("Waiting 30 seconds...")
+            await asyncio.sleep(30)
+
+            if test_track["action"] == 1:
+                await ctx.send("Phase 2: Removing test role...")
+                await member.remove_roles(test_role)
+            else:
+                await ctx.send("Phase 2: Upgrading to second test role...")
+                await member.add_roles(test_role_2)
+                await member.remove_roles(test_role)
+
+            await ctx.send("Test completed!")
+
+            # Cleanup
+            await asyncio.sleep(5)  # Wait a bit before cleaning up
+            await ctx.send("Cleaning up test roles...")
+            await test_role.delete()
+            if test_role_2:
+                await test_role_2.delete()
+            await ctx.send("Test cleanup completed!")
+
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to manage roles!")
+        except discord.HTTPException as e:
+            await ctx.send(f"An error occurred: {str(e)}")
+
+    @memtrack.command()
     async def setup(self, ctx):
         """Setup role tracking configuration"""
         guild = ctx.guild
