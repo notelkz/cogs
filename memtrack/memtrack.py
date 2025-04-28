@@ -13,9 +13,29 @@ class MemberTracker(commands.Cog):
         default_guild = {
             "role_tracks": [],  # List of role tracking configurations
             "active_tracks": {}, # Dictionary of active role assignments
-            "configured_roles": []  # List of role IDs that have been configured
+            "configured_roles": [] # List of role IDs that have been configured
         }
         self.config.register_guild(**default_guild)
+
+    async def cog_load(self):
+        """Load existing configurations when cog is loaded/reloaded"""
+        for guild in self.bot.guilds:
+            # Get existing role tracks
+            role_tracks = await self.config.guild(guild).role_tracks()
+            configured_roles = await self.config.guild(guild).configured_roles()
+            
+            # Update configured_roles based on existing role_tracks
+            for track in role_tracks:
+                role_id = str(track["role_id"])
+                if role_id not in configured_roles:
+                    configured_roles.append(role_id)
+                if track["action"] == 2 and track["new_role_id"]:
+                    new_role_id = str(track["new_role_id"])
+                    if new_role_id not in configured_roles:
+                        configured_roles.append(new_role_id)
+            
+            # Save updated configured_roles
+            await self.config.guild(guild).configured_roles.set(configured_roles)
 
     @commands.group(aliases=["mt"])
     @commands.admin_or_permissions(administrator=True)
@@ -35,6 +55,40 @@ class MemberTracker(commands.Cog):
         if str(role_id) not in configured_roles:
             configured_roles.append(str(role_id))
             await self.config.guild(guild).configured_roles.set(configured_roles)
+
+    @memtrack.command()
+    async def debug(self, ctx):
+        """Debug command to show all configured roles"""
+        guild = ctx.guild
+        configured_roles = await self.config.guild(guild).configured_roles()
+        role_tracks = await self.config.guild(guild).role_tracks()
+        
+        response = "**Currently Configured Roles:**\n"
+        for role_id in configured_roles:
+            role = guild.get_role(int(role_id))
+            response += f"- {role.name if role else 'Deleted role'} (ID: {role_id})\n"
+            
+        response += "\n**Current Role Tracks:**\n"
+        for track in role_tracks:
+            initial_role = guild.get_role(track["role_id"])
+            response += f"- {initial_role.name if initial_role else 'Deleted role'} "
+            if track["action"] == 2:
+                upgrade_role = guild.get_role(track["new_role_id"]) if track["new_role_id"] else None
+                response += f"-> {upgrade_role.name if upgrade_role else 'Deleted role'}"
+            else:
+                response += "-> Remove role"
+            response += "\n"
+            
+        await ctx.send(response)
+
+    @memtrack.command()
+    async def reset(self, ctx):
+        """Reset all role configurations"""
+        guild = ctx.guild
+        await self.config.guild(guild).role_tracks.set([])
+        await self.config.guild(guild).configured_roles.set([])
+        await self.config.guild(guild).active_tracks.set({})
+        await ctx.send("All role configurations have been reset.")
 
     @memtrack.command()
     async def list(self, ctx):
