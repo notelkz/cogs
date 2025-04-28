@@ -72,64 +72,55 @@ class ModButtons(discord.ui.View):
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
-async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-    if not interaction.user.guild_permissions.manage_roles:
-        await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
-        return
+    async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.manage_roles:
+            await interaction.response.send_message("You don't have permission to use this button.", ephemeral=True)
+            return
 
-    modal = DeclineModal()
-    await interaction.response.send_modal(modal)
-    
-    try:
-        await modal.wait()
+        # Create and send the decline modal
+        modal = DeclineModal()
+        await interaction.response.send_modal(modal)
         
-        # Disable both buttons
-        self.accept_button.disabled = True
-        self.decline_button.disabled = True
-        await interaction.message.edit(view=self)
+        try:
+            await modal.wait()
+            
+            # Disable both buttons
+            self.accept_button.disabled = True
+            self.decline_button.disabled = True
+            await interaction.message.edit(view=self)
 
-        # Get and update decline counts
-        decline_counts = await self.cog.config.guild(interaction.guild).decline_counts()
-        user_id = str(self.applicant.id)
-        decline_counts[user_id] = decline_counts.get(user_id, 0) + 1
-        await self.cog.config.guild(interaction.guild).decline_counts.set(decline_counts)
+            # Update application status
+            applications = await self.cog.config.guild(interaction.guild).applications()
+            user_application = applications.get(str(self.applicant.id), {})
+            
+            # Track number of declines
+            declines = user_application.get('declines', 0) + 1
+            user_application['declines'] = declines
+            user_application['status'] = 'declined'
+            await self.cog.config.guild(interaction.guild).applications.set(applications)
 
-        # Update application status
-        applications = await self.cog.config.guild(interaction.guild).applications()
-        user_application = applications.get(str(self.applicant.id), {})
-        user_application['status'] = 'declined'
-        await self.cog.config.guild(interaction.guild).applications.set(applications)
-
-        # Check if this is their second decline
-        if decline_counts[user_id] >= 2:
+            # Send appropriate decline message based on number of declines
             try:
-                # Remove permissions from all channels
-                for channel in interaction.guild.channels:
-                    if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
-                        await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
+                if declines >= 2:
+                    await self.applicant.send(
+                        f"Your application to {interaction.guild.name} has been declined.\n"
+                        f"Reason: {modal.decline_reason}\n\n"
+                        "As this is your second declined application, you will not be able to apply again in the future."
+                    )
+                    
+                    # Remove permissions from all channels
+                    try:
+                        for channel in interaction.guild.channels:
+                            if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
+                                await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
+                    except discord.Forbidden:
+                        await interaction.channel.send("Failed to remove user's permissions. Please check bot permissions.")
+                else:
+                    await self.applicant.send(
+                        f"Your application to {interaction.guild.name} has been declined.\n"
+                        f"Reason: {modal.decline_reason}"
+                    )
                 
-                await self.applicant.send(
-                    f"Your application to {interaction.guild.name} has been declined.\n"
-                    f"Reason: {modal.decline_reason}\n\n"
-                    "As this is your second declined application, you will no longer be able to apply again."
-                )
-                
-                await interaction.channel.send(
-                    f"Application permanently declined for {self.applicant.mention}. "
-                    "They have been notified and will not be able to apply again."
-                )
-            except discord.Forbidden:
-                await interaction.channel.send(
-                    f"Could not DM the user, but their application has been permanently declined.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
-        else:
-            # Regular decline notification
-            try:
-                await self.applicant.send(
-                    f"Your application to {interaction.guild.name} has been declined.\n"
-                    f"Reason: {modal.decline_reason}"
-                )
                 await interaction.channel.send(
                     f"Application declined. A DM has been sent to {self.applicant.mention} with the reason."
                 )
@@ -139,14 +130,13 @@ async def decline_button(self, interaction: discord.Interaction, button: discord
                     f"Reason: {modal.decline_reason}"
                 )
 
-        # Move to archive
-        await self.cog.move_to_archive(interaction.channel, interaction.guild, f"Application declined: {modal.decline_reason}")
+            # Move to archive
+            await self.cog.move_to_archive(interaction.channel, interaction.guild, f"Application declined: {modal.decline_reason}")
 
-    except asyncio.TimeoutError:
-        await interaction.followup.send("The decline action has timed out.", ephemeral=True)
-    except Exception as e:
-        await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-
+        except asyncio.TimeoutError:
+            await interaction.followup.send("The decline action has timed out.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, original_view):
         super().__init__(title="Application Form")
@@ -281,7 +271,6 @@ class ApplicationButtons(discord.ui.View):
         self.contact_mod_used = True
         button.disabled = True
         await interaction.message.edit(view=self)
-
 class DisApps(commands.Cog):
     """Discord Applications Management System"""
 
@@ -441,32 +430,31 @@ class DisApps(commands.Cog):
         await self.config.guild(guild).applications.set(applications)
 
     @commands.Cog.listener()
-@commands.Cog.listener()
-async def on_member_join(self, member):
-    guild = member.guild
-    if not await self.config.guild(guild).setup_complete():
-        return
-
-    # Check decline count first
-    decline_counts = await self.config.guild(guild).decline_counts()
-    if decline_counts.get(str(member.id), 0) >= 2:
-        try:
-            await member.send(
-                f"You cannot join {guild.name} as you have previously been declined twice."
-            )
-            await member.kick(reason="Previously declined twice")
+    async def on_member_join(self, member):
+        guild = member.guild
+        if not await self.config.guild(guild).setup_complete():
             return
-        except discord.Forbidden:
-            await member.kick(reason="Previously declined twice")
-            return
-
-    # Continue with the regular application process
-    # (rest of the existing on_member_join code)
-
 
         # Get applications data
         applications = await self.config.guild(guild).applications()
         existing_application = applications.get(str(member.id), {})
+        
+        # Check if user has been declined twice
+        if existing_application.get('declines', 0) >= 2:
+            try:
+                await member.send(
+                    "Your previous applications to this server were declined. "
+                    "You are not eligible to submit new applications."
+                )
+            except discord.Forbidden:
+                pass
+            
+            # Kick the member
+            try:
+                await member.kick(reason="Previously declined applications")
+            except discord.Forbidden:
+                pass
+            return
         
         if existing_application and existing_application.get('status') == 'accepted':
             # User was previously accepted, restore their channel
@@ -482,7 +470,6 @@ async def on_member_join(self, member):
                 applications[str(member.id)]['status'] = 'pending'
                 applications[str(member.id)]['previously_accepted'] = True
                 await self.config.guild(guild).applications.set(applications)
-
 
                 # Send notification
                 embed = discord.Embed(
@@ -551,39 +538,11 @@ async def on_member_join(self, member):
 
         await channel.send(content=member.mention, embed=embed, view=ApplicationButtons(self))
 
-@disapps.command()
-@checks.mod_or_permissions(manage_roles=True)
-async def declines(self, ctx, member: discord.Member = None):
-    """Check how many times a user has been declined"""
-    decline_counts = await self.config.guild(ctx.guild).decline_counts()
-    
-    if member:
-        count = decline_counts.get(str(member.id), 0)
-        await ctx.send(f"{member.name} has been declined {count} time(s).")
-    else:
-        if not decline_counts:
-            await ctx.send("No decline records found.")
-            return
-        
-        msg = "Decline counts:\n"
-        for user_id, count in decline_counts.items():
-            user = ctx.guild.get_member(int(user_id))
-            if user:
-                msg += f"{user.name}: {count} time(s)\n"
-        await ctx.send(msg)
-
-@disapps.command()
-@checks.admin_or_permissions(administrator=True)
-async def resetdeclines(self, ctx, member: discord.Member):
-    """Reset the decline count for a specific user"""
-    decline_counts = await self.config.guild(ctx.guild).decline_counts()
-    if str(member.id) in decline_counts:
-        del decline_counts[str(member.id)]
-        await self.config.guild(ctx.guild).decline_counts.set(decline_counts)
-        await ctx.send(f"Decline count reset for {member.name}")
-    else:
-        await ctx.send(f"No decline record found for {member.name}")
-
+    @disapps.command()
+    async def test(self, ctx):
+        """Test the application system with a fake member join"""
+        await self.on_member_join(ctx.author)
+        await ctx.send("Test application created!")
 
 def setup(bot):
     bot.add_cog(DisApps(bot))
