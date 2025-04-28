@@ -156,57 +156,63 @@ class EFreeGames(commands.Cog):
         try:
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "application/json",
-                "Referer": "https://www.gog.com/",
-                "Origin": "https://www.gog.com"
+                "Accept": "application/json"
             }
 
-            # Use the correct GOG API endpoint
-            url = "https://www.gog.com/api/v2/games/feed"
-            params = {
-                "category": "free",
-                "limit": 48,
-                "page": 1,
-                "sort": "popularity"
-            }
+            # First get the store page
+            url = "https://www.gog.com/partner/free_games"
             
-            async with self.session.get(url, headers=headers, params=params) as resp:
+            async with self.session.get(url, headers=headers) as resp:
                 if resp.status != 200:
-                    log.error(f"GOG API returned status {resp.status}")
-                    log.error(f"GOG API response: {await resp.text()}")
-                    return []
-                    
-                try:
-                    data = await resp.json()
-                    free_games = []
-                    
-                    for product in data.get("results", []):
-                        # Check if the game is actually free
-                        price_info = product.get("price", {})
-                        if price_info.get("isFree", False) or price_info.get("amount", "1") == "0":
-                            game_title = product.get("title", "Unknown")
-                            game_slug = product.get("slug", "")
-                            
-                            free_games.append(GameDeal(
-                                title=game_title,
-                                url=f"https://www.gog.com/en/game/{game_slug}",
-                                image=product.get("coverHorizontal", ""),
-                                platform="GOG",
-                                original_price=f"${price_info.get('baseAmount', 'N/A')}",
-                                description=product.get("description", game_title),
-                                deal_type="game"
-                            ))
-                    
-                    log.info(f"Found {len(free_games)} free games on GOG")
-                    return free_games
-                    
-                except Exception as e:
-                    log.error(f"Failed to parse GOG response: {e}")
-                    log.error(f"Response content type: {resp.content_type}")
-                    log.error(f"Response headers: {resp.headers}")
-                    log.error(f"Response content: {await resp.text()}")
+                    log.error(f"GOG store page returned status {resp.status}")
                     return []
                 
+                # Now get the actual data from their store API
+                store_url = "https://store.gog.com/v1/catalog"
+                params = {
+                    "limit": 50,
+                    "order": "desc:trending",
+                    "productType": "game",
+                    "price": "free"
+                }
+                
+                async with self.session.get(store_url, headers=headers, params=params) as store_resp:
+                    if store_resp.status != 200:
+                        log.error(f"GOG store API returned status {store_resp.status}")
+                        return []
+                        
+                    try:
+                        data = await store_resp.json()
+                        free_games = []
+                        
+                        for product in data.get("items", []):
+                            # Check if the game is actually free
+                            price = product.get("price", {})
+                            if price.get("final", 0) == 0:
+                                game_title = product.get("title", "Unknown")
+                                game_id = product.get("id", "")
+                                
+                                free_games.append(GameDeal(
+                                    title=game_title,
+                                    url=f"https://www.gog.com/game/{game_id}",
+                                    image=product.get("image", ""),
+                                    platform="GOG",
+                                    original_price=f"${price.get('base', 'N/A')}",
+                                    description=product.get("description", ""),
+                                    deal_type="game"
+                                ))
+                        
+                        log.info(f"Found {len(free_games)} free games on GOG")
+                        return free_games
+                        
+                    except Exception as e:
+                        log.error(f"Failed to parse GOG response: {e}")
+                        log.error(f"Response content type: {store_resp.content_type}")
+                        log.error(f"Response headers: {store_resp.headers}")
+                        content = await store_resp.text()
+                        log.error(f"Response content: {content[:500]}...")  # Log first 500 chars
+                        return []
+                    
         except Exception as e:
             log.error(f"Error fetching GOG games: {e}")
             log.error(f"Full error: {str(e)}")
