@@ -612,3 +612,96 @@ class DisApps(commands.Cog):
         """Test the application system with a fake member join"""
         await self.on_member_join(ctx.author)
         await ctx.send("Test application created!")
+
+    @disapps.command()
+    @checks.admin_or_permissions(administrator=True)
+    async def unban(self, ctx, user: discord.User):
+        """Unban a user from the application system, allowing them to apply again."""
+        guild = ctx.guild
+        applications = await self.config.guild(guild).applications()
+        
+        if str(user.id) not in applications:
+            await ctx.send(f"{user.mention} has no application history in this server.")
+            return
+            
+        # Reset their application status
+        applications[str(user.id)] = {
+            'status': 'none',
+            'declines': 0,
+            'previously_accepted': False
+        }
+        await self.config.guild(guild).applications.set(applications)
+        
+        # Create confirmation embed
+        embed = discord.Embed(
+            title="Application Ban Removed",
+            description=f"{user.mention} has been unbanned from the application system.\nThey can now join and apply again.",
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="Moderator", value=ctx.author.mention)
+        
+        await ctx.send(embed=embed)
+        
+        # Try to DM the user
+        try:
+            await user.send(f"You have been unbanned from applying to {guild.name}. You may now join and submit a new application.")
+        except discord.Forbidden:
+            await ctx.send("Could not DM the user, but they have been unbanned from the application system.")
+
+    @disapps.command()
+    @checks.admin_or_permissions(administrator=True)
+    async def checkban(self, ctx, user: discord.User):
+        """Check if a user is banned from applying and see their application history."""
+        guild = ctx.guild
+        applications = await self.config.guild(guild).applications()
+        
+        if str(user.id) not in applications:
+            await ctx.send(f"{user.mention} has no application history in this server.")
+            return
+            
+        user_app = applications[str(user.id)]
+        
+        # Create status embed
+        embed = discord.Embed(
+            title="Application Status Check",
+            description=f"Application history for {user.mention}",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add application details
+        embed.add_field(
+            name="Current Status", 
+            value=user_app.get('status', 'none').title(),
+            inline=False
+        )
+        embed.add_field(
+            name="Times Declined",
+            value=str(user_app.get('declines', 0)),
+            inline=True
+        )
+        embed.add_field(
+            name="Previously Accepted",
+            value="Yes" if user_app.get('previously_accepted', False) else "No",
+            inline=True
+        )
+        
+        # Calculate if they're banned
+        is_banned = (user_app.get('declines', 0) >= 2 or 
+                    (user_app.get('status') != 'accepted' and user_app.get('status') != 'none'))
+        
+        embed.add_field(
+            name="Can Apply?",
+            value="No - Currently Banned" if is_banned else "Yes",
+            inline=False
+        )
+        
+        if is_banned:
+            embed.add_field(
+                name="Unban Command",
+                value=f"Use `{ctx.prefix}disapps unban @{user.name}` to allow this user to apply again.",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
