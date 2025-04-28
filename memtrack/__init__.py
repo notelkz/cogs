@@ -1,4 +1,4 @@
-from .membertracker import MemberTracker
+from .memtrack import MemTrack
 
 async def setup(bot):
-    await bot.add_cog(MemberTracker(bot))
+    await bot.add_cog(MemTrack(bot))
