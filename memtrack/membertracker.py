@@ -333,4 +333,116 @@ class MemTrack(commands.Cog):
         sorted_members.sort(key=lambda x: x[2])  # Sort by time remaining
 
         if not sorted_members:
-         
+            embed.description += "\nNo members currently match the tracking criteria."
+            await ctx.send(embed=embed)
+            return
+
+        for member, join_date_str, seconds_left in sorted_members:
+            time_left = await self.format_time_remaining(seconds_left)
+            member_roles = [role.name for role in member.roles if role.id in guild_data.get("tracked_roles", [])]
+            
+            value = f"Joined: {join_date_str}\n"
+            value += f"Time remaining: {time_left}"
+            if member_roles:
+                value += f"\nTracked Roles: {', '.join(member_roles)}"
+            
+            embed.add_field(
+                name=member.display_name,
+                value=value,
+                inline=True
+            )
+
+        embed.set_footer(text=f"Requested by {ctx.author.display_name}")
+        await ctx.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        """Log when a member joins the server"""
+        if not await self.should_track_member(member):
+            return
+
+        join_date = datetime.utcnow().strftime("%d/%m/%Y")
+        async with self.config.guild(member.guild).member_joins() as joins:
+            joins[str(member.id)] = join_date
+
+        # Send join notification
+        channel_id = await self.config.guild(member.guild).notification_channel()
+        if channel_id:
+            channel = member.guild.get_channel(channel_id)
+            if channel:
+                guild_data = await self.config.guild(member.guild).all()
+                tracked_roles = [role.name for role in member.roles if role.id in guild_data.get("tracked_roles", [])]
+                
+                embed = Embed(
+                    title="New Member Tracked",
+                    description=f"Started tracking {member.mention}",
+                    color=discord.Color.green()
+                )
+                embed.add_field(
+                    name="Join Date",
+                    value=join_date,
+                    inline=True
+                )
+                
+                if tracked_roles:
+                    embed.add_field(
+                        name="Tracked Roles",
+                        value=", ".join(tracked_roles),
+                        inline=True
+                    )
+                
+                await channel.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before, after):
+        """Handle role changes for tracked members"""
+        if before.roles == after.roles:
+            return
+
+        guild_data = await self.config.guild(after.guild).all()
+        tracked_roles = guild_data.get("tracked_roles", [])
+        
+        # Check if the role change affects tracking
+        was_tracked = await self.should_track_member(before)
+        is_tracked = await self.should_track_member(after)
+        
+        if was_tracked == is_tracked:
+            return
+            
+        if is_tracked and not was_tracked:
+            # Start tracking
+            join_date = datetime.utcnow().strftime("%d/%m/%Y")
+            async with self.config.guild(after.guild).member_joins() as joins:
+                joins[str(after.id)] = join_date
+                
+            # Send notification
+            channel_id = guild_data.get("notification_channel")
+            if channel_id:
+                channel = after.guild.get_channel(channel_id)
+                if channel:
+                    embed = Embed(
+                        title="Member Tracking Started",
+                        description=f"Started tracking {after.mention} due to role change",
+                        color=discord.Color.green()
+                    )
+                    await channel.send(embed=embed)
+                    
+        elif was_tracked and not is_tracked:
+            # Stop tracking
+            async with self.config.guild(after.guild).member_joins() as joins:
+                joins.pop(str(after.id), None)
+                
+            # Send notification
+            channel_id = guild_data.get("notification_channel")
+            if channel_id:
+                channel = after.guild.get_channel(channel_id)
+                if channel:
+                    embed = Embed(
+                        title="Member Tracking Stopped",
+                        description=f"Stopped tracking {after.mention} due to role change",
+                        color=discord.Color.yellow()
+                    )
+                    await channel.send(embed=embed)
+
+async def setup(bot):
+    await bot.add_cog(MemTrack(bot))
