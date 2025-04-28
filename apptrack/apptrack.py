@@ -2,7 +2,6 @@ from redbot.core import commands, Config
 from redbot.core.bot import Red
 from typing import Dict, List, Set
 import discord
-import asyncio
 import datetime
 
 class AppTrack(commands.Cog):
@@ -23,34 +22,31 @@ class AppTrack(commands.Cog):
         }
         
         self.config.register_guild(**default_guild)
-        self.activity_check_task = self.bot.loop.create_task(self.periodic_activity_check())
 
-    def cog_unload(self):
-        """Cleanup when cog is unloaded."""
-        if self.activity_check_task:
-            self.activity_check_task.cancel()
+    def is_valid_activity(self, activity: discord.Activity) -> bool:
+        """Check if the activity is valid for tracking."""
+        return (activity.type != discord.ActivityType.custom and 
+                activity.name is not None and 
+                activity.name.strip() != "")
 
-    async def periodic_activity_check(self):
-        """Check for new activities every 60 seconds."""
-        await self.bot.wait_until_ready()
-        while True:
-            try:
-                for guild in self.bot.guilds:
-                    current_activities = set()
-                    for member in guild.members:
-                        for activity in member.activities:
-                            if activity.name:  # Ensure activity has a name
-                                current_activities.add(activity.name)
-                                
-                    async with self.config.guild(guild).discovered_activities() as discovered:
-                        for activity in current_activities:
-                            if activity not in discovered:
-                                discovered[activity] = str(datetime.datetime.now())
-                
-                await asyncio.sleep(60)  # Wait 60 seconds before next check
-            except Exception as e:
-                print(f"Error in activity check: {e}")
-                await asyncio.sleep(60)
+    async def update_activities(self, guild: discord.Guild) -> tuple[set, int]:
+        """Update the activities list for a guild and return new activities."""
+        current_activities = set()
+        new_count = 0
+        
+        # Collect activities from all members
+        for member in guild.members:
+            for activity in member.activities:
+                if self.is_valid_activity(activity):
+                    current_activities.add(activity.name)
+                    
+        async with self.config.guild(guild).discovered_activities() as discovered:
+            for activity in current_activities:
+                if activity not in discovered:
+                    discovered[activity] = str(datetime.datetime.now())
+                    new_count += 1
+                    
+        return current_activities, new_count
 
     @commands.group(aliases=["at"])
     @commands.guild_only()
@@ -60,23 +56,37 @@ class AppTrack(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send("Please specify a subcommand. Use `!help apptrack` for more information.")
 
+    @apptrack.command(name="update")
+    async def update_activity_list(self, ctx: commands.Context):
+        """Manually update the activity list."""
+        async with ctx.typing():
+            current_activities, new_count = await self.update_activities(ctx.guild)
+            
+            if new_count > 0:
+                await ctx.send(f"Update complete! Found {new_count} new activities. Use `!at discover` to see all activities.")
+            else:
+                await ctx.send("Update complete! No new activities found.")
+
     @apptrack.command(name="discover")
     async def discover_activities(self, ctx: commands.Context):
         """List all discovered Discord Activities in the server."""
         discovered = await self.config.guild(ctx.guild).discovered_activities()
         
         if not discovered:
-            await ctx.send("No activities have been discovered yet.")
+            await ctx.send("No activities have been discovered yet. Use `!at update` to scan for activities.")
             return
             
         # Sort activities by discovery date
         sorted_activities = sorted(discovered.items(), key=lambda x: x[1])
         
-        embed = discord.Embed(
+        # Create embeds (Discord has a 25 field limit per embed)
+        embeds = []
+        current_embed = discord.Embed(
             title="Discovered Discord Activities",
             description="All activities that have been seen in the server",
             color=discord.Color.blue()
         )
+        field_count = 0
         
         for activity_name, first_seen in sorted_activities:
             try:
@@ -85,13 +95,26 @@ class AppTrack(commands.Cog):
             except:
                 first_seen_str = "Unknown"
                 
-            embed.add_field(
+            if field_count == 25:  # Maximum fields reached
+                embeds.append(current_embed)
+                current_embed = discord.Embed(
+                    title="Discovered Discord Activities (Continued)",
+                    color=discord.Color.blue()
+                )
+                field_count = 0
+                
+            current_embed.add_field(
                 name=activity_name,
                 value=f"First seen: {first_seen_str}",
                 inline=False
             )
+            field_count += 1
             
-        await ctx.send(embed=embed)
+        if field_count > 0:
+            embeds.append(current_embed)
+            
+        for embed in embeds:
+            await ctx.send(embed=embed)
 
     @apptrack.command(name="current")
     async def current_activities(self, ctx: commands.Context):
@@ -100,7 +123,7 @@ class AppTrack(commands.Cog):
         
         for member in ctx.guild.members:
             for activity in member.activities:
-                if activity.name:
+                if self.is_valid_activity(activity):
                     if activity.name not in current_activities:
                         current_activities[activity.name] = []
                     current_activities[activity.name].append(member.name)
@@ -109,20 +132,36 @@ class AppTrack(commands.Cog):
             await ctx.send("No activities are currently running in the server.")
             return
             
-        embed = discord.Embed(
+        # Create embeds (Discord has a 25 field limit per embed)
+        embeds = []
+        current_embed = discord.Embed(
             title="Current Discord Activities",
             description="Activities currently running in the server",
             color=discord.Color.green()
         )
+        field_count = 0
         
         for activity_name, users in current_activities.items():
-            embed.add_field(
+            if field_count == 25:  # Maximum fields reached
+                embeds.append(current_embed)
+                current_embed = discord.Embed(
+                    title="Current Discord Activities (Continued)",
+                    color=discord.Color.green()
+                )
+                field_count = 0
+                
+            current_embed.add_field(
                 name=f"{activity_name} ({len(users)} users)",
                 value=", ".join(users[:5]) + ("..." if len(users) > 5 else ""),
                 inline=False
             )
+            field_count += 1
             
-        await ctx.send(embed=embed)
+        if field_count > 0:
+            embeds.append(current_embed)
+            
+        for embed in embeds:
+            await ctx.send(embed=embed)
 
     @apptrack.command(name="add")
     async def add_activity(self, ctx: commands.Context, *, activity_name: str):
@@ -198,7 +237,7 @@ class AppTrack(commands.Cog):
         
         # Check for new activities
         for activity in after.activities:
-            if activity.name in tracked_activities:
+            if self.is_valid_activity(activity) and activity.name in tracked_activities:
                 role_id = activity_roles.get(activity.name)
                 if role_id:
                     role = before.guild.get_role(role_id)
@@ -210,8 +249,9 @@ class AppTrack(commands.Cog):
 
         # Remove roles for stopped activities
         for activity in before.activities:
-            if (activity.name in tracked_activities and 
-                activity.name not in [a.name for a in after.activities]):
+            if (self.is_valid_activity(activity) and 
+                activity.name in tracked_activities and 
+                activity.name not in [a.name for a in after.activities if self.is_valid_activity(a)]):
                 role_id = activity_roles.get(activity.name)
                 if role_id:
                     role = before.guild.get_role(role_id)
