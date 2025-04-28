@@ -14,7 +14,7 @@ class MemberTracker(commands.Cog):
         default_guild = {
             "role_tracks": [],  # List of role tracking configurations
             "active_tracks": {}, # Dictionary of active role assignments
-            "configured_roles": [] # List of role IDs that have been configured
+            "configured_roles": [] # List of role IDs that have been configured as base roles
         }
         self.config.register_guild(**default_guild)
 
@@ -26,7 +26,8 @@ class MemberTracker(commands.Cog):
             configured_roles = await self.config.guild(guild).configured_roles()
             
             # Update configured_roles based on existing role_tracks
-            # Only include initial roles, not upgrade roles
+            # Only include base roles, not secondary roles
+            configured_roles = []  # Reset the list
             for track in role_tracks:
                 role_id = str(track["role_id"])
                 if role_id not in configured_roles:
@@ -43,12 +44,13 @@ class MemberTracker(commands.Cog):
             await ctx.send("Please use `!memtrack setup` to configure role tracking.")
 
     async def is_role_configured(self, guild: discord.Guild, role_id: int) -> bool:
-        """Check if a role is already configured"""
-        configured_roles = await self.config.guild(guild).configured_roles()
-        return str(role_id) in configured_roles
+        """Check if a role is already configured as a base role"""
+        role_tracks = await self.config.guild(guild).role_tracks()
+        # Only check if the role is used as a base role (role_id), not as a secondary role (new_role_id)
+        return any(str(role_id) == str(track["role_id"]) for track in role_tracks)
 
     async def add_configured_role(self, guild: discord.Guild, role_id: int):
-        """Add a role to the configured roles list"""
+        """Add a role to the configured base roles list"""
         configured_roles = await self.config.guild(guild).configured_roles()
         if str(role_id) not in configured_roles:
             configured_roles.append(str(role_id))
@@ -78,18 +80,18 @@ class MemberTracker(commands.Cog):
 
             try:
                 if track_info["action"] == 1:
-                    # Remove the role
+                    # Remove the base role
                     await member.remove_roles(role)
                     skipped_roles.append(f"{role.name} (removed)")
                 elif track_info["action"] == 2:
-                    # Remove old role and add new one
-                    new_role = guild.get_role(track_info["new_role_id"])
-                    if new_role:
-                        await member.add_roles(new_role)
+                    # Remove base role and add secondary role
+                    secondary_role = guild.get_role(track_info["new_role_id"])
+                    if secondary_role:
+                        await member.add_roles(secondary_role)
                         await member.remove_roles(role)
-                        skipped_roles.append(f"{role.name} → {new_role.name}")
+                        skipped_roles.append(f"{role.name} → {secondary_role.name}")
                     else:
-                        failed_roles.append(f"{role.name} (upgrade role not found)")
+                        failed_roles.append(f"{role.name} (secondary role not found)")
                         continue
             except discord.Forbidden:
                 failed_roles.append(f"{role.name} (permission denied)")
@@ -189,8 +191,8 @@ class MemberTracker(commands.Cog):
         """
         Start tracking users who already have a configured role.
         Usage:
-        !mt trackexisting - Track all configured roles
-        !mt trackexisting @role - Track specific role
+        !mt trackexisting - Track all configured base roles
+        !mt trackexisting @role - Track specific base role
         """
         guild = ctx.guild
         role_tracks = await self.config.guild(guild).role_tracks()
@@ -203,7 +205,7 @@ class MemberTracker(commands.Cog):
         tracked_count = 0
         already_tracked = 0
         if role:
-            # Check if role is configured
+            # Check if role is configured as a base role
             track_config = None
             for track in role_tracks:
                 if track["role_id"] == role.id:
@@ -211,10 +213,10 @@ class MemberTracker(commands.Cog):
                     break
             
             if not track_config:
-                await ctx.send(f"The role {role.mention} is not configured for tracking.")
+                await ctx.send(f"The role {role.mention} is not configured as a base role for tracking.")
                 return
                 
-            await ctx.send(f"Checking members with {role.name}...")
+            await ctx.send(f"Checking members with base role {role.name}...")
             
             # Track existing role assignments
             for member in role.members:
@@ -238,8 +240,8 @@ class MemberTracker(commands.Cog):
                 self.bot.loop.create_task(self.check_role_expiration(member, role, track_config))
         
         else:
-            # Track all configured roles
-            await ctx.send("Checking members for all configured roles...")
+            # Track all configured base roles
+            await ctx.send("Checking members for all configured base roles...")
             
             for track in role_tracks:
                 role = guild.get_role(track["role_id"])
@@ -277,14 +279,14 @@ class MemberTracker(commands.Cog):
     @memtrack.command()
     async def duplicates(self, ctx, remove: bool = False):
         """
-        Check for duplicate role configurations.
+        Check for duplicate base role configurations.
         Use '!mt duplicates true' to remove duplicates automatically.
         """
         guild = ctx.guild
         role_tracks = await self.config.guild(guild).role_tracks()
         configured_roles = await self.config.guild(guild).configured_roles()
         
-        # Track duplicates
+        # Track duplicates of base roles
         role_counts = defaultdict(list)
         for i, track in enumerate(role_tracks):
             role_id = str(track["role_id"])
@@ -294,14 +296,14 @@ class MemberTracker(commands.Cog):
         duplicates = {role_id: indices for role_id, indices in role_counts.items() if len(indices) > 1}
         
         if not duplicates:
-            await ctx.send("No duplicate role configurations found.")
+            await ctx.send("No duplicate base role configurations found.")
             return
         
-        response = "**Duplicate Role Configurations Found:**\n\n"
+        response = "**Duplicate Base Role Configurations Found:**\n\n"
         for role_id, indices in duplicates.items():
             role = guild.get_role(int(role_id))
             role_name = role.name if role else f"Deleted Role (ID: {role_id})"
-            response += f"Role: {role_name}\n"
+            response += f"Base Role: {role_name}\n"
             response += f"Found in configurations: {', '.join(str(i+1) for i in indices)}\n\n"
         
         if remove:
@@ -335,18 +337,18 @@ class MemberTracker(commands.Cog):
         configured_roles = await self.config.guild(guild).configured_roles()
         role_tracks = await self.config.guild(guild).role_tracks()
         
-        response = "**Currently Configured Roles:**\n"
+        response = "**Currently Configured Base Roles:**\n"
         for role_id in configured_roles:
             role = guild.get_role(int(role_id))
             response += f"- {role.name if role else 'Deleted role'} (ID: {role_id})\n"
             
         response += "\n**Current Role Tracks:**\n"
         for track in role_tracks:
-            initial_role = guild.get_role(track["role_id"])
-            response += f"- {initial_role.name if initial_role else 'Deleted role'} "
+            base_role = guild.get_role(track["role_id"])
+            response += f"- Base: {base_role.name if base_role else 'Deleted role'} "
             if track["action"] == 2:
-                upgrade_role = guild.get_role(track["new_role_id"]) if track["new_role_id"] else None
-                response += f"-> {upgrade_role.name if upgrade_role else 'Deleted role'}"
+                secondary_role = guild.get_role(track["new_role_id"]) if track["new_role_id"] else None
+                response += f"-> Secondary: {secondary_role.name if secondary_role else 'Deleted role'}"
             else:
                 response += "-> Remove role"
             response += "\n"
@@ -407,15 +409,15 @@ class MemberTracker(commands.Cog):
                 time_remaining = total_duration - time_had
                 days_remaining = time_remaining / (24 * 60 * 60)
                 
-                response += f"Role: {role.name}\n"
+                response += f"Base Role: {role.name}\n"
                 response += f"Time had: {time_had_str}\n"
                 response += f"Time remaining: {days_remaining:.1f} days\n"
                 
                 if track_info["action"] == 1:
                     response += "Action: Role will be removed\n"
                 else:
-                    new_role = guild.get_role(track_info["new_role_id"])
-                    response += f"Action: Will be upgraded to {new_role.name if new_role else 'deleted role'}\n"
+                    secondary_role = guild.get_role(track_info["new_role_id"])
+                    response += f"Action: Will be upgraded to secondary role: {secondary_role.name if secondary_role else 'deleted role'}\n"
                 
                 response += "\n"
                 
@@ -429,8 +431,8 @@ class MemberTracker(commands.Cog):
 
         response = "**Configured Role Tracks:**\n\n"
         for i, track in enumerate(role_tracks, 1):
-            role = guild.get_role(track["role_id"])
-            if not role:
+            base_role = guild.get_role(track["role_id"])
+            if not base_role:
                 continue
                 
             duration_days = track["duration"] / (24 * 60 * 60)
@@ -438,10 +440,10 @@ class MemberTracker(commands.Cog):
             if track["action"] == 1:
                 action = "Remove role"
             else:
-                new_role = guild.get_role(track["new_role_id"])
-                action = f"Upgrade to {new_role.name if new_role else 'deleted role'}"
+                secondary_role = guild.get_role(track["new_role_id"])
+                action = f"Upgrade to secondary role: {secondary_role.name if secondary_role else 'deleted role'}"
                 
-            response += f"{i}. Role: {role.name}\n"
+            response += f"{i}. Base Role: {base_role.name}\n"
             response += f"   Duration: {duration_days} days\n"
             response += f"   Action: {action}\n\n"
             
@@ -453,8 +455,8 @@ class MemberTracker(commands.Cog):
         role_tracks = await self.config.guild(guild).role_tracks()
         
         while True:
-            # Ask for the role to monitor
-            await ctx.send("Please mention the role you want to monitor:")
+            # Ask for the base role to monitor
+            await ctx.send("Please mention the base role you want to monitor (this is the starting role):")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -466,15 +468,15 @@ class MemberTracker(commands.Cog):
                     await ctx.send("No role mentioned. Setup cancelled.")
                     return
                 
-                role = msg.role_mentions[0]
+                base_role = msg.role_mentions[0]
                 
-                # Check if role is already configured as an initial role
-                if await self.is_role_configured(guild, role.id):
-                    await ctx.send(f"The role {role.name} is already configured as a base role. Please choose a different role.")
+                # Check if role is already configured as a base role
+                if await self.is_role_configured(guild, base_role.id):
+                    await ctx.send(f"The role {base_role.name} is already configured as a base role. Please choose a different role.")
                     continue
                 
                 # Ask for duration
-                await ctx.send("How long should users keep this role? (Format: 1d, 30d, etc.)")
+                await ctx.send(f"How long should users keep the base role '{base_role.name}'? (Format: 1d, 30d, etc.)")
                 msg = await self.bot.wait_for(
                     "message",
                     check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
@@ -493,7 +495,7 @@ class MemberTracker(commands.Cog):
                     return
                 
                 # Ask about after-duration action
-                await ctx.send("What should happen after the duration expires?\n1. Remove the role\n2. Assign a new role and remove old one\n\nType 1 or 2:")
+                await ctx.send("What should happen after the duration expires?\n1. Remove the base role\n2. Upgrade to secondary role\n\nType 1 or 2:")
                 msg = await self.bot.wait_for(
                     "message",
                     check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
@@ -501,10 +503,10 @@ class MemberTracker(commands.Cog):
                 )
                 
                 action = int(msg.content)
-                new_role = None
+                secondary_role = None
                 
                 if action == 2:
-                    await ctx.send("Please mention the new role to assign:")
+                    await ctx.send("Please mention the secondary role to assign (this is the role they will be upgraded to):")
                     msg = await self.bot.wait_for(
                         "message",
                         check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
@@ -513,23 +515,23 @@ class MemberTracker(commands.Cog):
                     if len(msg.role_mentions) == 0:
                         await ctx.send("No role mentioned. Setup cancelled.")
                         return
-                    new_role = msg.role_mentions[0].id
+                    secondary_role = msg.role_mentions[0].id
                 
                 # Save the configuration
                 track_config = {
-                    "role_id": role.id,
+                    "role_id": base_role.id,
                     "duration": duration,
                     "action": action,
-                    "new_role_id": new_role
+                    "new_role_id": secondary_role
                 }
                 
-                # Only add the initial role to configured roles list
-                await self.add_configured_role(guild, role.id)
+                # Only add the base role to configured roles list
+                await self.add_configured_role(guild, base_role.id)
                 
                 role_tracks.append(track_config)
                 
-                # Ask if they want to add more roles
-                await ctx.send("Do you want to configure another role? (yes/no)")
+                # Ask if they want to add more role tracks
+                await ctx.send("Do you want to configure another base role? (yes/no)")
                 msg = await self.bot.wait_for(
                     "message",
                     check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
@@ -578,7 +580,7 @@ class MemberTracker(commands.Cog):
             if role not in before.roles:
                 for track in role_tracks:
                     if track["role_id"] == role.id:
-                        # Start tracking this role
+                        # Start tracking this base role
                         if str(after.id) not in active_tracks:
                             active_tracks[str(after.id)] = {}
                         
@@ -604,13 +606,13 @@ class MemberTracker(commands.Cog):
             
         try:
             if track_config["action"] == 1:
-                # Remove the role
+                # Remove the base role
                 await member.remove_roles(role)
             elif track_config["action"] == 2:
-                # Remove old role and add new one
-                new_role = member.guild.get_role(track_config["new_role_id"])
-                if new_role:
-                    await member.add_roles(new_role)
+                # Remove base role and add secondary role
+                secondary_role = member.guild.get_role(track_config["new_role_id"])
+                if secondary_role:
+                    await member.add_roles(secondary_role)
                 await member.remove_roles(role)
                 
             # Remove from active tracking
@@ -635,31 +637,31 @@ class MemberTracker(commands.Cog):
         try:
             # Use first configured track for testing
             track = role_tracks[0]
-            initial_role = guild.get_role(track["role_id"])
-            upgrade_role = guild.get_role(track["new_role_id"]) if track["action"] == 2 else None
+            base_role = guild.get_role(track["role_id"])
+            secondary_role = guild.get_role(track["new_role_id"]) if track["action"] == 2 else None
 
-            if not initial_role or (track["action"] == 2 and not upgrade_role):
+            if not base_role or (track["action"] == 2 and not secondary_role):
                 await ctx.send("Configured roles not found. Test cancelled.")
                 return
 
             # Start the test
             await ctx.send(f"Starting role tracking test for {member.mention}")
-            await ctx.send("Phase 1: Adding initial role...")
-            await member.add_roles(initial_role)
-            added_roles.append(initial_role)
+            await ctx.send("Phase 1: Adding base role...")
+            await member.add_roles(base_role)
+            added_roles.append(base_role)
             
             # Wait for 30 seconds
             await ctx.send("Waiting 30 seconds...")
             await asyncio.sleep(30)
 
             if track["action"] == 1:
-                await ctx.send("Phase 2: Removing role...")
-                await member.remove_roles(initial_role)
+                await ctx.send("Phase 2: Removing base role...")
+                await member.remove_roles(base_role)
             else:
-                await ctx.send("Phase 2: Upgrading to second role...")
-                await member.add_roles(upgrade_role)
-                added_roles.append(upgrade_role)
-                await member.remove_roles(initial_role)
+                await ctx.send("Phase 2: Upgrading to secondary role...")
+                await member.add_roles(secondary_role)
+                added_roles.append(secondary_role)
+                await member.remove_roles(base_role)
 
             await ctx.send("Test completed!")
 
