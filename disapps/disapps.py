@@ -157,7 +157,6 @@ async def decline_button(self, interaction: discord.Interaction, button: discord
         await interaction.followup.send("The decline action has timed out.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"An error occurred: {str(e)}", ephemeral=True)
-
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, original_view):
         super().__init__(title="Application Form")
