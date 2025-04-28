@@ -82,7 +82,10 @@ class EFreeGames(commands.Cog):
 
     async def fetch_epic_games(self) -> List[GameDeal]:
         try:
-            async with self.session.get("https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions") as resp:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            async with self.session.get("https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions", headers=headers) as resp:
                 if resp.status != 200:
                     return []
                 data = await resp.json()
@@ -110,7 +113,10 @@ class EFreeGames(commands.Cog):
 
     async def fetch_steam_games(self) -> List[GameDeal]:
         try:
-            async with self.session.get("https://steamcommunity.com/groups/freegamesoncommunity/rss/") as resp:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            async with self.session.get("https://steamcommunity.com/groups/freegamesoncommunity/rss/", headers=headers) as resp:
                 if resp.status != 200:
                     return []
                 feed = feedparser.parse(await resp.text())
@@ -122,7 +128,7 @@ class EFreeGames(commands.Cog):
                         url = store_url.group(0)
                         # Fetch additional details from Steam store API
                         app_id = url.split('/')[-1]
-                        async with self.session.get(f"https://store.steampowered.com/api/appdetails?appids={app_id}") as store_resp:
+                        async with self.session.get(f"https://store.steampowered.com/api/appdetails?appids={app_id}", headers=headers) as store_resp:
                             if store_resp.status != 200:
                                 continue
                             store_data = await store_resp.json()
@@ -144,19 +150,22 @@ class EFreeGames(commands.Cog):
 
     async def fetch_gog_games(self) -> List[GameDeal]:
         try:
-            async with self.session.get("https://www.gog.com/api/v2/games/feed?price=free&sort=popularity") as resp:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            async with self.session.get("https://www.gog.com/games/ajax/filtered?mediaType=game&price=free&sort=popularity&page=1", headers=headers) as resp:
                 if resp.status != 200:
                     return []
                 data = await resp.json()
                 free_games = []
                 for product in data.get("products", []):
-                    if product.get("price", {}).get("isFree", False):
+                    if product.get("price", {}).get("amount") == "0.00":
                         free_games.append(GameDeal(
                             title=product.get("title", "Unknown"),
-                            url=f"https://www.gog.com/game/{product.get('slug')}",
-                            image=product.get("coverHorizontal", ""),
+                            url=f"https://www.gog.com{product.get('url', '')}",
+                            image=product.get("image", ""),
                             platform="GOG",
-                            original_price=str(product.get("price", {}).get("basePrice", "N/A")),
+                            original_price=product.get("price", {}).get("baseAmount", "N/A"),
                             description=product.get("description", ""),
                             deal_type="game"
                         ))
@@ -167,7 +176,6 @@ class EFreeGames(commands.Cog):
 
     async def should_notify(self, guild_id: int, game: GameDeal) -> bool:
         """Check if we should notify about this game based on guild settings."""
-        # Get the filters configuration
         guild_data = await self.config.guild_from_id(guild_id).all()
         
         # Check deal type filter
@@ -182,7 +190,7 @@ class EFreeGames(commands.Cog):
                 if price < min_price:
                     return False
             except (ValueError, TypeError):
-                pass  # If we can't parse the price, ignore the minimum price filter
+                pass
 
         return True
 
@@ -249,7 +257,6 @@ class EFreeGames(commands.Cog):
                                 content = role.mention
                                 
                         await channel.send(content=content, embed=embed)
-                        # Update last notification without using context manager
                         current_notifications = dict(last_notification)
                         current_notifications[game_key] = datetime.now().isoformat()
                         await self.config.guild(channel.guild).last_notification.set(current_notifications)
@@ -262,7 +269,6 @@ class EFreeGames(commands.Cog):
     async def efreegames(self, ctx):
         """Configure free games notifications"""
         if ctx.invoked_subcommand is None:
-            # Create an embedded help menu
             embed = discord.Embed(
                 title="EFreeGames Commands",
                 description="Available commands for free games notifications:",
