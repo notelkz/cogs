@@ -340,50 +340,104 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    async def move_to_archive(self, channel, guild, reason=""):
-        """Helper function to move channels to archive"""
-        archive_id = await self.config.guild(guild).archive_category()
-        archive_category = guild.get_channel(archive_id)
-        
-        if archive_category:
-            # Get the moderator role
-            mod_role_id = await self.config.guild(guild).mod_role()
-            mod_role = guild.get_role(mod_role_id)
-            
-            # Find the user overwrite (there should only be one non-role member)
-            user = None
-            for target, _ in channel.overwrites.items():
-                if isinstance(target, discord.Member):
-                    user = target
-                    break
-            
-            if user:
-                # Set permissions: user can read but not send messages
-                await channel.set_permissions(user, read_messages=True, send_messages=False)
-            
-            # Move to archive category
-            await channel.edit(category=archive_category)
-            await channel.send(f"Channel archived. Reason: {reason}")
-
-    async def restore_channel(self, channel, guild, member):
-        """Helper function to restore channel from archive"""
-        applications_id = await self.config.guild(guild).applications_category()
-        applications_category = guild.get_channel(applications_id)
-        
-        if applications_category:
-            # Restore user's ability to send messages
-            await channel.set_permissions(member, read_messages=True, send_messages=True)
-            
-            # Move channel back to applications category
-            await channel.edit(category=applications_category)
-            
-            await channel.send(f"Channel restored for {member.mention}")
-
     @commands.group(aliases=["da"])
     @checks.admin_or_permissions(administrator=True)
     async def disapps(self, ctx):
         """Discord Applications Management Commands"""
         pass
+
+    @disapps.command()
+    @checks.admin_or_permissions(administrator=True)
+    async def unban(self, ctx, user: discord.User):
+        """Unban a user from the application system, allowing them to apply again."""
+        guild = ctx.guild
+        applications = await self.config.guild(guild).applications()
+        
+        if str(user.id) not in applications:
+            await ctx.send(f"{user.mention} has no application history in this server.")
+            return
+            
+        # Reset their application status
+        applications[str(user.id)] = {
+            'status': 'none',
+            'declines': 0,
+            'previously_accepted': False
+        }
+        await self.config.guild(guild).applications.set(applications)
+        
+        # Create confirmation embed
+        embed = discord.Embed(
+            title="Application Ban Removed",
+            description=f"{user.mention} has been unbanned from the application system.\nThey can now join and apply again.",
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="Moderator", value=ctx.author.mention)
+        
+        await ctx.send(embed=embed)
+        
+        # Try to DM the user
+        try:
+            await user.send(f"You have been unbanned from applying to {guild.name}. You may now join and submit a new application.")
+        except discord.Forbidden:
+            await ctx.send("Could not DM the user, but they have been unbanned from the application system.")
+
+    @disapps.command()
+    @checks.admin_or_permissions(administrator=True)
+    async def checkban(self, ctx, user: discord.User):
+        """Check if a user is banned from applying and see their application history."""
+        guild = ctx.guild
+        applications = await self.config.guild(guild).applications()
+        
+        if str(user.id) not in applications:
+            await ctx.send(f"{user.mention} has no application history in this server.")
+            return
+            
+        user_app = applications[str(user.id)]
+        
+        # Create status embed
+        embed = discord.Embed(
+            title="Application Status Check",
+            description=f"Application history for {user.mention}",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add application details
+        embed.add_field(
+            name="Current Status", 
+            value=user_app.get('status', 'none').title(),
+            inline=False
+        )
+        embed.add_field(
+            name="Times Declined",
+            value=str(user_app.get('declines', 0)),
+            inline=True
+        )
+        embed.add_field(
+            name="Previously Accepted",
+            value="Yes" if user_app.get('previously_accepted', False) else "No",
+            inline=True
+        )
+        
+        # Calculate if they're banned
+        is_banned = (user_app.get('declines', 0) >= 2 or 
+                    (user_app.get('status') != 'accepted' and user_app.get('status') != 'none'))
+        
+        embed.add_field(
+            name="Can Apply?",
+            value="No - Currently Banned" if is_banned else "Yes",
+            inline=False
+        )
+        
+        if is_banned:
+            embed.add_field(
+                name="Unban Command",
+                value=f"Use `{ctx.prefix}disapps unban @{user.name}` to allow this user to apply again.",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
 
     @disapps.command()
     async def setup(self, ctx):
@@ -613,95 +667,41 @@ class DisApps(commands.Cog):
         await self.on_member_join(ctx.author)
         await ctx.send("Test application created!")
 
-    @disapps.command()
-    @checks.admin_or_permissions(administrator=True)
-    async def unban(self, ctx, user: discord.User):
-        """Unban a user from the application system, allowing them to apply again."""
-        guild = ctx.guild
-        applications = await self.config.guild(guild).applications()
+    async def move_to_archive(self, channel, guild, reason=""):
+        """Helper function to move channels to archive"""
+        archive_id = await self.config.guild(guild).archive_category()
+        archive_category = guild.get_channel(archive_id)
         
-        if str(user.id) not in applications:
-            await ctx.send(f"{user.mention} has no application history in this server.")
-            return
+        if archive_category:
+            # Get the moderator role
+            mod_role_id = await self.config.guild(guild).mod_role()
+            mod_role = guild.get_role(mod_role_id)
             
-        # Reset their application status
-        applications[str(user.id)] = {
-            'status': 'none',
-            'declines': 0,
-            'previously_accepted': False
-        }
-        await self.config.guild(guild).applications.set(applications)
-        
-        # Create confirmation embed
-        embed = discord.Embed(
-            title="Application Ban Removed",
-            description=f"{user.mention} has been unbanned from the application system.\nThey can now join and apply again.",
-            color=discord.Color.green(),
-            timestamp=datetime.utcnow()
-        )
-        embed.add_field(name="Moderator", value=ctx.author.mention)
-        
-        await ctx.send(embed=embed)
-        
-        # Try to DM the user
-        try:
-            await user.send(f"You have been unbanned from applying to {guild.name}. You may now join and submit a new application.")
-        except discord.Forbidden:
-            await ctx.send("Could not DM the user, but they have been unbanned from the application system.")
+            # Find the user overwrite (there should only be one non-role member)
+            user = None
+            for target, _ in channel.overwrites.items():
+                if isinstance(target, discord.Member):
+                    user = target
+                    break
+            
+            if user:
+                # Set permissions: user can read but not send messages
+                await channel.set_permissions(user, read_messages=True, send_messages=False)
+            
+            # Move to archive category
+            await channel.edit(category=archive_category)
+            await channel.send(f"Channel archived. Reason: {reason}")
 
-    @disapps.command()
-    @checks.admin_or_permissions(administrator=True)
-    async def checkban(self, ctx, user: discord.User):
-        """Check if a user is banned from applying and see their application history."""
-        guild = ctx.guild
-        applications = await self.config.guild(guild).applications()
+    async def restore_channel(self, channel, guild, member):
+        """Helper function to restore channel from archive"""
+        applications_id = await self.config.guild(guild).applications_category()
+        applications_category = guild.get_channel(applications_id)
         
-        if str(user.id) not in applications:
-            await ctx.send(f"{user.mention} has no application history in this server.")
-            return
+        if applications_category:
+            # Restore user's ability to send messages
+            await channel.set_permissions(member, read_messages=True, send_messages=True)
             
-        user_app = applications[str(user.id)]
-        
-        # Create status embed
-        embed = discord.Embed(
-            title="Application Status Check",
-            description=f"Application history for {user.mention}",
-            color=discord.Color.blue(),
-            timestamp=datetime.utcnow()
-        )
-        
-        # Add application details
-        embed.add_field(
-            name="Current Status", 
-            value=user_app.get('status', 'none').title(),
-            inline=False
-        )
-        embed.add_field(
-            name="Times Declined",
-            value=str(user_app.get('declines', 0)),
-            inline=True
-        )
-        embed.add_field(
-            name="Previously Accepted",
-            value="Yes" if user_app.get('previously_accepted', False) else "No",
-            inline=True
-        )
-        
-        # Calculate if they're banned
-        is_banned = (user_app.get('declines', 0) >= 2 or 
-                    (user_app.get('status') != 'accepted' and user_app.get('status') != 'none'))
-        
-        embed.add_field(
-            name="Can Apply?",
-            value="No - Currently Banned" if is_banned else "Yes",
-            inline=False
-        )
-        
-        if is_banned:
-            embed.add_field(
-                name="Unban Command",
-                value=f"Use `{ctx.prefix}disapps unban @{user.name}` to allow this user to apply again.",
-                inline=False
-            )
-        
-        await ctx.send(embed=embed)
+            # Move channel back to applications category
+            await channel.edit(category=applications_category)
+            
+            await channel.send(f"Channel restored for {member.mention}")
