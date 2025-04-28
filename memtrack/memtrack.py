@@ -1,6 +1,7 @@
 from redbot.core import commands, Config
 from redbot.core.utils.predicates import MessagePredicate
 from datetime import datetime, timedelta
+from collections import defaultdict
 import asyncio
 import discord
 
@@ -55,6 +56,60 @@ class MemberTracker(commands.Cog):
         if str(role_id) not in configured_roles:
             configured_roles.append(str(role_id))
             await self.config.guild(guild).configured_roles.set(configured_roles)
+
+    @memtrack.command()
+    async def duplicates(self, ctx, remove: bool = False):
+        """
+        Check for duplicate role configurations.
+        Use '!mt duplicates true' to remove duplicates automatically.
+        """
+        guild = ctx.guild
+        role_tracks = await self.config.guild(guild).role_tracks()
+        configured_roles = await self.config.guild(guild).configured_roles()
+        
+        # Track duplicates
+        role_counts = defaultdict(list)
+        for i, track in enumerate(role_tracks):
+            role_id = str(track["role_id"])
+            role_counts[role_id].append(i)
+        
+        # Find duplicates
+        duplicates = {role_id: indices for role_id, indices in role_counts.items() if len(indices) > 1}
+        
+        if not duplicates:
+            await ctx.send("No duplicate role configurations found.")
+            return
+        
+        response = "**Duplicate Role Configurations Found:**\n\n"
+        for role_id, indices in duplicates.items():
+            role = guild.get_role(int(role_id))
+            role_name = role.name if role else f"Deleted Role (ID: {role_id})"
+            response += f"Role: {role_name}\n"
+            response += f"Found in configurations: {', '.join(str(i+1) for i in indices)}\n\n"
+        
+        if remove:
+            # Remove duplicates keeping only the first occurrence
+            new_tracks = []
+            seen_roles = set()
+            
+            for track in role_tracks:
+                role_id = str(track["role_id"])
+                if role_id not in seen_roles:
+                    new_tracks.append(track)
+                    seen_roles.add(role_id)
+            
+            # Update configured_roles
+            new_configured_roles = list(set(configured_roles))
+            
+            # Save changes
+            await self.config.guild(guild).role_tracks.set(new_tracks)
+            await self.config.guild(guild).configured_roles.set(new_configured_roles)
+            
+            response += "\nDuplicate configurations have been removed."
+        else:
+            response += "\nUse '!mt duplicates true' to remove duplicate configurations."
+        
+        await ctx.send(response)
 
     @memtrack.command()
     async def debug(self, ctx):
