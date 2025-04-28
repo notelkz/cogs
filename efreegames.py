@@ -83,10 +83,12 @@ class EFreeGames(commands.Cog):
     async def fetch_epic_games(self) -> List[GameDeal]:
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "application/json"
             }
             async with self.session.get("https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions", headers=headers) as resp:
                 if resp.status != 200:
+                    log.error(f"Epic Games API returned status {resp.status}")
                     return []
                 data = await resp.json()
                 free_games = []
@@ -118,6 +120,7 @@ class EFreeGames(commands.Cog):
             }
             async with self.session.get("https://steamcommunity.com/groups/freegamesoncommunity/rss/", headers=headers) as resp:
                 if resp.status != 200:
+                    log.error(f"Steam RSS returned status {resp.status}")
                     return []
                 feed = feedparser.parse(await resp.text())
                 free_games = []
@@ -151,25 +154,55 @@ class EFreeGames(commands.Cog):
     async def fetch_gog_games(self) -> List[GameDeal]:
         try:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "application/json"
             }
-            async with self.session.get("https://www.gog.com/games/ajax/filtered?mediaType=game&price=free&sort=popularity&page=1", headers=headers) as resp:
+            
+            # First, get the CSRF token
+            async with self.session.get("https://www.gog.com", headers=headers) as resp:
                 if resp.status != 200:
+                    log.error(f"GOG main page returned status {resp.status}")
                     return []
-                data = await resp.json()
+                
+            # Now fetch the free games
+            params = {
+                "category": "game",
+                "price": "free",
+                "sort": "popularity",
+                "page": 1,
+                "limit": 50
+            }
+            
+            async with self.session.get(
+                "https://www.gog.com/api/products", 
+                headers=headers,
+                params=params
+            ) as resp:
+                if resp.status != 200:
+                    log.error(f"GOG API returned status {resp.status}")
+                    return []
+                    
+                try:
+                    data = await resp.json()
+                except Exception as e:
+                    log.error(f"Failed to parse GOG response: {e}")
+                    log.error(f"Response content: {await resp.text()}")
+                    return []
+                    
                 free_games = []
                 for product in data.get("products", []):
-                    if product.get("price", {}).get("amount") == "0.00":
+                    if product.get("price", {}).get("isFree", False) or product.get("price", {}).get("amount") == "0.00":
                         free_games.append(GameDeal(
                             title=product.get("title", "Unknown"),
-                            url=f"https://www.gog.com{product.get('url', '')}",
-                            image=product.get("image", ""),
+                            url=f"https://www.gog.com/game/{product.get('slug', '')}",
+                            image=product.get("coverHorizontal", ""),
                             platform="GOG",
-                            original_price=product.get("price", {}).get("baseAmount", "N/A"),
+                            original_price=str(product.get("price", {}).get("baseAmount", "N/A")),
                             description=product.get("description", ""),
                             deal_type="game"
                         ))
                 return free_games
+                
         except Exception as e:
             log.error(f"Error fetching GOG games: {e}")
             return []
