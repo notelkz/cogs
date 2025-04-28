@@ -99,9 +99,27 @@ class EFreeGames(commands.Cog):
                         if promotions and promotions[0]["promotionalOffers"]:
                             promo = promotions[0]["promotionalOffers"][0]
                             end_date = datetime.fromisoformat(promo["endDate"][:-1])
+                            
+                            # Get the correct store URL
+                            product_slug = game.get('productSlug', '')
+                            if not product_slug:
+                                product_slug = game.get('urlSlug', '')
+                            if not product_slug and game.get('catalogNs', {}).get('mappings'):
+                                # Try to get it from mappings
+                                for mapping in game['catalogNs']['mappings']:
+                                    if mapping.get('pageSlug'):
+                                        product_slug = mapping['pageSlug']
+                                        break
+                            
+                            # Construct the store URL
+                            if product_slug:
+                                store_url = f"https://store.epicgames.com/en-US/p/{product_slug}"
+                            else:
+                                store_url = "https://store.epicgames.com"
+                            
                             free_games.append(GameDeal(
                                 title=game["title"],
-                                url=f"https://store.epicgames.com/p/{game['urlSlug']}",
+                                url=store_url,
                                 image=game.get("keyImages", [{}])[0].get("url", ""),
                                 platform="Epic Games",
                                 end_date=end_date,
@@ -113,6 +131,7 @@ class EFreeGames(commands.Cog):
         except Exception as e:
             log.error(f"Error fetching Epic Games: {e}")
             return []
+
 
     async def fetch_steam_games(self) -> List[GameDeal]:
         try:
