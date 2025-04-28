@@ -481,7 +481,7 @@ class DisApps(commands.Cog):
             
         await self.config.guild(guild).applications.set(applications)
 
-    @commands.Cog.listener()
+        @commands.Cog.listener()
     async def on_member_join(self, member):
         guild = member.guild
         if not await self.config.guild(guild).setup_complete():
@@ -504,6 +504,23 @@ class DisApps(commands.Cog):
             # Kick the member
             try:
                 await member.kick(reason="Previously declined applications")
+            except discord.Forbidden:
+                pass
+            return
+
+        # Check if user has left before and wasn't accepted
+        if existing_application and existing_application.get('status') != 'accepted':
+            try:
+                await member.send(
+                    "You have previously left the server during the application process. "
+                    "You are not eligible to submit a new application."
+                )
+            except discord.Forbidden:
+                pass
+            
+            # Kick the member
+            try:
+                await member.kick(reason="Left during previous application")
             except discord.Forbidden:
                 pass
             return
@@ -545,7 +562,7 @@ class DisApps(commands.Cog):
                 
                 return
 
-        # If no previous accepted application exists, proceed with normal application process
+        # If no previous application exists, proceed with normal application process
         category_id = await self.config.guild(guild).applications_category()
         category = guild.get_channel(category_id)
         
@@ -589,6 +606,24 @@ class DisApps(commands.Cog):
         embed.set_footer(text="If you have any issues, use the 'Contact Mod' button.")
 
         await channel.send(content=member.mention, embed=embed, view=ApplicationButtons(self))
+
+# Check if user has left before and wasn't accepted
+if existing_application and existing_application.get('status') != 'accepted':
+    try:
+        await member.send(
+            "You have previously left the server during the application process. "
+            "You are not eligible to submit a new application."
+        )
+    except discord.Forbidden:
+        pass
+    
+    # Kick the member
+    try:
+        await member.kick(reason="Left during previous application")
+    except discord.Forbidden:
+        pass
+    return
+
 
     @disapps.command()
     async def test(self, ctx):
