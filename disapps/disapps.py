@@ -70,7 +70,6 @@ class ModButtons(discord.ui.View):
             await interaction.response.send_message("I don't have permission to manage roles!", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"An error occurred: {str(e)}", ephemeral=True)
-
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red)
     async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.manage_roles:
@@ -93,15 +92,43 @@ class ModButtons(discord.ui.View):
             applications = await self.cog.config.guild(interaction.guild).applications()
             user_application = applications.get(str(self.applicant.id), {})
             
-            # Track number of declines
+            # Track number of declines and check if previously accepted
             declines = user_application.get('declines', 0) + 1
+            previously_accepted = user_application.get('previously_accepted', False)
             user_application['declines'] = declines
             user_application['status'] = 'declined'
             await self.cog.config.guild(interaction.guild).applications.set(applications)
 
-            # Send appropriate decline message based on number of declines
             try:
-                if declines >= 2:
+                # Handle previously accepted members who are now declined
+                if previously_accepted:
+                    # Remove all permissions except for the current channel
+                    for channel in interaction.guild.channels:
+                        if channel != interaction.channel:  # Skip the current application channel
+                            if isinstance(channel, (discord.TextChannel, discord.VoiceChannel, discord.CategoryChannel)):
+                                try:
+                                    await channel.set_permissions(self.applicant, read_messages=False, send_messages=False)
+                                except discord.Forbidden:
+                                    continue
+
+                    # Set permissions for current channel to read-only
+                    await interaction.channel.set_permissions(self.applicant, read_messages=True, send_messages=False)
+
+                    await self.applicant.send(
+                        f"Your application to rejoin {interaction.guild.name} has been declined.\n"
+                        f"Reason: {modal.decline_reason}\n\n"
+                        "As you were previously accepted but have now been declined, "
+                        "your access to the server has been restricted."
+                    )
+
+                    await interaction.channel.send(
+                        f"Application declined. {self.applicant.mention} was previously accepted but has now been declined.\n"
+                        "Their permissions have been restricted to this channel only.\n"
+                        f"Decline reason: {modal.decline_reason}"
+                    )
+
+                # Handle regular second declines
+                elif declines >= 2:
                     # Remove all permissions except for the current channel
                     for channel in interaction.guild.channels:
                         if channel != interaction.channel:  # Skip the current application channel
@@ -138,7 +165,13 @@ class ModButtons(discord.ui.View):
                     )
 
             except discord.Forbidden:
-                if declines >= 2:
+                if previously_accepted:
+                    await interaction.channel.send(
+                        f"Could not DM the user, but their application has been declined.\n"
+                        f"They were previously accepted but have now been declined. Their permissions have been restricted.\n"
+                        f"Reason: {modal.decline_reason}"
+                    )
+                elif declines >= 2:
                     await interaction.channel.send(
                         f"Could not DM the user, but their application has been declined.\n"
                         f"This was their second decline. Their permissions have been restricted.\n"
