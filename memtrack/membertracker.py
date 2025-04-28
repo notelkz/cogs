@@ -106,9 +106,9 @@ class MemTrack(commands.Cog):
                 
             await asyncio.sleep(300)  # Check every 5 minutes
 
-    @commands.group()
+    @commands.group(name="memtrack")
     @commands.admin_or_permissions(administrator=True)
-    async def membertrack(self, ctx):
+    async def memtrack(self, ctx):
         """Member tracking commands"""
         if ctx.invoked_subcommand is None:
             embed = Embed(
@@ -127,11 +127,11 @@ class MemTrack(commands.Cog):
                 ("checkjoins", "View tracked members")
             ]
             for cmd, desc in commands_list:
-                embed.add_field(name=f"`[p]membertrack {cmd}`", value=desc, inline=False)
+                embed.add_field(name=f"`[p]memtrack {cmd}`", value=desc, inline=False)
             
             await ctx.send(embed=embed)
 
-    @membertrack.command()
+    @memtrack.command()
     async def trackmode(self, ctx, mode: str):
         """Set whether to track all users or only those with specific roles
         
@@ -160,7 +160,7 @@ class MemTrack(commands.Cog):
         embed.set_footer(text=f"Updated by {ctx.author.display_name}")
         await ctx.send(embed=embed)
 
-    @membertrack.command()
+    @memtrack.command()
     async def trackroles(self, ctx, operation: str = None, role: discord.Role = None):
         """Manage roles to track
         
@@ -170,9 +170,9 @@ class MemTrack(commands.Cog):
         - list: List currently tracked roles
         
         Example:
-        [p]membertrack trackroles add @Role
-        [p]membertrack trackroles remove @Role
-        [p]membertrack trackroles list"""
+        [p]memtrack trackroles add @Role
+        [p]memtrack trackroles remove @Role
+        [p]memtrack trackroles list"""
         
         if not operation:
             operation = "list"
@@ -248,7 +248,7 @@ class MemTrack(commands.Cog):
         embed.set_footer(text=f"Requested by {ctx.author.display_name}")
         await ctx.send(embed=embed)
 
-    @membertrack.command()
+    @memtrack.command()
     async def settings(self, ctx):
         """View current settings"""
         guild_data = await self.config.guild(ctx.guild).all()
@@ -295,7 +295,7 @@ class MemTrack(commands.Cog):
         embed.set_footer(text=f"Requested by {ctx.author.display_name}")
         await ctx.send(embed=embed)
 
-    @membertrack.command()
+    @memtrack.command()
     async def checkjoins(self, ctx):
         """Check all tracked member joins"""
         guild_data = await self.config.guild(ctx.guild).all()
