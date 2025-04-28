@@ -1,15 +1,8 @@
 from redbot.core.bot import Red
-from redbot.core import Config
-import discord
-from typing import Dict, Any
-
 from .disapps import DisApps
 
-__red_end_user_data_statement__ = "This cog stores user IDs and application data including declined applications."
-
 async def setup(bot: Red) -> None:
-    cog = DisApps(bot)
-    await bot.add_cog(cog)
+    await bot.add_cog(DisApps(bot))
 
     # Initialize default guild settings
     defaults = {
@@ -44,3 +37,4 @@ async def setup(bot: Red) -> None:
     # }
     
     await bot.add_cog(cog)
+
