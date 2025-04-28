@@ -13,7 +13,7 @@ class MemberTracker(commands.Cog):
         default_guild = {
             "role_tracks": [],  # List of role tracking configurations
             "active_tracks": {}, # Dictionary of active role assignments
-            "configured_roles": set()  # Set of role IDs that have been configured
+            "configured_roles": []  # List of role IDs that have been configured
         }
         self.config.register_guild(**default_guild)
 
@@ -30,11 +30,11 @@ class MemberTracker(commands.Cog):
         return str(role_id) in configured_roles
 
     async def add_configured_role(self, guild: discord.Guild, role_id: int):
-        """Add a role to the configured roles set"""
+        """Add a role to the configured roles list"""
         configured_roles = await self.config.guild(guild).configured_roles()
-        configured_roles_set = set(configured_roles)
-        configured_roles_set.add(str(role_id))
-        await self.config.guild(guild).configured_roles.set(list(configured_roles_set))
+        if str(role_id) not in configured_roles:
+            configured_roles.append(str(role_id))
+            await self.config.guild(guild).configured_roles.set(configured_roles)
 
     @memtrack.command()
     async def list(self, ctx):
@@ -212,7 +212,7 @@ class MemberTracker(commands.Cog):
                     "new_role_id": new_role
                 }
                 
-                # Add roles to configured roles set
+                # Add roles to configured roles list
                 await self.add_configured_role(guild, role.id)
                 if new_role:
                     await self.add_configured_role(guild, new_role)
