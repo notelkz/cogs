@@ -3,6 +3,7 @@ from redbot.core.bot import Red
 from typing import Dict, List, Set
 import discord
 import datetime
+import logging
 
 class AppTrack(commands.Cog):
     """Track Discord Activities and assign roles automatically."""
@@ -15,6 +16,10 @@ class AppTrack(commands.Cog):
             force_registration=True
         )
         
+        # Ensure we have the required intents
+        if not bot.intents.presences or not bot.intents.members:
+            logging.warning("Bot is missing required intents (presences and/or members)!")
+        
         default_guild = {
             "activity_roles": {},  # Maps activity names to role IDs
             "tracked_activities": [],  # List of tracked activity names
@@ -23,32 +28,35 @@ class AppTrack(commands.Cog):
         
         self.config.register_guild(**default_guild)
 
-    def is_valid_activity(self, activity: discord.Activity) -> bool:
+    def is_valid_activity(self, activity) -> bool:
         """Check if the activity is valid for tracking."""
         if activity is None:
             return False
             
-        # Check for valid activity types (playing games, streaming, etc.)
-        valid_types = [
-            discord.ActivityType.playing,
-            discord.ActivityType.streaming,
-            discord.ActivityType.listening,
-            discord.ActivityType.watching,
-            discord.ActivityType.competing
-        ]
-        
-        return (activity.type in valid_types and 
-                activity.name is not None and 
-                activity.name.strip() != "" and
-                not activity.name.startswith("Custom Status"))
+        # Log activity details for debugging
+        logging.info(f"Checking activity: {activity.name} - Type: {activity.type}")
+            
+        # Check specifically for game activities
+        return isinstance(activity, discord.Game) or (
+            isinstance(activity, discord.Activity) and 
+            activity.type == discord.ActivityType.playing and
+            activity.name is not None and 
+            activity.name.strip() != ""
+        )
 
     def get_valid_activities(self, member: discord.Member) -> List[str]:
         """Get all valid activities for a member."""
         valid_activities = []
         
+        # Log member activities for debugging
+        logging.info(f"Checking activities for {member.name}")
+        for activity in member.activities:
+            logging.info(f"Found activity: {activity.name if hasattr(activity, 'name') else 'No name'} - Type: {type(activity)}")
+            
         for activity in member.activities:
             if self.is_valid_activity(activity):
                 valid_activities.append(activity.name)
+                logging.info(f"Valid activity found: {activity.name}")
                 
         return valid_activities
 
@@ -61,6 +69,8 @@ class AppTrack(commands.Cog):
         for member in guild.members:
             activities = self.get_valid_activities(member)
             current_activities.update(activities)
+            
+        logging.info(f"Found activities in update: {current_activities}")
                     
         async with self.config.guild(guild).discovered_activities() as discovered:
             for activity in current_activities:
@@ -77,6 +87,35 @@ class AppTrack(commands.Cog):
         """Manage activity tracking and role assignments."""
         if ctx.invoked_subcommand is None:
             await ctx.send("Please specify a subcommand. Use `!help apptrack` for more information.")
+
+    @apptrack.command(name="debug")
+    @commands.is_owner()
+    async def debug_info(self, ctx: commands.Context):
+        """Show debug information about the bot's configuration."""
+        intents_info = (
+            f"Presence Intent: {self.bot.intents.presences}\n"
+            f"Members Intent: {self.bot.intents.members}\n"
+            f"Server Members: {len(ctx.guild.members)}\n"
+        )
+        
+        # Sample some member activities
+        sample_activities = []
+        for member in list(ctx.guild.members)[:5]:  # Sample first 5 members
+            activities = self.get_valid_activities(member)
+            if activities:
+                sample_activities.append(f"{member.name}: {', '.join(activities)}")
+        
+        activities_info = "Sample Activities:\n" + "\n".join(sample_activities) if sample_activities else "No activities found in sample"
+        
+        tracked = await self.config.guild(ctx.guild).tracked_activities()
+        roles = await self.config.guild(ctx.guild).activity_roles()
+        
+        config_info = (
+            f"Tracked Activities: {tracked}\n"
+            f"Role Mappings: {roles}"
+        )
+        
+        await ctx.send(f"```\nDebug Information:\n\n{intents_info}\n{activities_info}\n\n{config_info}```")
 
     @apptrack.command(name="update")
     async def update_activity_list(self, ctx: commands.Context):
@@ -254,12 +293,17 @@ class AppTrack(commands.Cog):
         if before.guild is None:
             return
             
+        logging.info(f"Presence update for {after.name}")
+        
         tracked_activities = await self.config.guild(before.guild).tracked_activities()
         activity_roles = await self.config.guild(before.guild).activity_roles()
         
         # Get activities before and after update
         before_activities = set(self.get_valid_activities(before))
         after_activities = set(self.get_valid_activities(after))
+        
+        logging.info(f"Before activities: {before_activities}")
+        logging.info(f"After activities: {after_activities}")
         
         # Handle new activities
         for activity_name in after_activities:
@@ -270,7 +314,9 @@ class AppTrack(commands.Cog):
                     if role and role not in after.roles:
                         try:
                             await after.add_roles(role, reason=f"Started activity: {activity_name}")
+                            logging.info(f"Added role {role.name} to {after.name} for activity {activity_name}")
                         except discord.Forbidden:
+                            logging.error(f"Failed to add role {role.name} to {after.name}")
                             continue
 
         # Handle stopped activities
@@ -282,7 +328,9 @@ class AppTrack(commands.Cog):
                     if role and role in after.roles:
                         try:
                             await after.remove_roles(role, reason=f"Stopped activity: {activity_name}")
+                            logging.info(f"Removed role {role.name} from {after.name} for activity {activity_name}")
                         except discord.Forbidden:
+                            logging.error(f"Failed to remove role {role.name} from {after.name}")
                             continue
 
         # Update discovered activities
