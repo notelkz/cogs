@@ -9,7 +9,8 @@ __red_end_user_data_statement__ = "This cog stores user IDs and application data
 
 async def setup(bot: Red) -> None:
     cog = DisApps(bot)
-    
+    await bot.add_cog(cog)
+
     # Initialize default guild settings
     defaults = {
         "mod_role": None,
