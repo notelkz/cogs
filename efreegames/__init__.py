@@ -1,8 +1,12 @@
-"""Free games tracker for Epic Games Store and Steam."""
+"""Free games tracker for multiple game stores with enhanced features."""
 from redbot.core.bot import Red
 from .efreegames import EFreeGames
 
-__red_end_user_data_statement__ = "This cog does not store end user data."
+__red_end_user_data_statement__ = """This cog stores:
+- User notification preferences for different game types
+- User-linked store accounts (Steam ID, Epic Games ID)
+- Server configuration for notification roles and channels
+"""
 
 async def setup(bot: Red):
     """Load EFreeGames cog."""
