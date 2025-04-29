@@ -77,7 +77,7 @@ class EFreeGames(commands.Cog):
             "origin": {"api_key": None},
             "ubisoft": {"api_key": None},
             "itchio": {"api_key": None},
-            "check_interval": 3600,  # Default check interval in seconds
+            "check_interval": 3600,
             "last_check": None
         }
         
@@ -147,6 +147,87 @@ class EFreeGames(commands.Cog):
         async with self.config.guild(ctx.guild).store_threads() as threads:
             threads[store] = thread.id
         await ctx.send(f"Games from {store.title()} will be posted in {thread.mention}")
+
+    @efreegames.command(name="forcecheck")
+    @commands.admin_or_permissions(manage_channels=True)
+    async def force_check(self, ctx):
+        """Force check and post free games immediately."""
+        async with ctx.typing():
+            try:
+                await ctx.send("Checking for free games...")
+                
+                all_games = []
+                stores = {
+                    "epic": self.fetch_epic_games,
+                    "steam": self.fetch_steam_games,
+                    "gog": self.fetch_gog_games,
+                    "humble": self.fetch_humble_games,
+                    "origin": self.fetch_origin_games,
+                    "ubisoft": self.fetch_ubisoft_games,
+                    "itchio": self.fetch_itchio_games
+                }
+                
+                for store, fetch_func in stores.items():
+                    games = await fetch_func()
+                    for game in games:
+                        all_games.append((store, game))
+                
+                if not all_games:
+                    return await ctx.send("No free games found at the moment.")
+                
+                # Get guild data
+                guild_data = await self.config.guild(ctx.guild).all()
+                channel_id = guild_data["channel_id"]
+                if not channel_id:
+                    return await ctx.send("No channel configured for free games. Use `[p]efreegames setchannel` first.")
+                
+                channel = ctx.guild.get_channel(channel_id)
+                if not channel:
+                    return await ctx.send("Configured channel not found.")
+                
+                store_threads = guild_data.get("store_threads", {})
+                notification_roles = guild_data.get("notification_roles", {})
+                
+                games_posted = 0
+                for store, game in all_games:
+                    # Check if game was already posted
+                    if await self.is_game_already_posted(ctx.guild.id, store, game["title"]):
+                        continue
+                    
+                    embed = await self.create_game_embed(game, store)
+                    
+                    # Get role mention if configured for this game type
+                    role_mention = ""
+                    if game["type"] in notification_roles:
+                        role_id = notification_roles[game["type"]]
+                        role = ctx.guild.get_role(role_id)
+                        if role:
+                            role_mention = role.mention
+                    
+                    # Post to appropriate thread or channel
+                    if store in store_threads:
+                        thread = ctx.guild.get_thread(store_threads[store])
+                        if thread:
+                            await thread.send(content=role_mention, embed=embed)
+                            games_posted += 1
+                            continue
+                    
+                    await channel.send(content=role_mention, embed=embed)
+                    games_posted += 1
+                    
+                    # Mark game as posted
+                    await self.mark_game_as_posted(ctx.guild.id, store, game["title"])
+                    
+                    # Send DM notifications
+                    await self.notify_users(ctx.guild, game, store)
+                
+                if games_posted > 0:
+                    await ctx.send(f"Successfully posted {games_posted} new free game(s).")
+                else:
+                    await ctx.send("No new free games found that haven't been posted recently.")
+                
+            except Exception as e:
+                await ctx.send(f"An error occurred while checking for free games: {str(e)}")
 
     @efreegames.group(name="notify")
     async def notify_settings(self, ctx):
@@ -370,13 +451,7 @@ class EFreeGames(commands.Cog):
                                             "publisher": game_data.get("publishers", ["Unknown Publisher"])[0],
                                             "type": game_type
                                         })
-                    
-                    return free_games
-                    
-        except Exception as e:
-            print(f"Error fetching Steam games: {e}")
-            return []
-    async def fetch_gog_games(self) -> List[Dict]:
+        async def fetch_gog_games(self) -> List[Dict]:
         """Fetch free games from GOG."""
         try:
             params = {
@@ -473,7 +548,7 @@ class EFreeGames(commands.Cog):
         except Exception as e:
             print(f"Error fetching Origin games: {e}")
             return []
-    async def fetch_ubisoft_games(self) -> List[Dict]:
+      async def fetch_ubisoft_games(self) -> List[Dict]:
         """Fetch free games from Ubisoft Connect."""
         try:
             params = {
@@ -587,76 +662,79 @@ class EFreeGames(commands.Cog):
         
         while True:
             try:
-                all_games = []
-                stores = {
-                    "epic": self.fetch_epic_games,
-                    "steam": self.fetch_steam_games,
-                    "gog": self.fetch_gog_games,
-                    "humble": self.fetch_humble_games,
-                    "origin": self.fetch_origin_games,
-                    "ubisoft": self.fetch_ubisoft_games,
-                    "itchio": self.fetch_itchio_games
-                }
+                now = datetime.now(pytz.timezone('Europe/London'))
                 
-                for store, fetch_func in stores.items():
-                    games = await fetch_func()
-                    for game in games:
-                        all_games.append((store, game))
-                
-                # Post to all configured guilds
-                all_guilds = await self.config.all_guilds()
-                for guild_id, guild_data in all_guilds.items():
-                    guild = self.bot.get_guild(guild_id)
-                    if not guild:
-                        continue
-                        
-                    channel_id = guild_data["channel_id"]
-                    if not channel_id:
-                        continue
-                        
-                    channel = guild.get_channel(channel_id)
-                    if not channel:
-                        continue
-                        
-                    store_threads = guild_data.get("store_threads", {})
-                    notification_roles = guild_data.get("notification_roles", {})
+                # Check if it's 12 PM BST
+                if now.hour == 12 and now.minute == 0:
+                    all_games = []
+                    stores = {
+                        "epic": self.fetch_epic_games,
+                        "steam": self.fetch_steam_games,
+                        "gog": self.fetch_gog_games,
+                        "humble": self.fetch_humble_games,
+                        "origin": self.fetch_origin_games,
+                        "ubisoft": self.fetch_ubisoft_games,
+                        "itchio": self.fetch_itchio_games
+                    }
                     
-                    for store, game in all_games:
-                        # Check if game was already posted
-                        if await self.is_game_already_posted(guild_id, store, game["title"]):
+                    for store, fetch_func in stores.items():
+                        games = await fetch_func()
+                        for game in games:
+                            all_games.append((store, game))
+                    
+                    # Post to all configured guilds
+                    all_guilds = await self.config.all_guilds()
+                    for guild_id, guild_data in all_guilds.items():
+                        guild = self.bot.get_guild(guild_id)
+                        if not guild:
                             continue
                             
-                        embed = await self.create_game_embed(game, store)
+                        channel_id = guild_data["channel_id"]
+                        if not channel_id:
+                            continue
+                            
+                        channel = guild.get_channel(channel_id)
+                        if not channel:
+                            continue
+                            
+                        store_threads = guild_data.get("store_threads", {})
+                        notification_roles = guild_data.get("notification_roles", {})
                         
-                        # Get role mention if configured for this game type
-                        role_mention = ""
-                        if game["type"] in notification_roles:
-                            role_id = notification_roles[game["type"]]
-                            role = guild.get_role(role_id)
-                            if role:
-                                role_mention = role.mention
-                        
-                        # Post to appropriate thread or channel
-                        if store in store_threads:
-                            thread = guild.get_thread(store_threads[store])
-                            if thread:
-                                await thread.send(content=role_mention, embed=embed)
+                        for store, game in all_games:
+                            # Check if game was already posted
+                            if await self.is_game_already_posted(guild_id, store, game["title"]):
                                 continue
-                        
-                        await channel.send(content=role_mention, embed=embed)
-                        
-                        # Mark game as posted
-                        await self.mark_game_as_posted(guild_id, store, game["title"])
-                        
-                        # Send DM notifications
-                        await self.notify_users(guild, game, store)
-                
+                                
+                            embed = await self.create_game_embed(game, store)
+                            
+                            # Get role mention if configured for this game type
+                            role_mention = ""
+                            if game["type"] in notification_roles:
+                                role_id = notification_roles[game["type"]]
+                                role = guild.get_role(role_id)
+                                if role:
+                                    role_mention = role.mention
+                            
+                            # Post to appropriate thread or channel
+                            if store in store_threads:
+                                thread = guild.get_thread(store_threads[store])
+                                if thread:
+                                    await thread.send(content=role_mention, embed=embed)
+                                    continue
+                            
+                            await channel.send(content=role_mention, embed=embed)
+                            
+                            # Mark game as posted
+                            await self.mark_game_as_posted(guild_id, store, game["title"])
+                            
+                            # Send DM notifications
+                            await self.notify_users(guild, game, store)
+            
             except Exception as e:
                 print(f"Error in free games check schedule: {e}")
-                
-            # Wait for the configured interval
-            interval = await self.config.check_interval()
-            await asyncio.sleep(interval)
+            
+            # Wait for 60 seconds before checking again
+            await asyncio.sleep(60)
 
     async def is_game_already_posted(self, guild_id: int, store: str, game_title: str) -> bool:
         """Check if a game was already posted in the last 24 hours."""
@@ -691,3 +769,4 @@ class EFreeGames(commands.Cog):
                 print(f"Error in token refresh schedule: {e}")
                 
             await asyncio.sleep(3600)  # Check every hour
+      
