@@ -9,29 +9,43 @@ from discord.ui import Select, View
 
 class ActivitySelect(Select):
     def __init__(self, activities: List[str]):
+        # Remove duplicates while preserving order
+        unique_activities = list(dict.fromkeys(activities))
+        
         options = [
-            discord.SelectOption(label=activity[:100], value=activity) 
-            for activity in activities
+            discord.SelectOption(
+                label=activity[:95] + "..." if len(activity) > 98 else activity,
+                value=activity[:99],  # Discord has a 100 character limit for values
+                description=f"Full name: {activity[:95]}..." if len(activity) > 95 else None
+            ) 
+            for activity in unique_activities
         ]
+        
+        # Take only the first 25 options (Discord limit)
+        options = options[:25]
+        
         super().__init__(
             placeholder="Choose an activity...",
             min_values=1,
             max_values=1,
-            options=options[:25]  # Discord limits to 25 options
+            options=options
         )
 
 class ActivitySelectView(View):
     def __init__(self, activities: List[str], timeout: float = 60):
         super().__init__(timeout=timeout)
         self.selected_activity = None
+        self.original_activities = {activity[:99]: activity for activity in activities}  # Store original names
         self.add_item(ActivitySelect(activities))
         
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         select = self.children[0]
-        self.selected_activity = select.values[0]
+        truncated_value = select.values[0]
+        self.selected_activity = self.original_activities.get(truncated_value, truncated_value)
         await interaction.response.defer()
         self.stop()
         return True
+
 
 class AppTrack(commands.Cog):
     """Track Discord Activities and assign roles automatically."""
@@ -173,7 +187,7 @@ class AppTrack(commands.Cog):
         for embed in embeds:
             await ctx.send(embed=embed)
 
-    @apptrack.command(name="link")
+        @apptrack.command(name="link")
     @commands.mod_or_permissions(manage_roles=True)
     async def link_role(self, ctx: commands.Context):
         """Link an activity to a role using a dropdown menu."""
@@ -183,8 +197,13 @@ class AppTrack(commands.Cog):
             await ctx.send("No activities have been discovered yet. Use `!at update` to scan for activities.")
             return
 
+        activities = list(discovered.keys())
+        if len(activities) > 25:
+            await ctx.send("There are more than 25 activities. Showing the 25 most recently discovered:")
+            activities = list(discovered.keys())[-25:]  # Take the 25 most recent activities
+
         # Create and send activity selection menu
-        view = ActivitySelectView(list(discovered.keys()))
+        view = ActivitySelectView(activities)
         await ctx.send("Select an activity to link:", view=view)
         
         # Wait for selection
@@ -231,6 +250,7 @@ class AppTrack(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send("Command timed out. Please try again.")
+
 
     @apptrack.command(name="current")
     async def current_activities(self, ctx: commands.Context):
