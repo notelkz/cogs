@@ -451,7 +451,13 @@ class EFreeGames(commands.Cog):
                                             "publisher": game_data.get("publishers", ["Unknown Publisher"])[0],
                                             "type": game_type
                                         })
-        async def fetch_gog_games(self) -> List[Dict]:
+                    
+                    return free_games
+                    
+        except Exception as e:
+            print(f"Error fetching Steam games: {e}")
+            return []
+    async def fetch_gog_games(self) -> List[Dict]:
         """Fetch free games from GOG."""
         try:
             params = {
@@ -548,7 +554,7 @@ class EFreeGames(commands.Cog):
         except Exception as e:
             print(f"Error fetching Origin games: {e}")
             return []
-      async def fetch_ubisoft_games(self) -> List[Dict]:
+    async def fetch_ubisoft_games(self) -> List[Dict]:
         """Fetch free games from Ubisoft Connect."""
         try:
             params = {
@@ -769,4 +775,3 @@ class EFreeGames(commands.Cog):
                 print(f"Error in token refresh schedule: {e}")
                 
             await asyncio.sleep(3600)  # Check every hour
-      
