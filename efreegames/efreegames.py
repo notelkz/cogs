@@ -9,10 +9,18 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 import logging
 from pathlib import Path
-from .store_apis import (
-    EpicGamesAPI, SteamAPI, GOGApi, HumbleBundleAPI, 
-    ItchioAPI, OriginAPI, UbisoftAPI
-)
+
+from .api.base import GameData
+from .api.epic import EpicGamesAPI
+from .api.steam import SteamAPI
+from .api.gog import GOGApi
+from .api.humble import HumbleBundleAPI
+from .api.itch import ItchioAPI
+from .api.origin import OriginAPI
+from .api.ubisoft import UbisoftAPI
+
+# Rest of the efreegames.py code remains the same
+
 
 class EFreeGames(commands.Cog):
     def __init__(self, bot):
