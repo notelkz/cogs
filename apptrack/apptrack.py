@@ -251,7 +251,6 @@ class AppTrack(commands.Cog):
         except asyncio.TimeoutError:
             await ctx.send("Command timed out. Please try again.")
 
-
     @apptrack.command(name="current")
     async def current_activities(self, ctx: commands.Context):
         """List all currently active Discord Activities in the server."""
