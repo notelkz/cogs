@@ -21,6 +21,12 @@ class EFreeGames(commands.Cog):
         self.epic_api_url = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
         self.steam_api_url = "https://store.steampowered.com/api/featuredcategories"
         
+        # Store colors for different storefronts
+        self.store_colors = {
+            "epic": 0x2F2F2F,  # Epic Games Store gray
+            "steam": 0x1b2838,  # Steam navy blue
+        }
+        
         default_guild = {
             "channel_id": None,
             "store_threads": {},
@@ -43,6 +49,12 @@ class EFreeGames(commands.Cog):
         self.config.register_global(**default_global)
         
         self.bg_task = self.bot.loop.create_task(self.check_free_games_schedule())
+
+    def cog_unload(self):
+        """Cleanup when cog is unloaded."""
+        if self.bg_task:
+            self.bg_task.cancel()
+        asyncio.create_task(self.session.close())
 
     @commands.group(name="efreegames")
     async def efreegames(self, ctx):
@@ -88,7 +100,6 @@ class EFreeGames(commands.Cog):
             epic_config["token_expires"] = None
             
         await ctx.send("Epic Games Store credentials have been set.", delete_after=10)
-
     @efreegames.command(name="steamkey")
     @checks.is_owner()
     async def set_steam_key(self, ctx, api_key: str):
@@ -132,6 +143,241 @@ class EFreeGames(commands.Cog):
         )
         
         await ctx.send(embed=embed)
+
+    async def is_epic_token_valid(self) -> bool:
+        """Check if the current Epic Games Store token is valid."""
+        epic_config = await self.config.epic()
+        if not epic_config["access_token"] or not epic_config["token_expires"]:
+            return False
+            
+        expires = datetime.fromisoformat(epic_config["token_expires"])
+        return datetime.now(timezone.utc) < expires
+
+    async def get_epic_token(self) -> Optional[str]:
+        """Get a valid Epic Games Store access token."""
+        epic_config = await self.config.epic()
+        
+        # Check if we have valid credentials
+        if not epic_config["client_id"] or not epic_config["client_secret"]:
+            return None
+            
+        # Check if current token is still valid
+        if await self.is_epic_token_valid():
+            return epic_config["access_token"]
+            
+        # Get new token
+        token_url = "https://account-public-service-prod.ol.epicgames.com/account/api/oauth/token"
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": "Basic " + base64.b64encode(
+                f"{epic_config['client_id']}:{epic_config['client_secret']}".encode()
+            ).decode()
+        }
+        data = {
+            "grant_type": "client_credentials"
+        }
+        
+        try:
+            async with self.session.post(token_url, headers=headers, data=data) as response:
+                if response.status == 200:
+                    token_data = await response.json()
+                    
+                    # Save new token
+                    async with self.config.epic() as epic_config:
+                        epic_config["access_token"] = token_data["access_token"]
+                        epic_config["token_expires"] = (
+                            datetime.now(timezone.utc) + 
+                            timedelta(seconds=token_data["expires_in"])
+                        ).isoformat()
+                    
+                    return token_data["access_token"]
+        except Exception as e:
+            print(f"Error getting Epic token: {e}")
+            return None
+    async def fetch_epic_games(self) -> List[Dict]:
+        """Fetch free games from Epic Games Store using authenticated API."""
+        token = await self.get_epic_token()
+        if not token:
+            print("No valid Epic Games Store token available")
+            return []
+            
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+        }
+        
+        try:
+            params = {
+                "locale": "en-US",
+                "country": "US",
+                "allowCountries": "US"
+            }
+            
+            async with self.session.get(
+                self.epic_api_url,
+                params=params,
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    free_games = []
+                    
+                    for game in data.get("data", {}).get("Catalog", {}).get("searchStore", {}).get("elements", []):
+                        promotions = game.get("promotions")
+                        if not promotions:
+                            continue
+                            
+                        promotional_offers = promotions.get("promotionalOffers", [])
+                        upcoming_offers = promotions.get("upcomingPromotionalOffers", [])
+                        
+                        for offer in promotional_offers:
+                            for promo in offer.get("promotionalOffers", []):
+                                if promo.get("discountSetting", {}).get("discountPercentage") == 0:
+                                    start_date = datetime.fromisoformat(promo.get("startDate", "").replace("Z", "+00:00"))
+                                    end_date = datetime.fromisoformat(promo.get("endDate", "").replace("Z", "+00:00"))
+                                    
+                                    if start_date <= datetime.now(timezone.utc) <= end_date:
+                                        free_games.append({
+                                            "title": game.get("title", "Unknown"),
+                                            "store_url": f"https://store.epicgames.com/en-US/p/{game.get('urlSlug')}",
+                                            "image_url": game.get("keyImages", [{}])[0].get("url"),
+                                            "end_time": end_date,
+                                            "description": game.get("description", ""),
+                                            "publisher": game.get("seller", {}).get("name", "Unknown Publisher")
+                                        })
+                    
+                    return free_games
+                    
+        except Exception as e:
+            print(f"Error fetching Epic Games: {e}")
+            return []
+
+    async def fetch_steam_games(self) -> List[Dict]:
+        """Fetch free games from Steam using API key."""
+        steam_config = await self.config.steam()
+        api_key = steam_config["api_key"]
+        
+        if not api_key:
+            print("No Steam API key configured")
+            return []
+            
+        try:
+            params = {
+                "key": api_key,
+                "format": "json"
+            }
+            
+            async with self.session.get(self.steam_api_url, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    free_games = []
+                    
+                    specials = data.get("specials", {}).get("items", [])
+                    
+                    for game in specials:
+                        if game.get("discount_percent") == 100:
+                            app_id = game.get("id")
+                            game_details_url = f"https://store.steampowered.com/api/appdetails?appids={app_id}"
+                            
+                            async with self.session.get(game_details_url) as detail_response:
+                                if detail_response.status == 200:
+                                    detail_data = await detail_response.json()
+                                    game_data = detail_data.get(str(app_id), {}).get("data", {})
+                                    
+                                    if game_data:
+                                        end_time = datetime.now(timezone.utc)
+                                        end_time = end_time.replace(hour=23, minute=59, second=59)
+                                        
+                                        free_games.append({
+                                            "title": game_data.get("name", "Unknown"),
+                                            "store_url": f"https://store.steampowered.com/app/{app_id}",
+                                            "image_url": game_data.get("header_image"),
+                                            "end_time": end_time,
+                                            "description": game_data.get("short_description", ""),
+                                            "publisher": game_data.get("publishers", ["Unknown Publisher"])[0]
+                                        })
+                    
+                    return free_games
+                    
+        except Exception as e:
+            print(f"Error fetching Steam games: {e}")
+            return []
+    async def create_game_embed(self, game: Dict, store: str) -> discord.Embed:
+        """Create an enhanced embed for a free game."""
+        embed = discord.Embed(
+            title=game["title"],
+            url=game["store_url"],
+            description=f"{game.get('description', '')}\n\nFree to claim until: <t:{int(game['end_time'].timestamp())}:R>",
+            color=self.store_colors.get(store, 0x000000)
+        )
+        
+        if game.get("image_url"):
+            embed.set_image(url=game["image_url"])
+            
+        if game.get("publisher"):
+            embed.add_field(name="Publisher", value=game["publisher"], inline=True)
+            
+        embed.set_footer(text=f"Via {store.title()}")
+        
+        return embed
+
+    async def check_free_games_schedule(self):
+        """Background task to check for free games at scheduled time."""
+        await self.bot.wait_until_ready()
+        
+        while True:
+            try:
+                # Get current time in BST
+                now = datetime.now(pytz.timezone('Europe/London'))
+                
+                # Check if it's 12 PM BST
+                if now.hour == 12 and now.minute == 0:
+                    # Fetch games from all stores
+                    epic_games = await self.fetch_epic_games()
+                    steam_games = await self.fetch_steam_games()
+                    
+                    # Post to all configured guilds
+                    all_guilds = await self.config.all_guilds()
+                    for guild_id in all_guilds:
+                        guild = self.bot.get_guild(guild_id)
+                        if not guild:
+                            continue
+                            
+                        channel_id = all_guilds[guild_id]["channel_id"]
+                        if not channel_id:
+                            continue
+                            
+                        channel = guild.get_channel(channel_id)
+                        if not channel:
+                            continue
+                            
+                        store_threads = all_guilds[guild_id].get("store_threads", {})
+                        
+                        # Post Epic Games
+                        for game in epic_games:
+                            embed = await self.create_game_embed(game, "epic")
+                            if "epic" in store_threads:
+                                thread = guild.get_thread(store_threads["epic"])
+                                if thread:
+                                    await thread.send(embed=embed)
+                                    continue
+                            await channel.send(embed=embed)
+                        
+                        # Post Steam Games
+                        for game in steam_games:
+                            embed = await self.create_game_embed(game, "steam")
+                            if "steam" in store_threads:
+                                thread = guild.get_thread(store_threads["steam"])
+                                if thread:
+                                    await thread.send(embed=embed)
+                                    continue
+                            await channel.send(embed=embed)
+                
+            except Exception as e:
+                print(f"Error in free games check schedule: {e}")
+                
+            # Wait for 60 seconds before checking again
+            await asyncio.sleep(60)
 
     @efreegames.command(name="test")
     @checks.admin_or_permissions(manage_channels=True)
@@ -214,6 +460,3 @@ class EFreeGames(commands.Cog):
             for game in steam_games:
                 embed = await self.create_game_embed(game, "steam")
                 await ctx.send(embed=embed)
-
-async def setup(bot: Red):
-    await bot.add_cog(EFreeGames(bot))
