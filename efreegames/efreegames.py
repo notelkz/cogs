@@ -1,3 +1,14 @@
+import discord
+from redbot.core import commands, Config, checks
+from redbot.core.bot import Red
+from datetime import datetime, timezone, timedelta
+import aiohttp
+import asyncio
+import base64
+import pytz
+from typing import Dict, Optional, List
+import json
+
 class EFreeGames(commands.Cog):
     """Track and post free games from various storefronts."""
 
