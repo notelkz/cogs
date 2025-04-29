@@ -1,10 +1,21 @@
 {
     "name": "EFreeGames",
     "author": ["YourName"],
-    "description": "Tracks and announces free games from various digital storefronts",
+    "description": "Tracks and announces free games from various digital storefronts including Epic Games, Steam, GOG, Humble Bundle, Itch.io, EA/Origin, and Ubisoft Connect.",
     "short": "Free games tracker and announcer",
-    "tags": ["games", "free", "announcements", "epic", "steam", "gog"],
-    "install_msg": "Thanks for installing EFreeGames! Use `[p]help efreegames` to get started.",
+    "tags": [
+        "games",
+        "free",
+        "announcements",
+        "epic",
+        "steam",
+        "gog",
+        "humble",
+        "itch",
+        "ea",
+        "ubisoft"
+    ],
+    "install_msg": "Thanks for installing EFreeGames! Use `[p]help efreegames` to get started. Make sure to configure your announcement channel with `[p]fg settings channel`.",
     "end_user_data_statement": "This cog stores configuration for game announcements and role pings per server. It also maintains a cache of previously announced games to prevent duplicates. No personal user data is stored.",
     "min_bot_version": "3.5.0",
     "requirements": [
