@@ -730,6 +730,114 @@ class EFreeGames(commands.Cog):
         """Manage free games announcements settings"""
         if ctx.invoked_subcommand is None:
             await self.show_settings(ctx)
+    @efreegames.group(name="store")
+    @commands.admin_or_permissions(administrator=True)
+    async def store(self, ctx):
+        """Manage store settings"""
+        if ctx.invoked_subcommand is None:
+            await self.show_store_status(ctx)
+
+    @store.command(name="list")
+    async def store_list(self, ctx):
+        """List all supported stores and their status"""
+        guild_config = await self.config.guild(ctx.guild).all()
+        
+        embed = discord.Embed(
+            title="Store Status",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        for store in self.SUPPORTED_STORES:
+            status = self.api_manager.get_store_status(store)
+            enabled = guild_config["stores_enabled"].get(store, False)
+            
+            value = (
+                f"Enabled: {'✅' if enabled else '❌'}\n"
+                f"Status: {status['status'].to_emoji()} {status['status'].value}\n"
+                f"Error Count: {status['error_count']}"
+            )
+            
+            if status['last_success']:
+                value += f"\nLast Success: {status['last_success'].strftime('%Y-%m-%d %H:%M UTC')}"
+            
+            embed.add_field(
+                name=store,
+                value=value,
+                inline=True
+            )
+        
+        await ctx.send(embed=embed)
+
+    @store.command(name="enable")
+    async def store_enable(self, ctx, store: str):
+        """Enable a store"""
+        store = store.capitalize()
+        if store not in self.SUPPORTED_STORES:
+            await ctx.send(f"❌ Invalid store. Available stores: {', '.join(self.SUPPORTED_STORES)}")
+            return
+        
+        async with self.config.guild(ctx.guild).stores_enabled() as stores:
+            stores[store] = True
+        
+        await ctx.send(f"✅ Enabled {store} store")
+
+    @store.command(name="disable")
+    async def store_disable(self, ctx, store: str):
+        """Disable a store"""
+        store = store.capitalize()
+        if store not in self.SUPPORTED_STORES:
+            await ctx.send(f"❌ Invalid store. Available stores: {', '.join(self.SUPPORTED_STORES)}")
+            return
+        
+        async with self.config.guild(ctx.guild).stores_enabled() as stores:
+            stores[store] = False
+        
+        await ctx.send(f"✅ Disabled {store} store")
+
+    async def show_store_status(self, ctx):
+        """Show status of all stores"""
+        guild_config = await self.config.guild(ctx.guild).all()
+        
+        embed = discord.Embed(
+            title="Store Status",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        for store in self.SUPPORTED_STORES:
+            status = self.api_manager.get_store_status(store)
+            enabled = guild_config["stores_enabled"].get(store, False)
+            rate_limit = status['rate_limit']
+            
+            value = (
+                f"**Status:** {status['status'].to_emoji()} {status['status'].value}\n"
+                f"**Enabled:** {'✅' if enabled else '❌'}\n"
+                f"**Rate Limit:** {rate_limit['calls']}/{rate_limit['period']}s\n"
+                f"**Available Calls:** {int(rate_limit['tokens'])}\n"
+                f"**Error Count:** {status['error_count']}"
+            )
+            
+            if status['last_success']:
+                value += f"\n**Last Success:** {status['last_success'].strftime('%Y-%m-%d %H:%M UTC')}"
+            
+            embed.add_field(
+                name=f"{store}",
+                value=value,
+                inline=False
+            )
+        
+        # Add overall statistics
+        total_enabled = sum(1 for store in self.SUPPORTED_STORES if guild_config["stores_enabled"].get(store, False))
+        operational_count = sum(1 for store in self.SUPPORTED_STORES if self.api_manager.store_status[store] == StoreStatus.OPERATIONAL)
+        
+        embed.description = (
+            f"**Total Stores:** {len(self.SUPPORTED_STORES)}\n"
+            f"**Enabled Stores:** {total_enabled}\n"
+            f"**Operational Stores:** {operational_count}"
+        )
+        
+        await ctx.send(embed=embed)
 
     @settings.command(name="view")
     async def settings_view(self, ctx):
