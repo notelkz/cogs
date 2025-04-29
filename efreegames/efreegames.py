@@ -1400,3 +1400,117 @@ class EFreeGames(commands.Cog):
         await self.config.last_check.set(current_time)
         await self.config.cached_games.set(results)
         return results
+    async def automatic_check(self):
+        """Automatically check for free games and post updates"""
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                interval = await self.config.update_interval()
+                games = await self.check_all_stores(force_refresh=True)
+                
+                # Post updates to all configured channels
+                for guild in self.bot.guilds:
+                    try:
+                        guild_config = await self.config.guild(guild).all()
+                        channel_id = guild_config["announcement_channel"]
+                        if not channel_id:
+                            continue
+
+                        channel = guild.get_channel(channel_id)
+                        if not channel:
+                            continue
+
+                        if guild_config["use_threads"]:
+                            store_threads = guild_config["store_threads"]
+                            if store_threads:  # Split by store
+                                for store in self.SUPPORTED_STORES:
+                                    if not guild_config["stores_enabled"][store]:
+                                        continue
+                                        
+                                    thread_name = guild_config["thread_name_format"].format(store=store)
+                                    thread = await self.create_or_get_thread(
+                                        channel,
+                                        thread_name,
+                                        store_threads.get(store)
+                                    )
+                                    
+                                    # Update thread ID in config
+                                    async with self.config.guild(guild).store_threads() as threads:
+                                        threads[store] = thread.id
+                                    
+                                    await self.send_games_embed(thread, games, store)
+                            else:  # Combined thread
+                                thread = await self.create_or_get_thread(
+                                    channel,
+                                    "Free Games Updates",
+                                    guild_config["combined_thread"]
+                                )
+                                
+                                await self.config.guild(guild).combined_thread.set(thread.id)
+                                await self.send_games_embed(thread, games)
+                        else:
+                            await self.send_games_embed(channel, games)
+                    except Exception as e:
+                        logger.error(f"Error posting updates to guild {guild.id}: {e}")
+                        continue
+                
+                await asyncio.sleep(interval * 3600)  # Convert hours to seconds
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in automatic check: {e}")
+                await asyncio.sleep(300)  # Wait 5 minutes before retrying
+
+    @commands.command(name="forcecheckstore")
+    @commands.admin_or_permissions(administrator=True)
+    async def force_check_store(self, ctx, store: str):
+        """Force check a specific store"""
+        store = store.capitalize()
+        if store not in self.SUPPORTED_STORES:
+            await ctx.send(f"❌ Invalid store. Available stores: {', '.join(self.SUPPORTED_STORES)}")
+            return
+
+        async with ctx.typing():
+            try:
+                check_method = getattr(self, f"check_{store.lower()}")
+                games = await check_method()
+                if games:
+                    await self.send_games_embed(ctx.channel, {store: games}, store)
+                else:
+                    await ctx.send(f"No free games found on {store}")
+            except Exception as e:
+                await ctx.send(f"Error checking {store}: {str(e)}")
+
+    @commands.command(name="checkstores")
+    @commands.admin_or_permissions(administrator=True)
+    async def check_stores(self, ctx):
+        """Force check all stores"""
+        async with ctx.typing():
+            message = await ctx.send("Checking all stores...")
+            results = await self.check_all_stores(force_refresh=True)
+            
+            embed = discord.Embed(
+                title="Store Check Results",
+                color=discord.Color.blue(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            
+            total_games = 0
+            for store, games in results.items():
+                status = self.api_manager.get_store_status(store)
+                games_count = len(games)
+                total_games += games_count
+                
+                embed.add_field(
+                    name=store,
+                    value=f"{status['status'].to_emoji()} {games_count} free games found\n"
+                          f"Status: {status['status'].value}",
+                    inline=True
+                )
+            
+            embed.description = f"Found {total_games} free games across all stores"
+            await message.edit(content=None, embed=embed)
+            
+            # Send game announcements
+            await self.send_games_embed(ctx.channel, results)
+

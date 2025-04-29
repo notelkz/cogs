@@ -15,5 +15,6 @@ __red_end_user_data_statement__ = (
 async def setup(bot: Red):
     """Load EFreeGames cog."""
     cog = EFreeGames(bot)
-    await cog.initialize()
+    # Initialize cache before adding cog
+    await cog.initialize_cache()
     await bot.add_cog(cog)
