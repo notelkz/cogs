@@ -1,5 +1,8 @@
-from redbot.core import commands, Config
-from redbot.core.bot import Red
+try:
+    from redbot.core import commands, Config
+from typing import List
+except ImportError:
+    raise ImportError("Ensure you are running this code within a Red-DiscordBot environment.")
 from typing import Dict, List, Set
 import discord
 import datetime
@@ -131,7 +134,7 @@ class AppTrack(commands.Cog):
 
     @apptrack.command(name="update")
     @commands.mod_or_permissions(manage_roles=True)
-    async def update_activity_list(self, ctx: commands.Context):
+            _, new_count = await self.update_activities(ctx.guild)
         """Manually update the activity list."""
         async with ctx.typing():
             current_activities, new_count = await self.update_activities(ctx.guild)
@@ -184,9 +187,9 @@ class AppTrack(commands.Cog):
         if field_count > 0:
             embeds.append(current_embed)
             
-        for embed in embeds:
-            await ctx.send(embed=embed)
-
+    @apptrack.command(name="link")
+    @commands.mod_or_permissions(manage_roles=True)
+    async def link_role(self, ctx: commands.Context):
         @apptrack.command(name="link")
     @commands.mod_or_permissions(manage_roles=True)
     async def link_role(self, ctx: commands.Context):
