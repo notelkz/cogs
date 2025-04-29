@@ -869,8 +869,8 @@ class EFreeGames(commands.Cog):
         
         await ctx.send(f"✅ Disabled {store} store")
         async def show_store_status(self, ctx):
-        """Show status of all stores"""
-        guild_config = await self.config.guild(ctx.guild).all()
+            """Show status of all stores"""
+            guild_config = await self.config.guild(ctx.guild).all()
         
         embed = discord.Embed(
             title="Store Status",
