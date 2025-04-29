@@ -730,15 +730,15 @@ class EFreeGames(commands.Cog):
         """Manage free games announcements settings"""
         if ctx.invoked_subcommand is None:
             await self.show_settings(ctx)
-    @efreegames.group(name="storefront")
+    @efreegames.group(name="stores")
     @commands.admin_or_permissions(administrator=True)
-    async def storefront(self, ctx):
+    async def store(self, ctx):
         """Manage store settings"""
         if ctx.invoked_subcommand is None:
             await self.show_store_status(ctx)
 
-    @storefront.command(name="list")
-    async def storefront_list(self, ctx):
+    @stores.command(name="list")
+    async def store_list(self, ctx):
         """List all supported stores and their status"""
         guild_config = await self.config.guild(ctx.guild).all()
         
@@ -769,8 +769,8 @@ class EFreeGames(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @storefront.command(name="enable")
-    async def storefront_enable(self, ctx, store: str):
+    @stores.command(name="enable")
+    async def store_enable(self, ctx, store: str):
         """Enable a store"""
         store = store.capitalize()
         if store not in self.SUPPORTED_STORES:
@@ -782,8 +782,8 @@ class EFreeGames(commands.Cog):
         
         await ctx.send(f"✅ Enabled {store} store")
 
-    @storefront.command(name="disable")
-    async def storefront_disable(self, ctx, store: str):
+    @stores.command(name="disable")
+    async def store_disable(self, ctx, store: str):
         """Disable a store"""
         store = store.capitalize()
         if store not in self.SUPPORTED_STORES:
@@ -925,15 +925,15 @@ class EFreeGames(commands.Cog):
         else:
             await ctx.send("✅ Thread mode disabled")
 
-    @efreegames.group(name="storefront")
+    @efreegames.group(name="stores")
     @commands.admin_or_permissions(administrator=True)
-    async def storefront(self, ctx):
+    async def store(self, ctx):
         """Manage store settings"""
         if ctx.invoked_subcommand is None:
             await self.show_store_status(ctx)
 
-    @storefront.command(name="list")
-    async def storefront_list(self, ctx):
+    @stores.command(name="list")
+    async def store_list(self, ctx):
         """List all supported stores and their status"""
         guild_config = await self.config.guild(ctx.guild).all()
         
@@ -964,8 +964,8 @@ class EFreeGames(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @storefront.command(name="enable")
-    async def storefront_enable(self, ctx, store: str):
+    @stores.command(name="enable")
+    async def store_enable(self, ctx, store: str):
         """Enable a store"""
         store = store.capitalize()
         if store not in self.SUPPORTED_STORES:
@@ -977,8 +977,8 @@ class EFreeGames(commands.Cog):
         
         await ctx.send(f"✅ Enabled {store} store")
 
-    @storefront.command(name="disable")
-    async def storefront_disable(self, ctx, store: str):
+    @stores.command(name="disable")
+    async def store_disable(self, ctx, store: str):
         """Disable a store"""
         store = store.capitalize()
         if store not in self.SUPPORTED_STORES:
@@ -1159,7 +1159,7 @@ class EFreeGames(commands.Cog):
         else:
             await ctx.send("✅ Default ping role has been cleared")
 
-    @roles.command(name="store")
+    @roles.command(name="stores")
     async def roles_store(self, ctx, store: str, role: discord.Role = None):
         """Set a role to ping for a specific store"""
         store = store.capitalize()
