@@ -3,6 +3,7 @@ Free Games cog for Red-DiscordBot
 Tracks and announces free games from various digital storefronts
 """
 from .efreegames import EFreeGames
+import asyncio
 
 __red_end_user_data_statement__ = (
     "This cog stores configuration for game announcements and role pings per server. "
