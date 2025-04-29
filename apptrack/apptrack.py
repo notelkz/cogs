@@ -9,17 +9,23 @@ from discord.ui import Select, View
 
 class ActivitySelect(Select):
     def __init__(self, activities: List[str]):
-        # Remove duplicates while preserving order
-        unique_activities = list(dict.fromkeys(activities))
-        
-        options = [
-            discord.SelectOption(
+        # Create a dictionary to store unique activities with their indices
+        unique_activities = {}
+        for idx, activity in enumerate(activities):
+            if activity not in unique_activities:
+                unique_activities[activity] = idx
+
+        options = []
+        for activity, idx in unique_activities.items():
+            # Create a unique value by combining index and truncated name
+            value = f"{idx}:{activity[:90]}"  # Leave room for the index prefix
+            
+            option = discord.SelectOption(
                 label=activity[:95] + "..." if len(activity) > 98 else activity,
-                value=activity[:99],  # Discord has a 100 character limit for values
-                description=f"Full name: {activity[:95]}..." if len(activity) > 95 else None
-            ) 
-            for activity in unique_activities
-        ]
+                value=value,
+                description=f"Full name: {activity[:50]}..." if len(activity) > 50 else None
+            )
+            options.append(option)
         
         # Take only the first 25 options (Discord limit)
         options = options[:25]
@@ -35,13 +41,15 @@ class ActivitySelectView(View):
     def __init__(self, activities: List[str], timeout: float = 60):
         super().__init__(timeout=timeout)
         self.selected_activity = None
-        self.original_activities = {activity[:99]: activity for activity in activities}  # Store original names
+        # Store the original activities with their indices
+        self.original_activities = {f"{idx}:{activity[:90]}": activity for idx, activity in enumerate(activities)}
         self.add_item(ActivitySelect(activities))
         
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         select = self.children[0]
-        truncated_value = select.values[0]
-        self.selected_activity = self.original_activities.get(truncated_value, truncated_value)
+        value = select.values[0]
+        # Get the original activity name using the value
+        self.selected_activity = self.original_activities.get(value)
         await interaction.response.defer()
         self.stop()
         return True
@@ -60,16 +68,53 @@ class AppTrack(commands.Cog):
         default_guild = {
             "activity_roles": {},  # Maps activity names to role IDs
             "tracked_activities": [],  # List of tracked activity names
-            "discovered_activities": {}  # Dictionary of activity names and when they were first seen
+            "discovered_activities": {},  # Dictionary of activity names and when they were first seen
+            "last_reset": None  # Timestamp of last activity reset
         }
         
         self.config.register_guild(**default_guild)
         self.activity_check_task = self.bot.loop.create_task(self.periodic_activity_check())
+        self.reset_check_task = self.bot.loop.create_task(self.check_daily_reset())
 
     def cog_unload(self):
         """Cleanup when cog is unloaded."""
         if self.activity_check_task:
             self.activity_check_task.cancel()
+        if self.reset_check_task:
+            self.reset_check_task.cancel()
+
+    async def check_daily_reset(self):
+        """Check and perform daily reset of activities."""
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                for guild in self.bot.guilds:
+                    last_reset = await self.config.guild(guild).last_reset()
+                    now = datetime.datetime.now()
+                    
+                    if last_reset is None:
+                        await self.reset_activities(guild)
+                    else:
+                        last_reset_dt = datetime.datetime.fromisoformat(last_reset)
+                        if (now - last_reset_dt).days >= 1:
+                            await self.reset_activities(guild)
+                            
+                await asyncio.sleep(3600)  # Check every hour
+            except Exception as e:
+                logging.error(f"Error in daily reset check: {e}")
+                await asyncio.sleep(3600)
+
+    async def reset_activities(self, guild: discord.Guild):
+        """Reset the discovered activities list."""
+        async with self.config.guild(guild).discovered_activities() as discovered:
+            # Keep only tracked activities
+            tracked = await self.config.guild(guild).tracked_activities()
+            tracked_dict = {activity: discovered.get(activity) for activity in tracked if activity in discovered}
+            discovered.clear()
+            discovered.update(tracked_dict)
+        
+        await self.config.guild(guild).last_reset.set(datetime.datetime.now().isoformat())
+        logging.info(f"Reset activities for guild {guild.name}")
 
     async def periodic_activity_check(self):
         """Check for new activities every 30 minutes."""
@@ -82,7 +127,6 @@ class AppTrack(commands.Cog):
             except Exception as e:
                 logging.error(f"Error in activity check: {e}")
                 await asyncio.sleep(1800)
-
     def is_valid_activity(self, activity) -> bool:
         """Check if the activity is valid for tracking."""
         if activity is None:
@@ -139,6 +183,14 @@ class AppTrack(commands.Cog):
                 await ctx.send(f"Update complete! Found {new_count} new activities. Use `!at discover` to see all activities.")
             else:
                 await ctx.send("Update complete! No new activities found.")
+
+    @apptrack.command(name="reset")
+    @commands.mod_or_permissions(manage_roles=True)
+    async def reset_activity_list(self, ctx: commands.Context):
+        """Manually reset the activity list."""
+        async with ctx.typing():
+            await self.reset_activities(ctx.guild)
+            await ctx.send("Activity list has been reset. Only tracked activities are preserved.")
     @apptrack.command(name="discover")
     async def discover_activities(self, ctx: commands.Context):
         """List all discovered Discord Activities in the server."""
@@ -196,10 +248,11 @@ class AppTrack(commands.Cog):
             await ctx.send("No activities have been discovered yet. Use `!at update` to scan for activities.")
             return
 
-        activities = list(discovered.keys())
+        # Sort activities alphabetically
+        activities = sorted(discovered.keys())
         if len(activities) > 25:
-            await ctx.send("There are more than 25 activities. Showing the 25 most recently discovered:")
-            activities = list(discovered.keys())[-25:]  # Take the 25 most recent activities
+            await ctx.send("There are more than 25 activities. Showing the first 25 alphabetically:")
+            activities = activities[:25]
 
         # Create and send activity selection menu
         view = ActivitySelectView(activities)
@@ -352,7 +405,6 @@ class AppTrack(commands.Cog):
             await ctx.send(f"Removed role '{role.name}' from {member.name}")
         except discord.Forbidden:
             await ctx.send("I don't have permission to remove that role.")
-
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         """Handle activity changes and role assignments. Only adds roles, never removes them."""
