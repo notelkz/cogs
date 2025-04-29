@@ -231,6 +231,19 @@ class APIManager:
         self.store_status = {store: StoreStatus.OPERATIONAL for store in self.rate_limits}
         self.error_counts = {store: 0 for store in self.rate_limits}
         self.last_success = {store: None for store in self.rate_limits}
+    
+    def get_store_status(self, store: str) -> dict:
+        """Get detailed status for a store"""
+        return {
+            'status': self.store_status[store],
+            'error_count': self.error_counts[store],
+            'last_success': self.last_success[store],
+            'rate_limit': {
+                'calls': self.rate_limits[store].calls,
+                'period': self.rate_limits[store].period,
+                'tokens': self.rate_limits[store].tokens
+            }
+        }
 
     async def make_request(self, 
                           session: aiohttp.ClientSession,
