@@ -62,7 +62,6 @@ class RateLimitError(StoreError):
 class APIError(StoreError):
     """Exception for API errors"""
     pass
-
 class RateLimit:
     """Rate limit configuration"""
     def __init__(self, calls: int, period: float):
@@ -89,6 +88,7 @@ class RateLimit:
             if self.tokens < 1:
                 await asyncio.sleep(self.period / self.calls)
         self.tokens -= 1
+
 class GameTypeFlags:
     """Game type filter configuration"""
     def __init__(self, **kwargs):
@@ -510,6 +510,29 @@ class EFreeGames(commands.Cog):
         "EA": "https://cdn.discordapp.com/attachments/1094721906376433766/1094722555850088488/ea.png",
         "Ubisoft": "https://cdn.discordapp.com/attachments/1094721906376433766/1094722557359697940/ubisoft.png"
     }
+
+    @commands.group(name="efreegames", aliases=["fg"])
+    async def efreegames(self, ctx):
+        """Free games management commands"""
+        if ctx.invoked_subcommand is None:
+            try:
+                async with ctx.typing():
+                    # Add a timeout for the store checks
+                    games = await asyncio.wait_for(
+                        self.check_all_stores(),
+                        timeout=30.0  # 30 second timeout
+                    )
+                    
+                    if not games:
+                        await ctx.send("No free games found at the moment.")
+                        return
+                    
+                    await self.send_games_embed(ctx.channel, games)
+            except asyncio.TimeoutError:
+                await ctx.send("❌ The store check timed out. Please try again later or check individual stores with `!forcecheckstore`")
+            except Exception as e:
+                logger.error(f"Error in efreegames command: {e}")
+                await ctx.send("❌ An error occurred while checking for free games. Please try again later.")
     async def get_dominant_color(self, image_url: str) -> discord.Color:
         """Get the dominant color from an image URL"""
         try:
@@ -649,68 +672,75 @@ class EFreeGames(commands.Cog):
                              games: Dict[str, List[dict]],
                              store: Optional[str] = None):
         """Creates and sends embeds with claim buttons for free games"""
-        if isinstance(destination.guild, discord.Guild):
-            games = await self.filter_games_by_type(games, destination.guild.id)
-            if not games:
-                return
+        try:
+            if isinstance(destination.guild, discord.Guild):
+                games = await self.filter_games_by_type(games, destination.guild.id)
+                if not games:
+                    await destination.send("No free games found matching your filters.")
+                    return
 
-        if store:
-            # Single store games
-            store_games = games.get(store, [])
-            if not store_games:
-                return
+            if store:
+                # Single store games
+                store_games = games.get(store, [])
+                if not store_games:
+                    await destination.send(f"No free games found for {store}.")
+                    return
 
-            role_pings = set()
-            for game in store_games:
-                roles = await self.get_ping_roles(
-                    destination.guild.id,
-                    store,
-                    game.get('type', GameType.OTHER.value)
-                )
-                role_pings.update(roles)
-
-            ping_text = await self.format_role_pings(destination.guild, list(role_pings))
-            
-            if ping_text:
-                await destination.send(ping_text)
-            
-            for game in store_games:
-                embed, view = await self.create_game_embed(game, store)
-                await destination.send(embed=embed, view=view)
-                await asyncio.sleep(0.5)
-
-        else:
-            # Multiple stores
-            role_pings = set()
-            for store_name, store_games in games.items():
+                role_pings = set()
                 for game in store_games:
                     roles = await self.get_ping_roles(
                         destination.guild.id,
-                        store_name,
+                        store,
                         game.get('type', GameType.OTHER.value)
                     )
                     role_pings.update(roles)
 
-            ping_text = await self.format_role_pings(destination.guild, list(role_pings))
-            
-            if ping_text:
-                await destination.send(ping_text)
-            
-            for store_name, store_games in games.items():
+                ping_text = await self.format_role_pings(destination.guild, list(role_pings))
+                
+                if ping_text:
+                    await destination.send(ping_text)
+                
                 for game in store_games:
-                    embed, view = await self.create_game_embed(game, store_name)
-                    await destination.send(embed=embed, view=view)
-                    await asyncio.sleep(0.5)
+                    try:
+                        embed, view = await self.create_game_embed(game, store)
+                        await destination.send(embed=embed, view=view)
+                        await asyncio.sleep(0.5)  # Slight delay between messages
+                    except Exception as e:
+                        logger.error(f"Error sending game embed: {e}")
+                        continue
 
-    @commands.group(name="efreegames", aliases=["fg"])
-    async def efreegames(self, ctx):
-        """Free games management commands"""
-        if ctx.invoked_subcommand is None:
-            async with ctx.typing():
-                games = await self.check_all_stores()
-                await self.send_games_embed(ctx.channel, games)
+            else:
+                # Multiple stores
+                role_pings = set()
+                for store_name, store_games in games.items():
+                    for game in store_games:
+                        roles = await self.get_ping_roles(
+                            destination.guild.id,
+                            store_name,
+                            game.get('type', GameType.OTHER.value)
+                        )
+                        role_pings.update(roles)
 
-    @efreegames.group(name="gamestore")
+                ping_text = await self.format_role_pings(destination.guild, list(role_pings))
+                
+                if ping_text:
+                    await destination.send(ping_text)
+                
+                for store_name, store_games in games.items():
+                    for game in store_games:
+                        try:
+                            embed, view = await self.create_game_embed(game, store_name)
+                            await destination.send(embed=embed, view=view)
+                            await asyncio.sleep(0.5)
+                        except Exception as e:
+                            logger.error(f"Error sending game embed: {e}")
+                            continue
+
+        except Exception as e:
+            logger.error(f"Error in send_games_embed: {e}")
+            await destination.send("❌ An error occurred while sending game information.")
+
+    @commands.group(name="gamestore")
     @commands.admin_or_permissions(administrator=True)
     async def gamestore(self, ctx):
         """Manage store settings"""
@@ -776,106 +806,130 @@ class EFreeGames(commands.Cog):
         await ctx.send(f"✅ Disabled {store} store")
     async def show_store_status(self, ctx):
         """Show status of all stores"""
-        guild_config = await self.config.guild(ctx.guild).all()
-        
-        embed = discord.Embed(
-            title="Store Status",
-            color=discord.Color.blue(),
-            timestamp=datetime.datetime.utcnow()
-        )
-        
-        for store in self.SUPPORTED_STORES:
-            status = self.api_manager.get_store_status(store)
-            enabled = guild_config["stores_enabled"].get(store, False)
-            rate_limit = status['rate_limit']
+        try:
+            guild_config = await self.config.guild(ctx.guild).all()
             
-            value = (
-                f"**Status:** {status['status'].to_emoji()} {status['status'].value}\n"
-                f"**Enabled:** {'✅' if enabled else '❌'}\n"
-                f"**Rate Limit:** {rate_limit['calls']}/{rate_limit['period']}s\n"
-                f"**Available Calls:** {int(rate_limit['tokens'])}\n"
-                f"**Error Count:** {status['error_count']}"
+            embed = discord.Embed(
+                title="Store Status",
+                color=discord.Color.blue(),
+                timestamp=datetime.datetime.utcnow()
             )
             
-            if status['last_success']:
-                value += f"\n**Last Success:** {status['last_success'].strftime('%Y-%m-%d %H:%M UTC')}"
+            for store in self.SUPPORTED_STORES:
+                status = self.api_manager.get_store_status(store)
+                enabled = guild_config["stores_enabled"].get(store, False)
+                rate_limit = status['rate_limit']
+                
+                value = (
+                    f"**Status:** {status['status'].to_emoji()} {status['status'].value}\n"
+                    f"**Enabled:** {'✅' if enabled else '❌'}\n"
+                    f"**Rate Limit:** {rate_limit['calls']}/{rate_limit['period']}s\n"
+                    f"**Available Calls:** {int(rate_limit['tokens'])}\n"
+                    f"**Error Count:** {status['error_count']}"
+                )
+                
+                if status['last_success']:
+                    value += f"\n**Last Success:** {status['last_success'].strftime('%Y-%m-%d %H:%M UTC')}"
+                
+                embed.add_field(
+                    name=f"{store}",
+                    value=value,
+                    inline=False
+                )
             
-            embed.add_field(
-                name=f"{store}",
-                value=value,
-                inline=False
+            # Add overall statistics
+            total_enabled = sum(1 for store in self.SUPPORTED_STORES if guild_config["stores_enabled"].get(store, False))
+            operational_count = sum(1 for store in self.SUPPORTED_STORES if self.api_manager.store_status[store] == StoreStatus.OPERATIONAL)
+            
+            embed.description = (
+                f"**Total Stores:** {len(self.SUPPORTED_STORES)}\n"
+                f"**Enabled Stores:** {total_enabled}\n"
+                f"**Operational Stores:** {operational_count}"
             )
-        
-        # Add overall statistics
-        total_enabled = sum(1 for store in self.SUPPORTED_STORES if guild_config["stores_enabled"].get(store, False))
-        operational_count = sum(1 for store in self.SUPPORTED_STORES if self.api_manager.store_status[store] == StoreStatus.OPERATIONAL)
-        
-        embed.description = (
-            f"**Total Stores:** {len(self.SUPPORTED_STORES)}\n"
-            f"**Enabled Stores:** {total_enabled}\n"
-            f"**Operational Stores:** {operational_count}"
-        )
-        
-        await ctx.send(embed=embed)
+            
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error showing store status: {e}")
+            await ctx.send("❌ An error occurred while fetching store status.")
 
-    @efreegames.group(name="settings")
+    @commands.group(name="settings")
     @commands.admin_or_permissions(administrator=True)
     async def settings(self, ctx):
         """Manage free games announcements settings"""
         if ctx.invoked_subcommand is None:
             await self.show_settings(ctx)
 
-    @settings.command(name="view")
-    async def settings_view(self, ctx):
-        """View current settings"""
-        guild_config = await self.config.guild(ctx.guild).all()
-        
-        embed = discord.Embed(
-            title="Free Games Settings",
-            color=discord.Color.blue(),
-            timestamp=datetime.datetime.utcnow()
-        )
-        
-        # Channel settings
-        channel = ctx.guild.get_channel(guild_config["announcement_channel"])
-        embed.add_field(
-            name="Announcement Channel",
-            value=channel.mention if channel else "Not set",
-            inline=False
-        )
-        
-        # Thread settings
-        thread_status = "Enabled" if guild_config["use_threads"] else "Disabled"
-        if guild_config["use_threads"]:
-            thread_status += f"\nFormat: {guild_config['thread_name_format']}"
-        embed.add_field(
-            name="Thread Mode",
-            value=thread_status,
-            inline=False
-        )
-        
-        # Store status
-        stores_status = ""
-        for store, enabled in guild_config["stores_enabled"].items():
-            stores_status += f"{store}: {'✅' if enabled else '❌'}\n"
-        embed.add_field(
-            name="Enabled Stores",
-            value=stores_status or "No stores configured",
-            inline=False
-        )
-        
-        # Game type filters
-        filters = GameTypeFlags.from_dict(guild_config["game_type_filters"])
-        filter_status = ""
-        for game_type, enabled in filters.to_dict().items():
-            filter_status += f"{game_type.replace('_', ' ').title()}: {'✅' if enabled else '❌'}\n"
-        embed.add_field(
-            name="Game Type Filters",
-            value=filter_status or "No filters configured",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
+    async def show_settings(self, ctx):
+        """Show current settings"""
+        try:
+            guild_config = await self.config.guild(ctx.guild).all()
+            
+            embed = discord.Embed(
+                title="Free Games Settings",
+                color=discord.Color.blue(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            
+            # Channel settings
+            channel = ctx.guild.get_channel(guild_config["announcement_channel"])
+            embed.add_field(
+                name="Announcement Channel",
+                value=channel.mention if channel else "Not set",
+                inline=False
+            )
+            
+            # Thread settings
+            thread_status = "Enabled" if guild_config["use_threads"] else "Disabled"
+            if guild_config["use_threads"]:
+                thread_status += f"\nFormat: {guild_config['thread_name_format']}"
+            embed.add_field(
+                name="Thread Mode",
+                value=thread_status,
+                inline=False
+            )
+            
+            # Store status
+            stores_status = ""
+            for store, enabled in guild_config["stores_enabled"].items():
+                stores_status += f"{store}: {'✅' if enabled else '❌'}\n"
+            embed.add_field(
+                name="Enabled Stores",
+                value=stores_status or "No stores configured",
+                inline=False
+            )
+            
+            # Game type filters
+            filters = GameTypeFlags.from_dict(guild_config["game_type_filters"])
+            filter_status = ""
+            for game_type, enabled in filters.to_dict().items():
+                filter_status += f"{game_type.replace('_', ' ').title()}: {'✅' if enabled else '❌'}\n"
+            embed.add_field(
+                name="Game Type Filters",
+                value=filter_status or "No filters configured",
+                inline=False
+            )
+            
+            # Update interval
+            interval = await self.config.update_interval()
+            embed.add_field(
+                name="Update Interval",
+                value=f"Every {interval} hours",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error showing settings: {e}")
+            await ctx.send("❌ An error occurred while fetching settings.")
+
+    @settings.command(name="channel")
+    async def set_channel(self, ctx, channel: discord.TextChannel = None):
+        """Set the channel for free game announcements"""
+        if channel is None:
+            channel = ctx.channel
+
+        await self.config.guild(ctx.guild).announcement_channel.set(channel.id)
+        await ctx.send(f"✅ Free game announcements will be posted in {channel.mention}")
 
     @settings.command(name="interval")
     async def set_interval(self, ctx, hours: int):
@@ -888,57 +942,56 @@ class EFreeGames(commands.Cog):
         self.start_tasks()
         
         await ctx.send(f"✅ Update interval set to {hours} hours. The next check will be in {hours} hours.")
-
-    @settings.command(name="channel")
-    async def set_channel(self, ctx, channel: discord.TextChannel = None):
-        """Set the channel for free game announcements"""
-        if channel is None:
-            channel = ctx.channel
-
-        await self.config.guild(ctx.guild).announcement_channel.set(channel.id)
-        await ctx.send(f"✅ Free game announcements will be posted in {channel.mention}")
-
     @settings.command(name="threads")
     async def toggle_threads(self, ctx, enabled: bool = True, *, format: str = None):
         """Toggle thread mode and set thread name format"""
-        await self.config.guild(ctx.guild).use_threads.set(enabled)
-        
-        if enabled and format:
-            await self.config.guild(ctx.guild).thread_name_format.set(format)
-            await ctx.send(f"✅ Thread mode enabled with format: {format}")
-        elif enabled:
-            await ctx.send("✅ Thread mode enabled with default format")
-        else:
-            await ctx.send("✅ Thread mode disabled")
-    @efreegames.group(name="filter")
+        try:
+            await self.config.guild(ctx.guild).use_threads.set(enabled)
+            
+            if enabled:
+                if format:
+                    await self.config.guild(ctx.guild).thread_name_format.set(format)
+                    await ctx.send(f"✅ Thread mode enabled with format: {format}")
+                else:
+                    await ctx.send("✅ Thread mode enabled with default format")
+            else:
+                await ctx.send("✅ Thread mode disabled")
+        except Exception as e:
+            logger.error(f"Error toggling threads: {e}")
+            await ctx.send("❌ An error occurred while updating thread settings.")
+
+    @commands.group(name="filter")
     @commands.admin_or_permissions(administrator=True)
     async def filter(self, ctx):
         """Manage game type filters"""
         if ctx.invoked_subcommand is None:
             await self.show_filters(ctx)
 
-    @filter.command(name="list")
-    async def filter_list(self, ctx):
+    async def show_filters(self, ctx):
         """Show current filter settings"""
-        guild_filters = GameTypeFlags.from_dict(
-            await self.config.guild(ctx.guild).game_type_filters()
-        )
-        
-        embed = discord.Embed(
-            title="Game Type Filters",
-            color=discord.Color.blue(),
-            description="Current filter settings for free game announcements:",
-            timestamp=datetime.datetime.utcnow()
-        )
-        
-        for game_type, enabled in guild_filters.to_dict().items():
-            embed.add_field(
-                name=game_type.replace('_', ' ').title(),
-                value="✅ Enabled" if enabled else "❌ Disabled",
-                inline=True
+        try:
+            guild_filters = GameTypeFlags.from_dict(
+                await self.config.guild(ctx.guild).game_type_filters()
             )
-        
-        await ctx.send(embed=embed)
+            
+            embed = discord.Embed(
+                title="Game Type Filters",
+                color=discord.Color.blue(),
+                description="Current filter settings for free game announcements:",
+                timestamp=datetime.datetime.utcnow()
+            )
+            
+            for game_type, enabled in guild_filters.to_dict().items():
+                embed.add_field(
+                    name=game_type.replace('_', ' ').title(),
+                    value="✅ Enabled" if enabled else "❌ Disabled",
+                    inline=True
+                )
+            
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error showing filters: {e}")
+            await ctx.send("❌ An error occurred while fetching filter settings.")
 
     @filter.command(name="type")
     async def filter_type(self, ctx, game_type: str, enabled: bool):
@@ -949,92 +1002,110 @@ class EFreeGames(commands.Cog):
             await ctx.send(f"❌ Invalid game type. Available types: {', '.join(GameType.list())}")
             return
 
-        async with self.config.guild(ctx.guild).game_type_filters() as filters:
-            filters[game_type.value] = enabled
+        try:
+            async with self.config.guild(ctx.guild).game_type_filters() as filters:
+                filters[game_type.value] = enabled
 
-        status = "enabled" if enabled else "disabled"
-        await ctx.send(f"✅ {game_type.value.replace('_', ' ').title()} filter {status}")
+            status = "enabled" if enabled else "disabled"
+            await ctx.send(f"✅ {game_type.value.replace('_', ' ').title()} filter {status}")
+        except Exception as e:
+            logger.error(f"Error setting filter: {e}")
+            await ctx.send("❌ An error occurred while updating filter settings.")
 
     @filter.command(name="reset")
     async def filter_reset(self, ctx):
         """Reset filters to default settings"""
-        await self.config.guild(ctx.guild).game_type_filters.set(
-            GameTypeFlags().to_dict()
-        )
-        await ctx.send("✅ Game type filters have been reset to default settings")
+        try:
+            await self.config.guild(ctx.guild).game_type_filters.set(
+                GameTypeFlags().to_dict()
+            )
+            await ctx.send("✅ Game type filters have been reset to default settings")
+        except Exception as e:
+            logger.error(f"Error resetting filters: {e}")
+            await ctx.send("❌ An error occurred while resetting filters.")
 
-    @efreegames.group(name="roles")
+    @commands.group(name="roles")
     @commands.admin_or_permissions(administrator=True)
     async def roles(self, ctx):
         """Manage role ping settings"""
         if ctx.invoked_subcommand is None:
             await self.show_roles(ctx)
 
-    @roles.command(name="list")
-    async def roles_list(self, ctx):
+    async def show_roles(self, ctx):
         """Show current role ping settings"""
-        guild_settings = await self.config.guild(ctx.guild).ping_roles()
-        
-        embed = discord.Embed(
-            title="Role Ping Settings",
-            color=discord.Color.blue(),
-            description=f"Role pings are currently {'enabled' if guild_settings['enabled'] else 'disabled'}",
-            timestamp=datetime.datetime.utcnow()
-        )
-        
-        # Default role
-        default_role = ctx.guild.get_role(guild_settings["default"]) if guild_settings["default"] else None
-        embed.add_field(
-            name="Default Role",
-            value=default_role.mention if default_role else "None",
-            inline=False
-        )
-        
-        # Store roles
-        store_roles = ""
-        for store, role_id in guild_settings["stores"].items():
-            role = ctx.guild.get_role(role_id)
-            if role:
-                store_roles += f"{store}: {role.mention}\n"
-        embed.add_field(
-            name="Store-Specific Roles",
-            value=store_roles or "None",
-            inline=False
-        )
-        
-        # Game type roles
-        type_roles = ""
-        for game_type, role_id in guild_settings["game_types"].items():
-            role = ctx.guild.get_role(role_id)
-            if role:
-                type_roles += f"{game_type.replace('_', ' ').title()}: {role.mention}\n"
-        embed.add_field(
-            name="Game Type Roles",
-            value=type_roles or "None",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
-
+        try:
+            guild_settings = await self.config.guild(ctx.guild).ping_roles()
+            
+            embed = discord.Embed(
+                title="Role Ping Settings",
+                color=discord.Color.blue(),
+                description=f"Role pings are currently {'enabled' if guild_settings['enabled'] else 'disabled'}",
+                timestamp=datetime.datetime.utcnow()
+            )
+            
+            # Default role
+            default_role = ctx.guild.get_role(guild_settings["default"]) if guild_settings["default"] else None
+            embed.add_field(
+                name="Default Role",
+                value=default_role.mention if default_role else "None",
+                inline=False
+            )
+            
+            # Store roles
+            store_roles = ""
+            for store, role_id in guild_settings["stores"].items():
+                role = ctx.guild.get_role(role_id)
+                if role:
+                    store_roles += f"{store}: {role.mention}\n"
+            embed.add_field(
+                name="Store-Specific Roles",
+                value=store_roles or "None",
+                inline=False
+            )
+            
+            # Game type roles
+            type_roles = ""
+            for game_type, role_id in guild_settings["game_types"].items():
+                role = ctx.guild.get_role(role_id)
+                if role:
+                    type_roles += f"{game_type.replace('_', ' ').title()}: {role.mention}\n"
+            embed.add_field(
+                name="Game Type Roles",
+                value=type_roles or "None",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error showing roles: {e}")
+            await ctx.send("❌ An error occurred while fetching role settings.")
     @roles.command(name="toggle")
     async def roles_toggle(self, ctx, enabled: bool):
         """Enable or disable role pings"""
-        async with self.config.guild(ctx.guild).ping_roles() as settings:
-            settings["enabled"] = enabled
-        
-        status = "enabled" if enabled else "disabled"
-        await ctx.send(f"✅ Role pings have been {status}")
+        try:
+            async with self.config.guild(ctx.guild).ping_roles() as settings:
+                settings["enabled"] = enabled
+            
+            status = "enabled" if enabled else "disabled"
+            await ctx.send(f"✅ Role pings have been {status}")
+        except Exception as e:
+            logger.error(f"Error toggling roles: {e}")
+            await ctx.send("❌ An error occurred while updating role settings.")
 
     @roles.command(name="default")
     async def roles_default(self, ctx, role: discord.Role = None):
         """Set the default role to ping for all free games"""
-        async with self.config.guild(ctx.guild).ping_roles() as settings:
-            settings["default"] = role.id if role else None
-        
-        if role:
-            await ctx.send(f"✅ Default ping role set to {role.mention}")
-        else:
-            await ctx.send("✅ Default ping role has been cleared")
+        try:
+            async with self.config.guild(ctx.guild).ping_roles() as settings:
+                settings["default"] = role.id if role else None
+            
+            if role:
+                await ctx.send(f"✅ Default ping role set to {role.mention}")
+            else:
+                await ctx.send("✅ Default ping role has been cleared")
+        except Exception as e:
+            logger.error(f"Error setting default role: {e}")
+            await ctx.send("❌ An error occurred while updating role settings.")
 
     @roles.command(name="store")
     async def roles_store(self, ctx, store: str, role: discord.Role = None):
@@ -1044,92 +1115,184 @@ class EFreeGames(commands.Cog):
             await ctx.send(f"❌ Invalid store. Available stores: {', '.join(self.SUPPORTED_STORES)}")
             return
 
-        async with self.config.guild(ctx.guild).ping_roles() as settings:
-            if role:
-                settings["stores"][store] = role.id
-                await ctx.send(f"✅ Role for {store} set to {role.mention}")
-            else:
-                if store in settings["stores"]:
-                    del settings["stores"][store]
-                await ctx.send(f"✅ Role for {store} has been cleared")
-    @efreegames.group(name="cache")
+        try:
+            async with self.config.guild(ctx.guild).ping_roles() as settings:
+                if role:
+                    settings["stores"][store] = role.id
+                    await ctx.send(f"✅ Role for {store} set to {role.mention}")
+                else:
+                    if store in settings["stores"]:
+                        del settings["stores"][store]
+                    await ctx.send(f"✅ Role for {store} has been cleared")
+        except Exception as e:
+            logger.error(f"Error setting store role: {e}")
+            await ctx.send("❌ An error occurred while updating role settings.")
+
+    @roles.command(name="type")
+    async def roles_type(self, ctx, game_type: str, role: discord.Role = None):
+        """Set a role to ping for a specific game type"""
+        try:
+            game_type = GameType(game_type.lower())
+        except ValueError:
+            await ctx.send(f"❌ Invalid game type. Available types: {', '.join(GameType.list())}")
+            return
+
+        try:
+            async with self.config.guild(ctx.guild).ping_roles() as settings:
+                if role:
+                    settings["game_types"][game_type.value] = role.id
+                    await ctx.send(f"✅ Role for {game_type.value} set to {role.mention}")
+                else:
+                    if game_type.value in settings["game_types"]:
+                        del settings["game_types"][game_type.value]
+                    await ctx.send(f"✅ Role for {game_type.value} has been cleared")
+        except Exception as e:
+            logger.error(f"Error setting game type role: {e}")
+            await ctx.send("❌ An error occurred while updating role settings.")
+
+    @roles.command(name="clear")
+    async def roles_clear(self, ctx):
+        """Clear all role ping settings"""
+        try:
+            await self.config.guild(ctx.guild).ping_roles.set({
+                "default": None,
+                "stores": {},
+                "game_types": {},
+                "enabled": True
+            })
+            await ctx.send("✅ All role ping settings have been cleared")
+        except Exception as e:
+            logger.error(f"Error clearing roles: {e}")
+            await ctx.send("❌ An error occurred while clearing role settings.")
+
+    @commands.group(name="cache")
     @commands.admin_or_permissions(administrator=True)
     async def cache(self, ctx):
         """Manage game announcement cache"""
         if ctx.invoked_subcommand is None:
             await self.show_cache_status(ctx)
 
-    @cache.command(name="status")
-    async def cache_status(self, ctx):
+    async def show_cache_status(self, ctx):
         """Show current cache status"""
-        if not self.game_cache:
-            await self.initialize_cache()
-        
-        stats = self.game_cache.get_stats()
-        
-        embed = discord.Embed(
-            title="Game Cache Status",
-            color=discord.Color.blue(),
-            timestamp=datetime.datetime.utcnow()
-        )
-        
-        embed.add_field(
-            name="Total Games",
-            value=str(stats['total_games']),
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Cache Age Limit",
-            value=f"{await self.config.cache_max_age()} days",
-            inline=True
-        )
-        
-        # Store statistics
-        store_stats = ""
-        for store, count in stats['store_counts'].items():
-            store_stats += f"{store}: {count}\n"
-        embed.add_field(
-            name="Games per Store",
-            value=store_stats or "No cached games",
-            inline=False
-        )
-        
-        if stats['oldest_entry']:
+        try:
+            if not self.game_cache:
+                await self.initialize_cache()
+            
+            stats = self.game_cache.get_stats()
+            
+            embed = discord.Embed(
+                title="Game Cache Status",
+                color=discord.Color.blue(),
+                timestamp=datetime.datetime.utcnow()
+            )
+            
             embed.add_field(
-                name="Oldest Entry",
-                value=stats['oldest_entry'].strftime("%Y-%m-%d %H:%M UTC"),
+                name="Total Games",
+                value=str(stats['total_games']),
                 inline=True
             )
-        
-        if stats['newest_entry']:
+            
             embed.add_field(
-                name="Newest Entry",
-                value=stats['newest_entry'].strftime("%Y-%m-%d %H:%M UTC"),
+                name="Cache Age Limit",
+                value=f"{await self.config.cache_max_age()} days",
                 inline=True
             )
-        
-        await ctx.send(embed=embed)
-
+            
+            # Store statistics
+            store_stats = ""
+            for store, count in stats['store_counts'].items():
+                store_stats += f"{store}: {count}\n"
+            embed.add_field(
+                name="Games per Store",
+                value=store_stats or "No cached games",
+                inline=False
+            )
+            
+            if stats['oldest_entry']:
+                embed.add_field(
+                    name="Oldest Entry",
+                    value=stats['oldest_entry'].strftime("%Y-%m-%d %H:%M UTC"),
+                    inline=True
+                )
+            
+            if stats['newest_entry']:
+                embed.add_field(
+                    name="Newest Entry",
+                    value=stats['newest_entry'].strftime("%Y-%m-%d %H:%M UTC"),
+                    inline=True
+                )
+            
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error showing cache status: {e}")
+            await ctx.send("❌ An error occurred while fetching cache status.")
     @cache.command(name="clear")
     async def cache_clear(self, ctx):
         """Clear the game announcement cache"""
-        self.game_cache = GameCache(await self.config.cache_max_age())
-        await self.save_cache()
-        await ctx.send("✅ Game announcement cache has been cleared")
+        try:
+            self.game_cache = GameCache(await self.config.cache_max_age())
+            await self.save_cache()
+            await ctx.send("✅ Game announcement cache has been cleared")
+        except Exception as e:
+            logger.error(f"Error clearing cache: {e}")
+            await ctx.send("❌ An error occurred while clearing the cache.")
 
     @cache.command(name="clean")
     async def cache_clean(self, ctx):
         """Remove old entries from the cache"""
-        if not self.game_cache:
-            await self.initialize_cache()
-        
-        old_count = len(self.game_cache.games)
-        removed = self.game_cache.clean_old_entries()
-        new_count = len(self.game_cache.games)
-        
-        await self.save_cache()
-        await ctx.send(f"✅ Removed {removed} old entries from the cache. {new_count} entries remaining.")
+        try:
+            if not self.game_cache:
+                await self.initialize_cache()
+            
+            old_count = len(self.game_cache.games)
+            removed = self.game_cache.clean_old_entries()
+            new_count = len(self.game_cache.games)
+            
+            await self.save_cache()
+            await ctx.send(f"✅ Removed {removed} old entries from the cache. {new_count} entries remaining.")
+        except Exception as e:
+            logger.error(f"Error cleaning cache: {e}")
+            await ctx.send("❌ An error occurred while cleaning the cache.")
+
+    async def check_all_stores(self, force_refresh: bool = False) -> Dict[str, List[dict]]:
+        """Check all stores for free games"""
+        try:
+            last_check = await self.config.last_check()
+            current_time = datetime.datetime.utcnow().timestamp()
+            
+            # If we have cached results and it's been less than an hour
+            if not force_refresh and last_check and (current_time - last_check < 3600):
+                cached_games = await self.config.cached_games()
+                if cached_games:
+                    return cached_games
+
+            # Initialize results dictionary
+            results = {}
+            
+            # Check each store with a timeout
+            for store in self.SUPPORTED_STORES:
+                try:
+                    check_method = getattr(self, f"check_{store.lower()}")
+                    store_games = await asyncio.wait_for(check_method(), timeout=10.0)
+                    if store_games:
+                        results[store] = store_games
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout checking {store}")
+                    continue
+                except Exception as e:
+                    logger.error(f"Error checking {store}: {e}")
+                    continue
+
+            # Only update cache if we got any results
+            if results:
+                await self.config.last_check.set(current_time)
+                await self.config.cached_games.set(results)
+            
+            return results
+
+        except Exception as e:
+            logger.error(f"Error in check_all_stores: {e}")
+            return {}
 
     @backoff.on_exception(
         backoff.expo,
@@ -1186,7 +1349,7 @@ class EFreeGames(commands.Cog):
             )
             
             games = []
-            for app in data.get("applist", {}).get("apps", []):
+            for app in data.get("applist", {}).get("apps", [])[:100]:  # Limit to first 100 for performance
                 try:
                     details_url = f"https://store.steampowered.com/api/appdetails?appids={app['appid']}"
                     details = await self.api_manager.make_request(
@@ -1295,131 +1458,90 @@ class EFreeGames(commands.Cog):
             logger.error(f"Error checking Humble Bundle: {e}")
             return []
 
-    @backoff.on_exception(
-        backoff.expo,
-        (RateLimitError, APIError),
-        max_tries=3,
-        max_time=300
-    )
-    async def check_itch(self) -> List[dict]:
-        """Check itch.io for free games"""
-        try:
-            url = "https://itch.io/api/1/games/on-sale"
-            data = await self.api_manager.make_request(
-                self.session,
-                "Itch",
-                url
-            )
-            
-            games = []
-            for game in data.get("games", []):
-                if game.get("price") == 0:
-                    games.append({
-                        "id": str(game["id"]),
-                        "name": game["title"],
-                        "url": game["url"],
-                        "image_url": game.get("cover_url", ""),
-                        "type": GameType.FULL_GAME.value,
-                        "store": "Itch"
-                    })
-            
-            return games
-        except Exception as e:
-            logger.error(f"Error checking itch.io: {e}")
-            return []
+    @commands.command(name="forcecheckstore")
+    @commands.admin_or_permissions(administrator=True)
+    async def force_check_store(self, ctx, store: str):
+        """Force check a specific store"""
+        store = store.capitalize()
+        if store not in self.SUPPORTED_STORES:
+            await ctx.send(f"❌ Invalid store. Available stores: {', '.join(self.SUPPORTED_STORES)}")
+            return
 
-    async def check_ea(self) -> List[dict]:
-        """Check EA/Origin for free games"""
-        try:
-            url = "https://api.ea.com/games/v1/games"
-            params = {
-                "filter": "isFree eq true",
-                "sort": "releaseDate desc"
-            }
-            data = await self.api_manager.make_request(
-                self.session,
-                "EA",
-                url,
-                params=params
-            )
-            
-            games = []
-            for game in data.get("games", []):
-                games.append({
-                    "id": game["gameId"],
-                    "name": game["name"],
-                    "url": f"https://www.ea.com/games/{game['slug']}",
-                    "image_url": game.get("image", {}).get("url", ""),
-                    "type": GameType.FULL_GAME.value,
-                    "store": "EA"
-                })
-            
-            return games
-        except Exception as e:
-            logger.error(f"Error checking EA/Origin: {e}")
-            return []
+        async with ctx.typing():
+            try:
+                check_method = getattr(self, f"check_{store.lower()}")
+                games = await asyncio.wait_for(check_method(), timeout=30.0)
+                if games:
+                    await self.send_games_embed(ctx.channel, {store: games}, store)
+                else:
+                    await ctx.send(f"No free games found on {store}")
+            except asyncio.TimeoutError:
+                await ctx.send(f"❌ Timeout while checking {store}")
+            except Exception as e:
+                logger.error(f"Error checking {store}: {e}")
+                await ctx.send(f"❌ Error checking {store}: {str(e)}")
 
-    async def check_ubisoft(self) -> List[dict]:
-        """Check Ubisoft Connect for free games"""
-        try:
-            url = "https://store.ubi.com/api/games"
-            params = {
-                "filter": "free",
-                "sort": "releaseDate"
-            }
-            data = await self.api_manager.make_request(
-                self.session,
-                "Ubisoft",
-                url,
-                params=params
-            )
-            
-            games = []
-            for game in data.get("games", []):
-                if game.get("price", {}).get("amount") == 0:
-                    games.append({
-                        "id": game["id"],
-                        "name": game["name"],
-                        "url": f"https://store.ubi.com/game/{game['slug']}",
-                        "image_url": game.get("image", ""),
-                        "end_date": game.get("freeEndDate"),
-                        "type": GameType.FULL_GAME.value,
-                        "store": "Ubisoft"
-                    })
-            
-            return games
-        except Exception as e:
-            logger.error(f"Error checking Ubisoft Connect: {e}")
-            return []
-
-    async def check_all_stores(self, force_refresh: bool = False) -> Dict[str, List[dict]]:
-        """Check all stores for free games"""
-        last_check = await self.config.last_check()
-        current_time = datetime.datetime.utcnow().timestamp()
+    @commands.command(name="fgdebug")
+    @commands.is_owner()
+    async def debug_stores(self, ctx):
+        """Debug store checks"""
+        message = await ctx.send("Debugging store checks...")
+        results = {}
         
-        if not force_refresh and last_check and (current_time - last_check < 3600):
-            return await self.config.cached_games()
-
-        results = {
-            "Epic": await self.check_epic_games(),
-            "Steam": await self.check_steam(),
-            "GOG": await self.check_gog(),
-            "Humble": await self.check_humble(),
-            "Itch": await self.check_itch(),
-            "EA": await self.check_ea(),
-            "Ubisoft": await self.check_ubisoft()
-        }
-
-        await self.config.last_check.set(current_time)
-        await self.config.cached_games.set(results)
-        return results
+        for store in self.SUPPORTED_STORES:
+            try:
+                start_time = time.time()
+                check_method = getattr(self, f"check_{store.lower()}")
+                games = await asyncio.wait_for(check_method(), timeout=10.0)
+                elapsed = time.time() - start_time
+                
+                results[store] = {
+                    "success": True,
+                    "games_found": len(games) if games else 0,
+                    "time": elapsed,
+                    "error": None
+                }
+            except Exception as e:
+                results[store] = {
+                    "success": False,
+                    "games_found": 0,
+                    "time": 0,
+                    "error": str(e)
+                }
+        
+        # Create debug embed
+        embed = discord.Embed(
+            title="Store Check Debug Results",
+            color=discord.Color.blue(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        for store, data in results.items():
+            value = (
+                f"Success: {'✅' if data['success'] else '❌'}\n"
+                f"Games Found: {data['games_found']}\n"
+                f"Time: {data['time']:.2f}s\n"
+            )
+            if data['error']:
+                value += f"Error: {data['error']}\n"
+            
+            embed.add_field(
+                name=store,
+                value=value,
+                inline=False
+            )
+        
+        await message.edit(content=None, embed=embed)
     async def automatic_check(self):
         """Automatically check for free games and post updates"""
         await self.bot.wait_until_ready()
         while True:
             try:
                 interval = await self.config.update_interval()
-                games = await self.check_all_stores(force_refresh=True)
+                games = await asyncio.wait_for(
+                    self.check_all_stores(force_refresh=True),
+                    timeout=60.0  # 1 minute timeout for all checks
+                )
                 
                 # Post updates to all configured channels
                 for guild in self.bot.guilds:
@@ -1470,29 +1592,12 @@ class EFreeGames(commands.Cog):
                 await asyncio.sleep(interval * 3600)  # Convert hours to seconds
             except asyncio.CancelledError:
                 break
+            except asyncio.TimeoutError:
+                logger.error("Timeout during automatic check")
+                await asyncio.sleep(300)  # Wait 5 minutes before retrying
             except Exception as e:
                 logger.error(f"Error in automatic check: {e}")
                 await asyncio.sleep(300)  # Wait 5 minutes before retrying
-
-    @commands.command(name="forcecheckstore")
-    @commands.admin_or_permissions(administrator=True)
-    async def force_check_store(self, ctx, store: str):
-        """Force check a specific store"""
-        store = store.capitalize()
-        if store not in self.SUPPORTED_STORES:
-            await ctx.send(f"❌ Invalid store. Available stores: {', '.join(self.SUPPORTED_STORES)}")
-            return
-
-        async with ctx.typing():
-            try:
-                check_method = getattr(self, f"check_{store.lower()}")
-                games = await check_method()
-                if games:
-                    await self.send_games_embed(ctx.channel, {store: games}, store)
-                else:
-                    await ctx.send(f"No free games found on {store}")
-            except Exception as e:
-                await ctx.send(f"Error checking {store}: {str(e)}")
 
     @commands.command(name="checkstores")
     @commands.admin_or_permissions(administrator=True)
@@ -1500,32 +1605,43 @@ class EFreeGames(commands.Cog):
         """Force check all stores"""
         async with ctx.typing():
             message = await ctx.send("Checking all stores...")
-            results = await self.check_all_stores(force_refresh=True)
-            
-            embed = discord.Embed(
-                title="Store Check Results",
-                color=discord.Color.blue(),
-                timestamp=datetime.datetime.utcnow()
-            )
-            
-            total_games = 0
-            for store, games in results.items():
-                status = self.api_manager.get_store_status(store)
-                games_count = len(games)
-                total_games += games_count
-                
-                embed.add_field(
-                    name=store,
-                    value=f"{status['status'].to_emoji()} {games_count} free games found\n"
-                          f"Status: {status['status'].value}",
-                    inline=True
+            try:
+                results = await asyncio.wait_for(
+                    self.check_all_stores(force_refresh=True),
+                    timeout=60.0
                 )
-            
-            embed.description = f"Found {total_games} free games across all stores"
-            await message.edit(content=None, embed=embed)
-            
-            # Send game announcements
-            await self.send_games_embed(ctx.channel, results)
+                
+                embed = discord.Embed(
+                    title="Store Check Results",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.datetime.utcnow()
+                )
+                
+                total_games = 0
+                for store, games in results.items():
+                    status = self.api_manager.get_store_status(store)
+                    games_count = len(games)
+                    total_games += games_count
+                    
+                    embed.add_field(
+                        name=store,
+                        value=f"{status['status'].to_emoji()} {games_count} free games found\n"
+                              f"Status: {status['status'].value}",
+                        inline=True
+                    )
+                
+                embed.description = f"Found {total_games} free games across all stores"
+                await message.edit(content=None, embed=embed)
+                
+                # Send game announcements
+                if total_games > 0:
+                    await self.send_games_embed(ctx.channel, results)
+                
+            except asyncio.TimeoutError:
+                await message.edit(content="❌ Store check timed out. Please try again later.")
+            except Exception as e:
+                logger.error(f"Error in check_stores: {e}")
+                await message.edit(content="❌ An error occurred while checking stores.")
 
 def setup(bot):
     """Add the cog to the bot."""
