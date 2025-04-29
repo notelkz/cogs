@@ -1,8 +1,5 @@
-try:
-    from redbot.core import commands, Config
-from typing import List
-except ImportError:
-    raise ImportError("Ensure you are running this code within a Red-DiscordBot environment.")
+from redbot.core import commands, Config
+from redbot.core.bot import Red
 from typing import Dict, List, Set
 import discord
 import datetime
@@ -48,7 +45,6 @@ class ActivitySelectView(View):
         await interaction.response.defer()
         self.stop()
         return True
-
 
 class AppTrack(commands.Cog):
     """Track Discord Activities and assign roles automatically."""
@@ -134,7 +130,7 @@ class AppTrack(commands.Cog):
 
     @apptrack.command(name="update")
     @commands.mod_or_permissions(manage_roles=True)
-            _, new_count = await self.update_activities(ctx.guild)
+    async def update_activity_list(self, ctx: commands.Context):
         """Manually update the activity list."""
         async with ctx.typing():
             current_activities, new_count = await self.update_activities(ctx.guild)
@@ -187,10 +183,10 @@ class AppTrack(commands.Cog):
         if field_count > 0:
             embeds.append(current_embed)
             
+        for embed in embeds:
+            await ctx.send(embed=embed)
+
     @apptrack.command(name="link")
-    @commands.mod_or_permissions(manage_roles=True)
-    async def link_role(self, ctx: commands.Context):
-        @apptrack.command(name="link")
     @commands.mod_or_permissions(manage_roles=True)
     async def link_role(self, ctx: commands.Context):
         """Link an activity to a role using a dropdown menu."""
@@ -253,7 +249,6 @@ class AppTrack(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send("Command timed out. Please try again.")
-
     @apptrack.command(name="current")
     async def current_activities(self, ctx: commands.Context):
         """List all currently active Discord Activities in the server."""
