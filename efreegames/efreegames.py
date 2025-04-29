@@ -868,7 +868,6 @@ class EFreeGames(commands.Cog):
             stores[store] = False
         
         await ctx.send(f"✅ Disabled {store} store")
-
         async def show_store_status(self, ctx):
         """Show status of all stores"""
         guild_config = await self.config.guild(ctx.guild).all()
@@ -912,7 +911,7 @@ class EFreeGames(commands.Cog):
         )
         
         await ctx.send(embed=embed)
-
+    
     @efreegames.group(name="filter")
     @commands.admin_or_permissions(administrator=True)
     async def filter(self, ctx):
