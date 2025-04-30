@@ -1,4 +1,3 @@
-cat > /path/to/Red-DiscordBot/cogs/rolesync/rolesync.py << 'EOL'
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 import discord
@@ -251,4 +250,3 @@ class RoleSync(commands.Cog):
 
 def setup(bot):
     bot.add_cog(RoleSync(bot))
-EOL
