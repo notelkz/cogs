@@ -1,10 +1,13 @@
 {
     "author": ["Your Name"],
-    "install_msg": "Role sync cog installed. Use [p]help rolesync for commands.",
+    "install_msg": "Role synchronization cog installed. Use [p]help rolesync for commands.",
     "name": "RoleSync",
-    "short": "Sync roles between website and Discord",
-    "description": "Allows role synchronization between your website and Discord server",
-    "tags": ["roles", "sync", "website"],
+    "short": "Synchronize Discord roles with website",
+    "description": "Synchronizes Discord roles with a website and provides role management features.",
+    "tags": ["roles", "sync", "website", "management"],
     "requirements": ["aiohttp"],
-    "hidden": false
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "disabled": false,
+    "type": "COG"
 }

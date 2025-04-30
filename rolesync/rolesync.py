@@ -1,3 +1,4 @@
+cat > /path/to/Red-DiscordBot/cogs/rolesync/rolesync.py << 'EOL'
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 import discord
@@ -14,17 +15,24 @@ class RoleSync(commands.Cog):
         self.config = Config.get_conf(self, identifier=1274316388424745030)
         self.website_url = "https://notelkz.net/zerolivesleft"
         
-        # Define your assignable roles here
+        # Setup logging with more detail
+        self.logger = logging.getLogger('red.rolesync')
+        self.logger.setLevel(logging.DEBUG)
+        
+        # Add a debug handler
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        
+        # Define assignable roles
         self.assignable_roles = {
             "1274316388424745030": {
                 "name": "Test Role",
                 "description": "A test role for role sync functionality"
             }
         }
-
-        # Setup logging
-        self.logger = logging.getLogger('red.rolesync')
-        self.logger.setLevel(logging.INFO)
 
         # Default config
         default_guild = {
@@ -36,6 +44,9 @@ class RoleSync(commands.Cog):
     async def sync_with_website(self, member: discord.Member, roles: list):
         """Sync roles with website"""
         try:
+            self.logger.debug(f"Attempting to sync roles for {member.name}")
+            self.logger.debug(f"Roles to sync: {roles}")
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.website_url}/roles.php",
@@ -45,14 +56,34 @@ class RoleSync(commands.Cog):
                     },
                     json={
                         "user_id": str(member.id),
+                        "username": member.name,
                         "roles": roles
                     }
                 ) as resp:
-                    if resp.status == 200:
-                        return await resp.json()
-                    else:
-                        self.logger.error(f"Website sync failed: Status {resp.status}")
+                    self.logger.debug(f"Website response status: {resp.status}")
+                    
+                    if resp.status == 401:
+                        self.logger.error("Authorization failed. Check bot token configuration.")
+                        self.logger.debug(f"Token used: Bot {self.bot.http.token[:10]}...")
+                        return {"success": False, "error": "Authorization failed"}
+                    
+                    try:
+                        response_text = await resp.text()
+                        self.logger.debug(f"Response text: {response_text}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to read response: {e}")
+                        response_text = "Could not read response"
+
+                    if resp.status != 200:
+                        self.logger.error(f"Website sync failed: Status {resp.status}, Response: {response_text}")
                         return {"success": False, "error": f"HTTP {resp.status}"}
+                    
+                    try:
+                        return await resp.json()
+                    except Exception as e:
+                        self.logger.error(f"Failed to parse JSON response: {e}")
+                        return {"success": False, "error": "Invalid JSON response"}
+
         except Exception as e:
             self.logger.error(f"Sync error: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -64,6 +95,8 @@ class RoleSync(commands.Cog):
             guild_config = await self.config.guild(after.guild).all()
             if not guild_config["enabled"]:
                 return
+
+            self.logger.debug(f"Role change detected for {after.name}")
 
             # Get role changes
             added_roles = set(after.roles) - set(before.roles)
@@ -79,6 +112,8 @@ class RoleSync(commands.Cog):
                 for role in after.roles
                 if role.name != "@everyone"
             ]
+
+            self.logger.debug(f"Current roles: {current_roles}")
 
             # Sync with website
             sync_result = await self.sync_with_website(after, current_roles)
@@ -111,6 +146,8 @@ class RoleSync(commands.Cog):
         target = member or ctx.author
         
         async with ctx.typing():
+            self.logger.info(f"Manual sync requested for {target.name}")
+            
             # Format current roles
             current_roles = [
                 {
@@ -129,6 +166,41 @@ class RoleSync(commands.Cog):
                 await ctx.send(f"✅ Successfully synced roles for {target.name}")
             else:
                 await ctx.send(f"❌ Failed to sync roles for {target.name}: {result.get('error', 'Unknown error')}")
+
+    @rolesync.command(name="test")
+    @commands.admin()
+    async def test_connection(self, ctx):
+        """Test the connection to the website"""
+        async with ctx.typing():
+            self.logger.info("Testing website connection")
+            
+            test_data = {
+                "user_id": str(ctx.author.id),
+                "username": ctx.author.name,
+                "roles": [{"id": "test", "name": "Test Role"}]
+            }
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{self.website_url}/roles.php",
+                        headers={
+                            "Authorization": f"Bot {self.bot.http.token}",
+                            "Content-Type": "application/json"
+                        },
+                        json=test_data
+                    ) as resp:
+                        status = resp.status
+                        try:
+                            response_text = await resp.text()
+                        except:
+                            response_text = "Could not read response"
+                        
+                        self.logger.debug(f"Test connection - Status: {status}, Response: {response_text}")
+                        await ctx.send(f"Test results:\nStatus: {status}\nResponse: {response_text}")
+            except Exception as e:
+                self.logger.error(f"Test connection failed: {str(e)}")
+                await ctx.send(f"Connection test failed: {str(e)}")
 
     @rolesync.command(name="toggle")
     @commands.admin()
@@ -179,3 +251,4 @@ class RoleSync(commands.Cog):
 
 def setup(bot):
     bot.add_cog(RoleSync(bot))
+EOL
