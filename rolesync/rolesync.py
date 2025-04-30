@@ -3,6 +3,8 @@ from redbot.core.bot import Red
 import discord
 import aiohttp
 import json
+import logging
+from datetime import datetime
 
 class RoleSync(commands.Cog):
     """Sync roles between website and Discord"""
@@ -10,85 +12,170 @@ class RoleSync(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1274316388424745030)
-        self.website_url = "https://notelkz.net/zerolivesleft"  # Your website URL
+        self.website_url = "https://notelkz.net/zerolivesleft"
         
-        # Define assignable roles
+        # Define your assignable roles here
         self.assignable_roles = {
-            "1274316388424745030": "Battlefield 2042"  # Add more roles as needed
+            "1274316388424745030": {
+                "name": "Test Role",
+                "description": "A test role for role sync functionality"
+            }
         }
+
+        # Setup logging
+        self.logger = logging.getLogger('red.rolesync')
+        self.logger.setLevel(logging.INFO)
+
+        # Default config
+        default_guild = {
+            "log_channel": None,
+            "enabled": True
+        }
+        self.config.register_guild(**default_guild)
+
+    async def sync_with_website(self, member: discord.Member, roles: list):
+        """Sync roles with website"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.website_url}/roles.php",
+                    headers={
+                        "Authorization": f"Bot {self.bot.http.token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "user_id": str(member.id),
+                        "roles": roles
+                    }
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+                    else:
+                        self.logger.error(f"Website sync failed: Status {resp.status}")
+                        return {"success": False, "error": f"HTTP {resp.status}"}
+        except Exception as e:
+            self.logger.error(f"Sync error: {str(e)}")
+            return {"success": False, "error": str(e)}
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Listen for role changes and sync them"""
+        """Monitor role changes and sync them"""
         if before.roles != after.roles:
-            # Get the roles that changed
+            guild_config = await self.config.guild(after.guild).all()
+            if not guild_config["enabled"]:
+                return
+
+            # Get role changes
             added_roles = set(after.roles) - set(before.roles)
             removed_roles = set(before.roles) - set(after.roles)
             
-            # Log role changes
-            if added_roles:
-                await self.log_role_changes(after, added_roles, "added")
-            if removed_roles:
-                await self.log_role_changes(after, removed_roles, "removed")
+            # Format roles for sync
+            current_roles = [
+                {
+                    "id": str(role.id),
+                    "name": role.name,
+                    "color": role.color.value
+                }
+                for role in after.roles
+                if role.name != "@everyone"
+            ]
+
+            # Sync with website
+            sync_result = await self.sync_with_website(after, current_roles)
+            
+            # Log changes
+            if sync_result.get('success'):
+                await self.log_role_changes(
+                    after.guild,
+                    {
+                        "user_id": str(after.id),
+                        "username": after.name,
+                        "added_roles": [{"id": str(r.id), "name": r.name} for r in added_roles],
+                        "removed_roles": [{"id": str(r.id), "name": r.name} for r in removed_roles],
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                )
+            else:
+                self.logger.error(f"Failed to sync roles for {after.name}: {sync_result.get('error')}")
 
     @commands.group(name="rolesync")
     @commands.admin()
     async def rolesync(self, ctx):
-        """Role sync commands"""
+        """Role sync management commands"""
         if ctx.invoked_subcommand is None:
-            await ctx.send("Please specify a subcommand. Use `[p]help rolesync` for more info.")
-
-    @rolesync.command(name="add")
-    async def add_role(self, ctx, member: discord.Member, role: discord.Role):
-        """Add a role to a member"""
-        if str(role.id) in self.assignable_roles:
-            try:
-                await member.add_roles(role)
-                await ctx.send(f"Added {role.name} to {member.name}")
-            except discord.Forbidden:
-                await ctx.send("I don't have permission to manage roles.")
-        else:
-            await ctx.send("This role cannot be self-assigned.")
-
-    @rolesync.command(name="remove")
-    async def remove_role(self, ctx, member: discord.Member, role: discord.Role):
-        """Remove a role from a member"""
-        if str(role.id) in self.assignable_roles:
-            try:
-                await member.remove_roles(role)
-                await ctx.send(f"Removed {role.name} from {member.name}")
-            except discord.Forbidden:
-                await ctx.send("I don't have permission to manage roles.")
-        else:
-            await ctx.send("This role cannot be self-managed.")
+            await ctx.send_help(ctx.command)
 
     @rolesync.command(name="sync")
     async def sync_roles(self, ctx, member: discord.Member = None):
         """Sync roles for a member or yourself"""
         target = member or ctx.author
-        roles = [role.id for role in target.roles]
-        await ctx.send(f"Syncing roles for {target.name}...")
-        # Here you would implement the website sync logic
+        
+        async with ctx.typing():
+            # Format current roles
+            current_roles = [
+                {
+                    "id": str(role.id),
+                    "name": role.name,
+                    "color": role.color.value
+                }
+                for role in target.roles
+                if role.name != "@everyone"
+            ]
 
-    async def log_role_changes(self, member: discord.Member, roles, action: str):
-        """Log role changes to a channel"""
-        log_channel = await self.config.guild(member.guild).log_channel()
-        if log_channel:
-            channel = self.bot.get_channel(log_channel)
-            if channel:
-                role_names = ", ".join(role.name for role in roles)
-                await channel.send(f"Role {action}: {member.name} - {role_names}")
+            # Sync with website
+            result = await self.sync_with_website(target, current_roles)
+            
+            if result.get('success'):
+                await ctx.send(f"✅ Successfully synced roles for {target.name}")
+            else:
+                await ctx.send(f"❌ Failed to sync roles for {target.name}: {result.get('error', 'Unknown error')}")
 
-    @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload):
-        """Handle role reactions"""
-        if str(payload.emoji) in self.role_emojis:
-            guild = self.bot.get_guild(payload.guild_id)
-            member = guild.get_member(payload.user_id)
-            role_id = self.role_emojis[str(payload.emoji)]
-            role = guild.get_role(role_id)
-            if role:
-                await member.add_roles(role)
+    @rolesync.command(name="toggle")
+    @commands.admin()
+    async def toggle_sync(self, ctx):
+        """Toggle role sync on/off"""
+        current = await self.config.guild(ctx.guild).enabled()
+        await self.config.guild(ctx.guild).enabled.set(not current)
+        state = "enabled" if not current else "disabled"
+        await ctx.send(f"Role sync has been {state}")
+
+    @rolesync.command(name="setlog")
+    @commands.admin()
+    async def set_log_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for role sync logs"""
+        await self.config.guild(ctx.guild).log_channel.set(channel.id)
+        await ctx.send(f"Log channel set to {channel.mention}")
+
+    async def log_role_changes(self, guild: discord.Guild, changes: dict):
+        """Log role changes to the designated channel"""
+        log_channel_id = await self.config.guild(guild).log_channel()
+        if not log_channel_id:
+            return
+
+        channel = guild.get_channel(log_channel_id)
+        if not channel:
+            return
+
+        embed = discord.Embed(
+            title="Role Changes",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.set_author(name=changes["username"])
+        
+        if changes.get("added_roles"):
+            added = "\n".join([f"• {role['name']}" for role in changes["added_roles"]])
+            embed.add_field(name="Added Roles", value=added or "None", inline=False)
+            
+        if changes.get("removed_roles"):
+            removed = "\n".join([f"• {role['name']}" for role in changes["removed_roles"]])
+            embed.add_field(name="Removed Roles", value=removed or "None", inline=False)
+
+        try:
+            await channel.send(embed=embed)
+        except discord.HTTPException as e:
+            self.logger.error(f"Failed to send log message: {e}")
 
 def setup(bot):
     bot.add_cog(RoleSync(bot))
