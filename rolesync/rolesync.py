@@ -46,11 +46,18 @@ class RoleSync(commands.Cog):
             self.logger.debug(f"Attempting to sync roles for {member.name}")
             self.logger.debug(f"Roles to sync: {roles}")
             
+            # Get the bot token and create auth header
+            token = self.bot.http.token
+            auth_header = f"Bot {token}"
+            
+            self.logger.debug(f"Auth header length: {len(auth_header)}")
+            self.logger.debug(f"First 10 chars of auth header: {auth_header[:10]}")
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.website_url}/roles.php",
                     headers={
-                        "Authorization": f"Bot {self.bot.http.token}",
+                        "Authorization": auth_header,
                         "Content-Type": "application/json"
                     },
                     json={
@@ -61,14 +68,20 @@ class RoleSync(commands.Cog):
                 ) as resp:
                     self.logger.debug(f"Website response status: {resp.status}")
                     
-                    if resp.status == 401:
-                        self.logger.error("Authorization failed. Check bot token configuration.")
-                        self.logger.debug(f"Token used: Bot {self.bot.http.token[:10]}...")
-                        return {"success": False, "error": "Authorization failed"}
-                    
                     try:
                         response_text = await resp.text()
-                        self.logger.debug(f"Response text: {response_text}")
+                        self.logger.debug(f"Full response: {response_text}")
+                        
+                        if resp.status == 401:
+                            try:
+                                response_json = json.loads(response_text)
+                                debug_info = response_json.get('debug', {})
+                                self.logger.error(f"Auth failed. Debug info: {debug_info}")
+                                return {"success": False, "error": "Authorization failed", "debug": debug_info}
+                            except:
+                                self.logger.error("Auth failed. Could not parse debug info.")
+                                return {"success": False, "error": "Authorization failed"}
+                            
                     except Exception as e:
                         self.logger.error(f"Failed to read response: {e}")
                         response_text = "Could not read response"
@@ -164,42 +177,42 @@ class RoleSync(commands.Cog):
             if result.get('success'):
                 await ctx.send(f"✅ Successfully synced roles for {target.name}")
             else:
-                await ctx.send(f"❌ Failed to sync roles for {target.name}: {result.get('error', 'Unknown error')}")
+                error_msg = result.get('error', 'Unknown error')
+                debug_info = result.get('debug', {})
+                await ctx.send(f"❌ Failed to sync roles for {target.name}: {error_msg}\nDebug: {debug_info}")
 
-    @rolesync.command(name="test")
+    @rolesync.command(name="testauth")
     @commands.admin()
-    async def test_connection(self, ctx):
-        """Test the connection to the website"""
+    async def test_auth(self, ctx):
+        """Test the authentication token"""
         async with ctx.typing():
-            self.logger.info("Testing website connection")
+            token = self.bot.http.token
+            auth_header = f"Bot {token}"
             
-            test_data = {
-                "user_id": str(ctx.author.id),
-                "username": ctx.author.name,
-                "roles": [{"id": "test", "name": "Test Role"}]
-            }
+            self.logger.info("Testing authentication")
+            self.logger.debug(f"Auth header length: {len(auth_header)}")
             
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         f"{self.website_url}/roles.php",
                         headers={
-                            "Authorization": f"Bot {self.bot.http.token}",
+                            "Authorization": auth_header,
                             "Content-Type": "application/json"
                         },
-                        json=test_data
+                        json={
+                            "test": True,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
                     ) as resp:
                         status = resp.status
                         try:
                             response_text = await resp.text()
-                        except:
-                            response_text = "Could not read response"
-                        
-                        self.logger.debug(f"Test connection - Status: {status}, Response: {response_text}")
-                        await ctx.send(f"Test results:\nStatus: {status}\nResponse: {response_text}")
+                            await ctx.send(f"Auth test results:\nStatus: {status}\nResponse: {response_text}")
+                        except Exception as e:
+                            await ctx.send(f"Failed to read response: {e}")
             except Exception as e:
-                self.logger.error(f"Test connection failed: {str(e)}")
-                await ctx.send(f"Connection test failed: {str(e)}")
+                await ctx.send(f"Test failed: {str(e)}")
 
     @rolesync.command(name="toggle")
     @commands.admin()
