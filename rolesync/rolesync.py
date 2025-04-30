@@ -46,25 +46,30 @@ class RoleSync(commands.Cog):
             self.logger.debug(f"Attempting to sync roles for {member.name}")
             self.logger.debug(f"Roles to sync: {roles}")
             
-            # Get the bot token and create auth header
-            token = self.bot.http.token
+            # Bot token (replace with your actual token)
+            token = "MTMxNDY4MzUyMjA4MjE0ODQ0Mg.G1omtJ.M_bLDcWaRnJ8oW9hiGk9hBw_xxWPkbq7_b7TSQ"
             auth_header = f"Bot {token}"
             
             self.logger.debug(f"Auth header length: {len(auth_header)}")
             self.logger.debug(f"First 10 chars of auth header: {auth_header[:10]}")
 
+            headers = {
+                "Authorization": auth_header,
+                "Content-Type": "application/json",
+                "Accept": "application/json"
+            }
+
+            payload = {
+                "user_id": str(member.id),
+                "username": member.name,
+                "roles": roles
+            }
+
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.website_url}/roles.php",
-                    headers={
-                        "Authorization": auth_header,
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "user_id": str(member.id),
-                        "username": member.name,
-                        "roles": roles
-                    }
+                    headers=headers,
+                    json=payload
                 ) as resp:
                     self.logger.debug(f"Website response status: {resp.status}")
                     
@@ -186,7 +191,7 @@ class RoleSync(commands.Cog):
     async def test_auth(self, ctx):
         """Test the authentication token"""
         async with ctx.typing():
-            token = self.bot.http.token
+            token = "MTMxNDY4MzUyMjA4MjE0ODQ0Mg.G1omtJ.M_bLDcWaRnJ8oW9hiGk9hBw_xxWPkbq7_b7TSQ"
             auth_header = f"Bot {token}"
             
             self.logger.info("Testing authentication")
