@@ -6,12 +6,13 @@ import logging
 from datetime import datetime
 
 class RoleSync(commands.Cog):
-    """Sync roles between website and Discord"""
-
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1274316388424745030)
+        
+        # Load from environment or use default
         self.website_url = "https://notelkz.net/zerolivesleft"
+        self.guild_id = "995753617611042916"
         
         # Setup logging
         self.logger = logging.getLogger('red.rolesync')
