@@ -28,41 +28,49 @@ class RoleSync(commands.Cog):
         """Sync roles with website"""
         try:
             self.logger.debug(f"Attempting to sync roles for {member.name}")
-            
-            # Format roles for the website
-            role_data = [
-                {
-                    "id": str(role.id),
-                    "name": role.name,
-                    "color": role.color.value
+        
+        # Format roles for the website
+        role_data = [
+            {
+                "id": str(role.id),
+                "name": role.name,
+                "color": role.color.value
+            }
+            for role in roles
+            if not role.is_default()
+        ]
+
+        headers = {
+            "Authorization": f"Bot {self.bot.http.token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        self.logger.debug(f"Sending request with headers: {headers}")
+        self.logger.debug(f"Sending roles data: {role_data}")
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.website_url}/roles.php",
+                headers=headers,
+                json={
+                    "user_id": str(member.id),
+                    "username": member.name,
+                    "roles": role_data
                 }
-                for role in roles
-                if not role.is_default()
-            ]
+            ) as resp:
+                text = await resp.text()
+                self.logger.debug(f"Response status: {resp.status}")
+                self.logger.debug(f"Response text: {text}")
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{self.website_url}/roles.php",
-                    headers={
-                        "Authorization": f"Bot {self.bot.http.token}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "user_id": str(member.id),
-                        "username": member.name,
-                        "roles": role_data
-                    }
-                ) as resp:
-                    if resp.status == 200:
-                        return await resp.json()
-                    else:
-                        text = await resp.text()
-                        self.logger.error(f"Sync failed: Status {resp.status}, Response: {text}")
-                        return {"success": False, "error": f"HTTP {resp.status}"}
+                if resp.status == 200:
+                    return await resp.json()
+                else:
+                    return {"success": False, "error": f"HTTP {resp.status}: {text}"}
 
-        except Exception as e:
-            self.logger.error(f"Sync error: {str(e)}")
-            return {"success": False, "error": str(e)}
+    except Exception as e:
+        self.logger.error(f"Sync error: {str(e)}")
+        return {"success": False, "error": str(e)}
 
     @commands.group(name="rolesync")
     @commands.admin()
