@@ -1,0 +1,10 @@
+{
+    "author": ["Your Name"],
+    "install_msg": "Role sync cog installed. Use [p]help rolesync for commands.",
+    "name": "RoleSync",
+    "short": "Sync roles between website and Discord",
+    "description": "Allows role synchronization between your website and Discord server",
+    "tags": ["roles", "sync", "website"],
+    "requirements": ["aiohttp"],
+    "hidden": false
+}
