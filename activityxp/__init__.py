@@ -1,4 +1,4 @@
 from .activityxp import ActivityXP
 
-def setup(bot):
-    bot.add_cog(ActivityXP(bot))
+async def setup(bot):
+    await bot.add_cog(ActivityXP(bot))
