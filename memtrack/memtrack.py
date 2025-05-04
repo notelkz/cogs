@@ -55,6 +55,7 @@ class MemberTracker(commands.Cog):
         if str(role_id) not in configured_roles:
             configured_roles.append(str(role_id))
             await self.config.guild(guild).configured_roles.set(configured_roles)
+
     @memtrack.command()
     @commands.admin_or_permissions(administrator=True)
     async def skip(self, ctx, member: discord.Member):
@@ -122,60 +123,78 @@ class MemberTracker(commands.Cog):
             response += "No roles were processed."
 
         await ctx.send(response)
+
     @memtrack.command()
     @commands.mod_or_permissions(manage_roles=True)
     async def addtime(self, ctx, member: discord.Member, role: discord.Role, time: str):
         """
-        Add time to a user's tracked role duration.
-        Usage: !mt addtime @user @role <time>
-        Time format: 1d, 2d, etc. (days)
+        Add or subtract time from a user's tracked role duration.
+        Usage: !mt addtime @user @role [+/-]<time>
+        Time format: +5d, -3d, 2d, etc. (days)
+        If no + or - is given, time is added.
         """
         guild = ctx.guild
         active_tracks = await self.config.guild(guild).active_tracks()
-        
+
         # Check if user has any tracked roles
         if str(member.id) not in active_tracks:
             await ctx.send(f"{member.mention} has no actively tracked roles.")
             return
-            
+
         # Check if the specific role is being tracked for this user
         if str(role.id) not in active_tracks[str(member.id)]:
             await ctx.send(f"{member.mention} does not have {role.mention} being tracked.")
             return
-            
+
         # Parse the time input
         try:
-            if not time.lower().endswith('d'):
-                await ctx.send("Invalid time format. Please use format like '30d' for days.")
+            sign = '+'
+            time_str = time.strip()
+            if time_str[0] in ('+', '-'):
+                sign = time_str[0]
+                time_str = time_str[1:]
+            if not time_str.lower().endswith('d'):
+                await ctx.send("Invalid time format. Please use format like '+5d' or '-3d' for days.")
                 return
-                
-            days = int(time[:-1])
+            days = int(time_str[:-1])
             if days <= 0:
                 await ctx.send("Please specify a positive number of days.")
                 return
-                
-            seconds_to_add = days * 24 * 60 * 60  # Convert days to seconds
-        except ValueError:
-            await ctx.send("Invalid time format. Please use format like '30d' for days.")
+            seconds = days * 24 * 60 * 60  # Convert days to seconds
+        except (ValueError, IndexError):
+            await ctx.send("Invalid time format. Please use format like '+5d' or '-3d' for days.")
             return
-            
-        # Add time to the role duration
+
+        # Get current tracking info
         track_info = active_tracks[str(member.id)][str(role.id)]
         current_time = datetime.utcnow().timestamp()
-        time_had = current_time - track_info["start_time"]
-        
-        # Adjust the start time to effectively add more duration
-        new_start_time = current_time - (time_had - seconds_to_add)
-        active_tracks[str(member.id)][str(role.id)]["start_time"] = new_start_time
-        
-        # Save the updated tracking data
-        await self.config.guild(guild).active_tracks.set(active_tracks)
-        
-        # Calculate and format the new total time remaining
+        start_time = track_info["start_time"]
+
+        # Adjust the start time
+        if sign == '+':
+            # Add time: move start_time backwards
+            new_start_time = start_time - seconds
+            verb = "Added"
+        else:
+            # Subtract time: move start_time forwards
+            new_start_time = start_time + seconds
+            verb = "Subtracted"
+
+        # Prevent subtracting more time than is left (optional, but recommended)
         total_duration = track_info["duration"]
-        new_time_remaining = total_duration - (current_time - new_start_time)
+        time_had = current_time - new_start_time
+        new_time_remaining = total_duration - time_had
+        if new_time_remaining < 0:
+            new_start_time = current_time - total_duration + 1  # 1 second left
+            new_time_remaining = 1
+
+        # Update tracking info
+        active_tracks[str(member.id)][str(role.id)]["start_time"] = new_start_time
+        await self.config.guild(guild).active_tracks.set(active_tracks)
+
+        # Calculate and format the new total time remaining
         days_remaining = new_time_remaining / (24 * 60 * 60)
-        
+
         # Restart the expiration task with the new duration
         self.bot.loop.create_task(self.check_role_expiration(member, role, {
             "role_id": role.id,
@@ -183,9 +202,10 @@ class MemberTracker(commands.Cog):
             "action": track_info["action"],
             "new_role_id": track_info.get("new_role_id")
         }))
-        
-        await ctx.send(f"Added {days} days to {member.mention}'s {role.mention} duration.\n"
-                      f"New time remaining: {days_remaining:.1f} days")
+
+        await ctx.send(f"{verb} {days} days {'to' if sign == '+' else 'from'} {member.mention}'s {role.mention} duration.\n"
+                       f"New time remaining: {days_remaining:.1f} days")
+
     @memtrack.command()
     async def trackexisting(self, ctx, role: discord.Role = None):
         """
@@ -276,6 +296,7 @@ class MemberTracker(commands.Cog):
         if already_tracked > 0:
             response += f"{already_tracked} role assignments were already being tracked."
         await ctx.send(response)
+
     @memtrack.command()
     async def duplicates(self, ctx, remove: bool = False):
         """
@@ -339,6 +360,7 @@ class MemberTracker(commands.Cog):
         
         response = "**Currently Configured Base Roles:**\n"
         for role_id in configured_roles:
+            role = guild.get
             role = guild.get_role(int(role_id))
             response += f"- {role.name if role else 'Deleted role'} (ID: {role_id})\n"
             
@@ -354,6 +376,7 @@ class MemberTracker(commands.Cog):
             response += "\n"
             
         await ctx.send(response)
+
     @memtrack.command()
     async def reset(self, ctx):
         """Reset all role configurations"""
@@ -448,6 +471,7 @@ class MemberTracker(commands.Cog):
             response += f"   Action: {action}\n\n"
             
         await ctx.send(response)
+
     @memtrack.command()
     async def setup(self, ctx):
         """Setup role tracking configuration"""
@@ -565,6 +589,7 @@ class MemberTracker(commands.Cog):
         
         except asyncio.TimeoutError:
             await ctx.send("No response received. Setup completed without testing.")
+
     @commands.Cog.listener()
     async def on_member_update(self, before, after):
         """Monitor role changes and start tracking when necessary"""
