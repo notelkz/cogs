@@ -3,39 +3,6 @@ from redbot.core import commands, Config, checks
 import asyncio
 import datetime
 
-DEFAULT_RANKS = {
-    120: "Rank 1",
-    480: "Rank 2",
-    1080: "Rank 3",
-    1920: "Rank 4",
-    3000: "Rank 5",
-    4320: "Rank 6",
-    5880: "Rank 7",
-    7680: "Rank 8",
-    9720: "Rank 9",
-    12000: "Rank 10",
-    14520: "Rank 11",
-    17280: "Rank 12",
-    20280: "Rank 13",
-    23520: "Rank 14",
-    27000: "Rank 15",
-    30720: "Rank 16",
-    34680: "Rank 17",
-    38880: "Rank 18",
-    43320: "Rank 19",
-    48000: "Rank 20",
-    52920: "Rank 21",
-    58080: "Rank 22",
-    63480: "Rank 23",
-    69120: "Rank 24",
-    75000: "Rank 25",
-    81120: "Rank 26",
-    87480: "Rank 27",
-    94080: "Rank 28",
-    100920: "Rank 29",
-    108000: "Rank 30"
-}
-
 class ActivityXP(commands.Cog):
     """Reward users with XP for chat and voice activity, with ranks and role rewards."""
 
@@ -45,8 +12,8 @@ class ActivityXP(commands.Cog):
         self.config.register_guild(
             chat_xp_per_message=10,
             voice_xp_per_minute=5,
-            ranks=DEFAULT_RANKS,
-            rank_roles={}  # XP threshold (str) -> role_id (int)
+            ranks={},
+            rank_roles={}
         )
         self.config.register_member(
             xp=0,
@@ -272,6 +239,155 @@ class ActivityXP(commands.Cog):
             else:
                 msg.append(f"{xp} XP: (role not found)")
         await ctx.send("**Rank Roles:**\n" + "\n".join(msg))
+
+    @activityxp.command()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def setup(self, ctx):
+        """
+        Interactive setup for ranks, roles, and XP rates.
+        """
+        def check_author(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+
+        await ctx.send("Welcome to ActivityXP setup!\nHow many ranks do you want? (e.g. 10, 20, 30)")
+        try:
+            msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            num_ranks = int(msg.content)
+            if num_ranks < 2 or num_ranks > 50:
+                await ctx.send("Please choose between 2 and 50 ranks.")
+                return
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Setup cancelled.")
+            return
+
+        rank_names = []
+        rank_roles = []
+        for i in range(1, num_ranks + 1):
+            await ctx.send(f"Enter the name for rank {i}:")
+            try:
+                msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+                rank_name = msg.content.strip()
+            except asyncio.TimeoutError:
+                await ctx.send("Setup cancelled.")
+                return
+
+            # List roles and ask to pick one or create new
+            roles = [role for role in ctx.guild.roles if role < ctx.guild.me.top_role and not role.is_default()]
+            roles = sorted(roles, key=lambda r: r.position, reverse=True)
+            role_list = "\n".join(f"{idx+1}. {role.name}" for idx, role in enumerate(roles))
+            await ctx.send(
+                f"Choose a role for **{rank_name}**:\n"
+                f"{role_list}\n"
+                f"Type the number to pick, or type a new role name to create it."
+            )
+            try:
+                msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+                choice = msg.content.strip()
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(roles):
+                        role = roles[idx]
+                    else:
+                        await ctx.send("Invalid number. Setup cancelled.")
+                        return
+                except ValueError:
+                    # Create new role
+                    try:
+                        role = await ctx.guild.create_role(name=choice)
+                        await ctx.send(f"Created role {role.mention}.")
+                    except discord.Forbidden:
+                        await ctx.send("I don't have permission to create roles. Setup cancelled.")
+                        return
+            except asyncio.TimeoutError:
+                await ctx.send("Setup cancelled.")
+                return
+
+            rank_names.append(rank_name)
+            rank_roles.append(role.id)
+
+        await ctx.send("How many months should it take an active user to reach the highest rank? (e.g. 6)")
+        try:
+            msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            months = float(msg.content)
+            if months <= 0 or months > 24:
+                await ctx.send("Please choose between 1 and 24 months.")
+                return
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Setup cancelled.")
+            return
+
+        await ctx.send("How many messages per day is an 'active' user? (e.g. 30)")
+        try:
+            msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            messages_per_day = int(msg.content)
+            if messages_per_day < 1 or messages_per_day > 500:
+                await ctx.send("Please choose a reasonable number of messages per day.")
+                return
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Setup cancelled.")
+            return
+
+        await ctx.send("How many minutes in voice per day is an 'active' user? (e.g. 60)")
+        try:
+            msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            voice_minutes_per_day = int(msg.content)
+            if voice_minutes_per_day < 0 or voice_minutes_per_day > 1440:
+                await ctx.send("Please choose a reasonable number of minutes per day.")
+                return
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Setup cancelled.")
+            return
+
+        await ctx.send("How much XP should a chat message give? (e.g. 10)")
+        try:
+            msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            chat_xp_per_message = int(msg.content)
+            if chat_xp_per_message < 1 or chat_xp_per_message > 100:
+                await ctx.send("Please choose a reasonable XP per message.")
+                return
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Setup cancelled.")
+            return
+
+        await ctx.send("How much XP should a minute in voice give? (e.g. 5)")
+        try:
+            msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            voice_xp_per_minute = int(msg.content)
+            if voice_xp_per_minute < 1 or voice_xp_per_minute > 100:
+                await ctx.send("Please choose a reasonable XP per minute.")
+                return
+        except (ValueError, asyncio.TimeoutError):
+            await ctx.send("Setup cancelled.")
+            return
+
+        # Calculate total XP needed for top rank
+        days = months * 30
+        total_xp = (
+            messages_per_day * chat_xp_per_message +
+            voice_minutes_per_day * voice_xp_per_minute
+        ) * days
+
+        # Quadratic progression
+        a = total_xp / (num_ranks ** 2)
+        xp_thresholds = [int(a * (i + 1) ** 2) for i in range(num_ranks)]
+
+        # Save to config
+        ranks = {str(xp): name for xp, name in zip(xp_thresholds, rank_names)}
+        rank_roles_dict = {str(xp): role_id for xp, role_id in zip(xp_thresholds, rank_roles)}
+
+        await self.config.guild(ctx.guild).ranks.set(ranks)
+        await self.config.guild(ctx.guild).rank_roles.set(rank_roles_dict)
+        await self.config.guild(ctx.guild).chat_xp_per_message.set(chat_xp_per_message)
+        await self.config.guild(ctx.guild).voice_xp_per_minute.set(voice_xp_per_minute)
+
+        await ctx.send(
+            f"Setup complete!\n"
+            f"Ranks: {', '.join(rank_names)}\n"
+            f"XP per message: {chat_xp_per_message}\n"
+            f"XP per voice minute: {voice_xp_per_minute}\n"
+            f"Total XP for top rank: {int(total_xp)}\n"
+            f"XP thresholds: {', '.join(str(x) for x in xp_thresholds)}"
+        )
 
     def cog_unload(self):
         for task in self.voice_tasks.values():
