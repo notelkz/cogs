@@ -263,38 +263,21 @@ class ActivityXP(commands.Cog):
         rank_names = []
         rank_roles = []
         for i in range(1, num_ranks + 1):
-            await ctx.send(f"Enter the name for rank {i}:")
-            try:
-                msg = await self.bot.wait_for("message", check=check_author, timeout=120)
-                rank_name = msg.content.strip()
-            except asyncio.TimeoutError:
-                await ctx.send("Setup cancelled.")
-                return
-
-            # List roles and ask to pick one or create new
-            roles = [role for role in ctx.guild.roles if role < ctx.guild.me.top_role and not role.is_default()]
-            roles = sorted(roles, key=lambda r: r.position, reverse=True)
-            role_list = "\n".join(f"{idx+1}. {role.name}" for idx, role in enumerate(roles))
             await ctx.send(
-                f"Choose a role for **{rank_name}**:\n"
-                f"{role_list}\n"
-                f"Type the number to pick, or type a new role name to create it."
+                f"Please mention the role for rank {i} (e.g. @Rank{i}), "
+                f"or type a new role name to create it."
             )
             try:
                 msg = await self.bot.wait_for("message", check=check_author, timeout=120)
-                choice = msg.content.strip()
-                try:
-                    idx = int(choice) - 1
-                    if 0 <= idx < len(roles):
-                        role = roles[idx]
-                    else:
-                        await ctx.send("Invalid number. Setup cancelled.")
-                        return
-                except ValueError:
+                if msg.role_mentions:
+                    role = msg.role_mentions[0]
+                    rank_name = role.name
+                else:
                     # Create new role
                     try:
-                        role = await ctx.guild.create_role(name=choice)
+                        role = await ctx.guild.create_role(name=msg.content.strip())
                         await ctx.send(f"Created role {role.mention}.")
+                        rank_name = role.name
                     except discord.Forbidden:
                         await ctx.send("I don't have permission to create roles. Setup cancelled.")
                         return
@@ -353,6 +336,7 @@ class ActivityXP(commands.Cog):
         try:
             msg = await self.bot.wait_for("message", check=check_author, timeout=120)
             voice_xp_per_minute = int(msg.content)
+            if
             if voice_xp_per_minute < 1 or voice_xp_per_minute > 100:
                 await ctx.send("Please choose a reasonable XP per minute.")
                 return
