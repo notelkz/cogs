@@ -335,8 +335,8 @@ class ActivityXP(commands.Cog):
         await ctx.send("How much XP should a minute in voice give? (e.g. 5)")
         try:
             msg = await self.bot.wait_for("message", check=check_author, timeout=120)
+            voice_x
             voice_xp_per_minute = int(msg.content)
-            if
             if voice_xp_per_minute < 1 or voice_xp_per_minute > 100:
                 await ctx.send("Please choose a reasonable XP per minute.")
                 return
