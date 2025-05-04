@@ -341,7 +341,7 @@ class ActivityXP(commands.Cog):
             if messages_per_day < 1 or messages_per_day > 500:
                 await ctx.send("Please choose a reasonable number of messages per day.")
                 return
-        except (
+                
         except (ValueError, asyncio.TimeoutError):
             await ctx.send("Setup cancelled.")
             return
