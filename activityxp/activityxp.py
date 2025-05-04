@@ -14,7 +14,8 @@ class ActivityXP(commands.Cog):
             voice_xp_per_minute=5,
             ranks={},
             rank_roles={},
-            required_role=None  # NEW: role id or None
+            required_role=None,  # Role required to earn XP
+            member_role=None     # Role required to be tracked for XP
         )
         self.config.register_member(
             xp=0,
@@ -73,6 +74,14 @@ class ActivityXP(commands.Cog):
         member = message.author
         guild = message.guild
 
+        # Check for member role
+        member_role_id = await self.config.guild(guild).member_role()
+        if member_role_id:
+            role = guild.get_role(member_role_id)
+            if not role or role not in member.roles:
+                return  # User does not have the Member role
+
+        # Check for required role
         required_role_id = await self.config.guild(guild).required_role()
         if required_role_id:
             role = guild.get_role(required_role_id)
@@ -114,11 +123,18 @@ class ActivityXP(commands.Cog):
                 await asyncio.sleep(60)
                 if member.voice and member.voice.channel == channel:
                     if len([m for m in channel.members if not m.bot]) > 1:
+                        # Check for member role
+                        member_role_id = await self.config.guild(channel.guild).member_role()
+                        if member_role_id:
+                            role = channel.guild.get_role(member_role_id)
+                            if not role or role not in member.roles:
+                                continue  # Skip XP if user doesn't have the Member role
+                        # Check for required role
                         required_role_id = await self.config.guild(channel.guild).required_role()
                         if required_role_id:
                             role = channel.guild.get_role(required_role_id)
                             if not role or role not in member.roles:
-                                continue  # Skip XP if user doesn't have the role
+                                continue  # Skip XP if user doesn't have the required role
                         voice_xp = await self.config.guild(channel.guild).voice_xp_per_minute()
                         async with self.config.member(member).all() as data:
                             data["xp"] += voice_xp
@@ -127,6 +143,24 @@ class ActivityXP(commands.Cog):
                     break
         except asyncio.CancelledError:
             pass
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before, after):
+        if before.guild is None:
+            return
+        member_role_id = await self.config.guild(after.guild).member_role()
+        if not member_role_id:
+            return
+        before_roles = set(r.id for r in before.roles)
+        after_roles = set(r.id for r in after.roles)
+        # If the member role was just added
+        if member_role_id not in before_roles and member_role_id in after_roles:
+            # Initialize XP tracking if not already present
+            xp = await self.config.member(after).xp()
+            if xp == 0:
+                await self.config.member(after).xp.set(0)
+                await self.config.member(after).last_message.set(None)
+                await self.config.member(after).last_voice.set(None)
 
     @commands.group()
     @commands.guild_only()
@@ -277,6 +311,28 @@ class ActivityXP(commands.Cog):
 
     @activityxp.command()
     @checks.admin_or_permissions(manage_guild=True)
+    async def setmemberrole(self, ctx, role: discord.Role = None):
+        """Set the role that marks a user as a Member (starts XP tracking)."""
+        if role:
+            await self.config.guild(ctx.guild).member_role.set(role.id)
+            await ctx.send(f"Member role set to {role.mention}.")
+        else:
+            await self.config.guild(ctx.guild).member_role.set(None)
+            await ctx.send("Member role requirement cleared.")
+
+    @activityxp.command()
+    async def memberrole(self, ctx):
+        """Show the current Member role."""
+        role_id = await self.config.guild(ctx.guild).member_role()
+        if role_id:
+            role = ctx.guild.get_role(role_id)
+            if role:
+                await ctx.send(f"The Member role is {role.mention}.")
+                return
+        await ctx.send("No Member role is set.")
+
+    @activityxp.command()
+    @checks.admin_or_permissions(manage_guild=True)
     async def setup(self, ctx):
         """
         Interactive setup for ranks, roles, and XP rates.
@@ -341,7 +397,6 @@ class ActivityXP(commands.Cog):
             if messages_per_day < 1 or messages_per_day > 500:
                 await ctx.send("Please choose a reasonable number of messages per day.")
                 return
-                
         except (ValueError, asyncio.TimeoutError):
             await ctx.send("Setup cancelled.")
             return
