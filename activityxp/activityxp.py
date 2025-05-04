@@ -13,7 +13,8 @@ class ActivityXP(commands.Cog):
             chat_xp_per_message=10,
             voice_xp_per_minute=5,
             ranks={},
-            rank_roles={}
+            rank_roles={},
+            required_role=None  # NEW: role id or None
         )
         self.config.register_member(
             xp=0,
@@ -71,6 +72,13 @@ class ActivityXP(commands.Cog):
             return
         member = message.author
         guild = message.guild
+
+        required_role_id = await self.config.guild(guild).required_role()
+        if required_role_id:
+            role = guild.get_role(required_role_id)
+            if not role or role not in member.roles:
+                return  # User does not have the required role
+
         async with self.config.member(member).all() as data:
             now = datetime.datetime.utcnow()
             last_message = data.get("last_message")
@@ -106,6 +114,11 @@ class ActivityXP(commands.Cog):
                 await asyncio.sleep(60)
                 if member.voice and member.voice.channel == channel:
                     if len([m for m in channel.members if not m.bot]) > 1:
+                        required_role_id = await self.config.guild(channel.guild).required_role()
+                        if required_role_id:
+                            role = channel.guild.get_role(required_role_id)
+                            if not role or role not in member.roles:
+                                continue  # Skip XP if user doesn't have the role
                         voice_xp = await self.config.guild(channel.guild).voice_xp_per_minute()
                         async with self.config.member(member).all() as data:
                             data["xp"] += voice_xp
@@ -242,6 +255,28 @@ class ActivityXP(commands.Cog):
 
     @activityxp.command()
     @checks.admin_or_permissions(manage_guild=True)
+    async def setrequiredrole(self, ctx, role: discord.Role = None):
+        """Set a role required to earn XP. Use without a role to clear."""
+        if role:
+            await self.config.guild(ctx.guild).required_role.set(role.id)
+            await ctx.send(f"Users must have {role.mention} to earn XP.")
+        else:
+            await self.config.guild(ctx.guild).required_role.set(None)
+            await ctx.send("No role is now required to earn XP.")
+
+    @activityxp.command()
+    async def requiredrole(self, ctx):
+        """Show the role required to earn XP."""
+        role_id = await self.config.guild(ctx.guild).required_role()
+        if role_id:
+            role = ctx.guild.get_role(role_id)
+            if role:
+                await ctx.send(f"Users must have {role.mention} to earn XP.")
+                return
+        await ctx.send("No role is currently required to earn XP.")
+
+    @activityxp.command()
+    @checks.admin_or_permissions(manage_guild=True)
     async def setup(self, ctx):
         """
         Interactive setup for ranks, roles, and XP rates.
@@ -306,6 +341,7 @@ class ActivityXP(commands.Cog):
             if messages_per_day < 1 or messages_per_day > 500:
                 await ctx.send("Please choose a reasonable number of messages per day.")
                 return
+        except (
         except (ValueError, asyncio.TimeoutError):
             await ctx.send("Setup cancelled.")
             return
@@ -335,7 +371,6 @@ class ActivityXP(commands.Cog):
         await ctx.send("How much XP should a minute in voice give? (e.g. 5)")
         try:
             msg = await self.bot.wait_for("message", check=check_author, timeout=120)
-            voice_x
             voice_xp_per_minute = int(msg.content)
             if voice_xp_per_minute < 1 or voice_xp_per_minute > 100:
                 await ctx.send("Please choose a reasonable XP per minute.")
