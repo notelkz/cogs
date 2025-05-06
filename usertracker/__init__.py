@@ -1,5 +1,4 @@
-# __init__.py
 from .usertracker import UserTracker
 
-def setup(bot):
-    bot.add_cog(UserTracker(bot))
+async def setup(bot):
+    await bot.add_cog(UserTracker(bot))
