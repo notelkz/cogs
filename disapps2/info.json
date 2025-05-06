@@ -1,6 +1,6 @@
 {
     "author": ["FileAgent"],
-    "name": "DisappsTest",
+    "name": "disappstest",
     "disabled": false,
     "short": "Discord server applications manager (Test Version)",
     "description": "Manages applications for new server members with customizable questions and automated processing (Test Version)",
