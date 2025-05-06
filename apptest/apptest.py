@@ -26,10 +26,14 @@ APPLICATION_QUESTIONS = [
     "What is your preferred platform? (PC/Console)"
 ]
 
+def safe_channel_name(name):
+    # Remove spaces and special characters, lowercase
+    return ''.join(c for c in name.lower().replace(" ", "-") if c.isalnum() or c == "-") + "-application"
+
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.7"
+    __version__ = "1.0.8"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -160,10 +164,9 @@ class AppTest(commands.Cog):
         guild = member.guild
         mod_role_id = await self.config.guild(guild).moderator_role()
         mod_role = guild.get_role(mod_role_id)
-        # Find or create a channel for this application
         app_cat_id = await self.config.guild(guild).applications_category()
         app_cat = guild.get_channel(app_cat_id)
-        channel_name = f"application-{member.id}"
+        channel_name = safe_channel_name(member.name)
         channel = discord.utils.get(app_cat.channels, name=channel_name)
         if not channel:
             overwrites = {
@@ -177,7 +180,6 @@ class AppTest(commands.Cog):
         def check(m): return m.author == member and m.channel == channel
         try:
             msg = await self.bot.wait_for("message", check=check, timeout=300)
-            # Notify moderators
             await self._ping_mods(channel, mod_role)
         except asyncio.TimeoutError:
             await channel.send("No response received. Please reapply when ready.")
@@ -188,20 +190,18 @@ class AppTest(commands.Cog):
         app_cat = guild.get_channel(app_cat_id)
         mod_role_id = await self.config.guild(guild).moderator_role()
         mod_role = guild.get_role(mod_role_id)
-        channel_name = f"application-{member.id}"
+        channel_name = safe_channel_name(member.name)
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
             member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
             mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
         }
         channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
-        # Send the welcome embed and ping the user
         embed_json = await self.config.guild(guild).application_embed()
         if not embed_json or "description" not in embed_json:
             embed_json = WELCOME_EMBED
         embed = discord.Embed.from_dict(embed_json)
         await channel.send(content=member.mention, embed=embed)
-        # Send the buttons (not as an embed)
         view = ApplicationView(self, member, channel)
         await channel.send(view=view)
 
@@ -212,11 +212,17 @@ class AppTest(commands.Cog):
         else:
             await channel.send(f"{mod_role.mention}, attention needed!")
 
-    async def _move_to_archive(self, channel):
+    async def _move_to_archive(self, channel, member=None):
         guild = channel.guild
         archive_cat_id = await self.config.guild(guild).archive_category()
         archive_cat = guild.get_channel(archive_cat_id)
         await channel.edit(category=archive_cat)
+        # Lock and hide for the user
+        if member:
+            overwrite = discord.PermissionOverwrite()
+            overwrite.read_messages = False
+            overwrite.send_messages = False
+            await channel.set_permissions(member, overwrite=overwrite)
 
 # --- UI Views and Modals ---
 
@@ -237,12 +243,9 @@ class ApplicationView(discord.ui.View):
         if self.applied:
             await interaction.response.send_message("You have already applied.", ephemeral=True)
             return
-        # Launch modal with hardcoded questions
-        modal = ApplicationModal(self.cog, self.member, self.channel)
+        modal = ApplicationModal(self.cog, self.member, self.channel, self)
         await interaction.response.send_modal(modal)
-        self.applied = True
-        button.disabled = True
-        await interaction.message.edit(view=self)
+        # Do NOT disable the button here!
 
     @discord.ui.button(label="Contact Moderators", style=discord.ButtonStyle.red, custom_id="contact_mods")
     async def contact_mods(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -261,36 +264,47 @@ class ApplicationView(discord.ui.View):
         await interaction.response.send_message("Moderators have been notified.", ephemeral=True)
 
 class ApplicationModal(discord.ui.Modal):
-    def __init__(self, cog, member, channel):
+    def __init__(self, cog, member, channel, view):
         super().__init__(title="Application Form")
         self.cog = cog
         self.member = member
         self.channel = channel
+        self.view = view
         self.questions = APPLICATION_QUESTIONS
         for i, q in enumerate(self.questions):
             self.add_item(discord.ui.TextInput(label=q, custom_id=f"q{i}", style=discord.TextStyle.short, required=True))
 
     async def on_submit(self, interaction: discord.Interaction):
         answers = {q: self.children[i].value for i, q in enumerate(self.questions)}
-        # Store application
         await self.cog.config.member(self.member).application.set(answers)
         await interaction.response.send_message(
             "Your application has been submitted! Moderators will review it soon.",
             ephemeral=True
         )
 
-        # Format and send answers to the channel
+        # Disable the Apply button in the original view
+        for child in self.view.children:
+            if isinstance(child, discord.ui.Button) and child.custom_id == "apply_to_join":
+                child.disabled = True
+        # Edit the original message (the one with the view)
+        try:
+            async for msg in self.channel.history(limit=20):
+                if msg.components:
+                    await msg.edit(view=self.view)
+                    break
+        except Exception:
+            pass
+
+        # Post answers for mods
         answer_lines = [f"**{q}**\n{a}" for q, a in answers.items()]
         answer_text = "\n\n".join(answer_lines)
         await self.channel.send(
             f"**Application from {self.member.mention}:**\n\n{answer_text}"
         )
 
-        # Notify mods
         mod_role_id = await self.cog.config.guild(self.channel.guild).moderator_role()
         mod_role = self.channel.guild.get_role(mod_role_id)
         await self.cog._ping_mods(self.channel, mod_role)
-        # Add mod-only buttons
         view = ModReviewView(self.cog, self.member, self.channel)
         await self.channel.send(
             f"Moderators, please review the application for {self.member.mention}.", view=view
@@ -313,7 +327,7 @@ class ModReviewView(discord.ui.View):
         accept_role_id = await self.cog.config.guild(self.channel.guild).accept_role()
         accept_role = self.channel.guild.get_role(accept_role_id)
         await self.member.add_roles(accept_role, reason="Application accepted")
-        await self.cog._move_to_archive(self.channel)
+        await self.cog._move_to_archive(self.channel, self.member)
         await interaction.response.send_message(f"{self.member.mention} has been accepted and given the role.", ephemeral=False)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, custom_id="decline_app")
@@ -342,7 +356,7 @@ class DeclineReasonModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.children[0].value
         await self.cog.config.member(self.member).decline_reason.set(reason)
-        await self.cog._move_to_archive(self.channel)
+        await self.cog._move_to_archive(self.channel, self.member)
         await interaction.response.send_message(
             f"{self.member.mention} has been declined. Reason stored for future reference.",
             ephemeral=False
