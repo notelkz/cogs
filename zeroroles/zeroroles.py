@@ -12,27 +12,27 @@ ROLES = [
     {
         "label": "Battlefield 6",
         "role_id": 1369393506635747338,
-        "emoji": "6️⃣",
+        "emoji": "",
     },
     {
         "label": "Battlefield 2042",
         "role_id": 1274316388424745030,
-        "emoji": "🌐",
+        "emoji": "",
     },
     {
         "label": "Battlefield V",
         "role_id": 1049456888087068692,
-        "emoji": "🇻",
+        "emoji": "",
     },
     {
         "label": "Battlefield 1",
         "role_id": 1274316717442728058,
-        "emoji": "1️⃣",
+        "emoji": "",
     },
     {
         "label": "Battlefield 4/3/2",
         "role_id": 1357985105901256816,
-        "emoji": "🎮",
+        "emoji": "",
     },
 ]
 
