@@ -4,7 +4,6 @@ from redbot.core.bot import Red
 import os
 
 EMBED_CONFIG = {
-    "url": "attachment://zeroroles.png",
     "color": 0x210E3E,  # A deep blue, fits Battlefield theme
     "footer": "Choose your roles using the buttons below.",
 }
@@ -90,10 +89,10 @@ class ZeroRoles(commands.Cog):
         """
         embed = discord.Embed(
             description="",
-            color=EMBED_CONFIG["color"],
-            url=EMBED_CONFIG["url"]
+            color=EMBED_CONFIG["color"]
         )
         embed.set_footer(text=EMBED_CONFIG["footer"])
+        embed.set_image(url="attachment://zeroroles.png")
 
         # Get the directory where zeroroles.py is located
         cog_folder = os.path.dirname(os.path.abspath(__file__))
@@ -110,6 +109,5 @@ class ZeroRoles(commands.Cog):
             view=ZeroRolesView(ROLES)
         )
 
-# CORRECT SETUP FUNCTION FOR RED 3.5+
 async def setup(bot: Red):
     await bot.add_cog(ZeroRoles(bot))
