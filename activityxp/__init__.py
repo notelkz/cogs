@@ -1,5 +1,4 @@
-from .activityxp import ActivityXP
+from .usertracker import UserTracker
 
-async def setup(bot):
-    await bot.add_cog(ActivityXP(bot))
-    print("ActivityXP cog loaded.") 
+def setup(bot):
+    bot.add_cog(UserTracker(bot))
