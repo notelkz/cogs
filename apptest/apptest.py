@@ -311,7 +311,8 @@ class ModReviewView(discord.ui.View):
             await interaction.response.send_message("Only moderators can use this.", ephemeral=True)
             return
         # Ask for reason
-        await interaction.response.send_modal(DeclineReasonModal
+        await interaction.response.send_modal(DeclineReasonModal(self.cog, self.member, self.channel))
+
 class DeclineReasonModal(discord.ui.Modal):
     def __init__(self, cog, member, channel):
         super().__init__(title="Decline Reason")
@@ -337,3 +338,5 @@ class DeclineReasonModal(discord.ui.Modal):
             await self.member.send(f"Your application was declined. Reason: {reason}")
         except Exception:
             pass  # User may have DMs closed
+
+# End of cog file
