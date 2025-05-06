@@ -2,6 +2,6 @@
     "name": "UserTracker",
     "version": "1.0",
     "description": "Track user activity in the server",
-    "author": "elkz",
+    "author": ["elkz"],
     "github": "https://github.com/elkz"
 }
