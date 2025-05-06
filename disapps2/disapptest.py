@@ -182,7 +182,7 @@ class ApplicationView(View):
             allowed_mentions=discord.AllowedMentions(roles=True, users=True)
         )
 
-class DisappsTest(commands.Cog):
+class Disappstest(commands.Cog):
     """Discord Applications Management Cog (Test Version)"""
     
     def __init__(self, bot: Red):
