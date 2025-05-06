@@ -4,10 +4,26 @@ from redbot.core.bot import Red
 from typing import Optional
 import asyncio
 
+WELCOME_EMBED = {
+    "author": {
+        "name": "elkz - Founder"
+    },
+    "description": (
+        "Unfortunately, due to timewasters, spam bots and other annoyances we've had to implement an application system in Discord.\n\n"
+        "**If you are interested in joining us for any of the games we're currently playing, please click the button below and fill out the short form.**"
+    ),
+    "fields": [],
+    "footer": {
+        "text": "If you have any issues, use the 'Contact Moderator' button."
+    },
+    "timestamp": "2025-05-06T13:06:31.675Z",
+    "color": 3447003
+}
+
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.2"
+    __version__ = "1.0.3"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -188,8 +204,10 @@ class AppTest(commands.Cog):
             mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
         }
         channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
-        # Send the welcome embed
+        # Send the welcome embed (use fallback if not set)
         embed_json = await self.config.guild(guild).application_embed()
+        if not embed_json or "description" not in embed_json:
+            embed_json = WELCOME_EMBED
         embed = discord.Embed.from_dict(embed_json)
         await channel.send(embed=embed)
         # Send the buttons (not as an embed)
@@ -311,7 +329,12 @@ class DeclineReasonModal(discord.ui.Modal):
         self.cog = cog
         self.member = member
         self.channel = channel
-        self.add_item(discord.ui.InputText(label="Reason for declining this user", custom_id="reason", style=discord.InputTextStyle.long, required=True))
+        self.add_item(discord.ui.InputText(
+            label="Reason for declining this user",
+            custom_id="reason",
+            style=discord.InputTextStyle.long,
+            required=True
+        ))
 
     async def callback(self, interaction: discord.Interaction):
         reason = self.children[0].value
