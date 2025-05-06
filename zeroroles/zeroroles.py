@@ -110,5 +110,6 @@ class ZeroRoles(commands.Cog):
             view=ZeroRolesView(ROLES)
         )
 
-def setup(bot: Red):
-    bot.add_cog(ZeroRoles(bot))
+# CORRECT SETUP FUNCTION FOR RED 3.5+
+async def setup(bot: Red):
+    await bot.add_cog(ZeroRoles(bot))
