@@ -33,7 +33,7 @@ def safe_channel_name(name):
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.8"
+    __version__ = "1.0.9"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -166,15 +166,34 @@ class AppTest(commands.Cog):
         mod_role = guild.get_role(mod_role_id)
         app_cat_id = await self.config.guild(guild).applications_category()
         app_cat = guild.get_channel(app_cat_id)
+        archive_cat_id = await self.config.guild(guild).archive_category()
+        archive_cat = guild.get_channel(archive_cat_id)
         channel_name = safe_channel_name(member.name)
+
+        # Try to find the channel in the applications category
         channel = discord.utils.get(app_cat.channels, name=channel_name)
         if not channel:
-            overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            }
-            channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
+            # Try to find the channel in the archive category
+            channel = discord.utils.get(archive_cat.channels, name=channel_name)
+            if channel:
+                # Move it back to applications category
+                await channel.edit(category=app_cat)
+                # Restore permissions for the user and mod role
+                await channel.set_permissions(member, read_messages=True, send_messages=True)
+                await channel.set_permissions(mod_role, read_messages=True, send_messages=True)
+            else:
+                # Create a new channel if not found anywhere
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                    member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                    mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                }
+                channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
+        else:
+            # Channel already in applications category, ensure permissions are correct
+            await channel.set_permissions(member, read_messages=True, send_messages=True)
+            await channel.set_permissions(mod_role, read_messages=True, send_messages=True)
+
         await channel.send(f"{member.mention}, you have previously applied. Why are you reapplying or why did you leave before? Please reply below.")
 
         def check(m): return m.author == member and m.channel == channel
