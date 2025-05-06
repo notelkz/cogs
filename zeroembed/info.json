@@ -1,0 +1,11 @@
+{
+    "author": ["YourName"],
+    "install_msg": "ZeroEmbed cog installed.",
+    "name": "zeroembed",
+    "short": "Posts the Zero Lives Left embed.",
+    "description": "Posts the Zero Lives Left embed with images.",
+    "requirements": [],
+    "tags": [],
+    "min_bot_version": "3.5.0"
+  }
+  

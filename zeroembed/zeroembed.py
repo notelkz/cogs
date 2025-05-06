@@ -4,13 +4,9 @@ from redbot.core import commands
 class ZeroEmbed(commands.Cog):
     """Posts the Zero Lives Left embed."""
 
-    def __init__(self, bot):
-        self.bot = bot
-
     @commands.command()
     async def zeroembed(self, ctx):
         """Posts the Zero Lives Left embed with images."""
-
         embed1 = discord.Embed(
             color=0xFF0000
         )
@@ -28,6 +24,3 @@ class ZeroEmbed(commands.Cog):
         embed2.set_image(url="http://notelkz.net/images/discordactivity.png")
 
         await ctx.send(embeds=[embed1, embed2])
-
-def setup(bot):
-    bot.add_cog(ZeroEmbed(bot))
