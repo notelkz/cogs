@@ -7,20 +7,19 @@ class UserTracker(commands.Cog):
     """Tracks user join date, voice time, and messages."""
 
     __author__ = "elkz"
-    __version__ = "1.0.0"
+    __version__ = "1.1.0"
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         default_guild = {
-            "voice": {},  # {user_id: {start: timestamp, total: seconds}}
-            "messages": {}  # {user_id: [{timestamp: int}]}
+            "voice": {},  # {user_id: [{"start": ts, "end": ts or None}]}
+            "messages": {}  # {user_id: [timestamp, ...]}
         }
         self.config.register_guild(**default_guild)
         self.voice_states = {}  # {guild_id: {user_id: join_time}}
 
     async def red_delete_data_for_user(self, *, requester, user_id: int):
-        # GDPR compliance
         guilds = self.bot.guilds
         for guild in guilds:
             async with self.config.guild(guild).voice() as voice:
@@ -29,7 +28,6 @@ class UserTracker(commands.Cog):
                 messages.pop(str(user_id), None)
 
     async def cog_load(self):
-        # Initialize voice_states for all guilds
         for guild in self.bot.guilds:
             self.voice_states[guild.id] = {}
 
@@ -39,13 +37,11 @@ class UserTracker(commands.Cog):
         user_id = str(member.id)
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
-        # Only track if not bot
         if member.bot:
             return
 
         # User joins voice
         if not before.channel and after.channel:
-            # Save join time
             if guild.id not in self.voice_states:
                 self.voice_states[guild.id] = {}
             self.voice_states[guild.id][user_id] = now
@@ -54,11 +50,27 @@ class UserTracker(commands.Cog):
         elif before.channel and not after.channel:
             join_time = self.voice_states.get(guild.id, {}).pop(user_id, None)
             if join_time:
-                duration = int(now - join_time)
                 async with self.config.guild(guild).voice() as voice:
-                    user_data = voice.get(user_id, {"total": 0})
-                    user_data["total"] = user_data.get("total", 0) + duration
-                    voice[user_id] = user_data
+                    sessions = voice.get(user_id, [])
+                    sessions.append({"start": join_time, "end": now})
+                    # Keep only last 90 days of sessions
+                    ninety_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).timestamp()
+                    sessions = [s for s in sessions if s["end"] is None or s["end"] >= ninety_days_ago]
+                    voice[user_id] = sessions
+
+        # User switches channel (treat as leave+join)
+        elif before.channel and after.channel and before.channel != after.channel:
+            # End previous session
+            join_time = self.voice_states.get(guild.id, {}).pop(user_id, None)
+            if join_time:
+                async with self.config.guild(guild).voice() as voice:
+                    sessions = voice.get(user_id, [])
+                    sessions.append({"start": join_time, "end": now})
+                    ninety_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).timestamp()
+                    sessions = [s for s in sessions if s["end"] is None or s["end"] >= ninety_days_ago]
+                    voice[user_id] = sessions
+            # Start new session
+            self.voice_states[guild.id][user_id] = now
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -94,6 +106,7 @@ class UserTracker(commands.Cog):
 
         now = datetime.datetime.now(datetime.timezone.utc)
         since = now - datetime.timedelta(days=days)
+        since_ts = since.timestamp()
 
         # Join date
         join_date = member.joined_at
@@ -104,14 +117,30 @@ class UserTracker(commands.Cog):
             join_str = join_date.strftime("%d/%m/%Y")
             days_ago = (now - join_date).days
 
-        # Voice time
+        # Voice time (over period)
         async with self.config.guild(ctx.guild).voice() as voice:
-            user_voice = voice.get(str(member.id), {})
-            total_voice = user_voice.get("total", 0)
-            # For period, we can't get per-period voice time unless we track per-session.
-            # For now, show total voice time.
-            voice_time_str = humanize_timedelta(seconds=total_voice)
-            period_voice_time_str = "Unavailable (tracking from now on)"  # Could be improved with per-session tracking
+            sessions = voice.get(str(member.id), [])
+            # Add ongoing session if user is in voice now
+            ongoing = None
+            if ctx.guild.id in self.voice_states and str(member.id) in self.voice_states[ctx.guild.id]:
+                join_time = self.voice_states[ctx.guild.id][str(member.id)]
+                ongoing = {"start": join_time, "end": now.timestamp()}
+            all_sessions = sessions.copy()
+            if ongoing:
+                all_sessions.append(ongoing)
+            period_voice_seconds = 0
+            for s in all_sessions:
+                start = s["start"]
+                end = s["end"] if s["end"] is not None else now.timestamp()
+                # Only count if session overlaps with period
+                if end < since_ts:
+                    continue  # session ended before period
+                # Clamp start to period start
+                session_start = max(start, since_ts)
+                session_end = end
+                if session_end > session_start:
+                    period_voice_seconds += int(session_end - session_start)
+            voice_time_str = humanize_timedelta(seconds=period_voice_seconds)
 
         # Messages
         async with self.config.guild(ctx.guild).messages() as messages:
@@ -127,7 +156,7 @@ class UserTracker(commands.Cog):
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.add_field(name="Joined Server", value=f"{join_str} ({days_ago} days ago)", inline=False)
         embed.add_field(name=f"Messages (last {days} days)", value=str(msg_count), inline=False)
-        embed.add_field(name="Voice Time (total)", value=voice_time_str, inline=False)
+        embed.add_field(name=f"Voice Time (last {days} days)", value=voice_time_str, inline=False)
         embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.display_avatar.url)
         await ctx.send(embed=embed)
 
