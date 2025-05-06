@@ -29,7 +29,7 @@ APPLICATION_QUESTIONS = [
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.6"
+    __version__ = "1.0.7"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -274,14 +274,27 @@ class ApplicationModal(discord.ui.Modal):
         answers = {q: self.children[i].value for i, q in enumerate(self.questions)}
         # Store application
         await self.cog.config.member(self.member).application.set(answers)
-        await interaction.response.send_message("Your application has been submitted! Moderators will review it soon.", ephemeral=True)
+        await interaction.response.send_message(
+            "Your application has been submitted! Moderators will review it soon.",
+            ephemeral=True
+        )
+
+        # Format and send answers to the channel
+        answer_lines = [f"**{q}**\n{a}" for q, a in answers.items()]
+        answer_text = "\n\n".join(answer_lines)
+        await self.channel.send(
+            f"**Application from {self.member.mention}:**\n\n{answer_text}"
+        )
+
         # Notify mods
         mod_role_id = await self.cog.config.guild(self.channel.guild).moderator_role()
         mod_role = self.channel.guild.get_role(mod_role_id)
         await self.cog._ping_mods(self.channel, mod_role)
         # Add mod-only buttons
         view = ModReviewView(self.cog, self.member, self.channel)
-        await self.channel.send(f"Moderators, please review the application for {self.member.mention}.", view=view)
+        await self.channel.send(
+            f"Moderators, please review the application for {self.member.mention}.", view=view
+        )
 
 class ModReviewView(discord.ui.View):
     def __init__(self, cog, member, channel):
@@ -333,6 +346,10 @@ class DeclineReasonModal(discord.ui.Modal):
         await interaction.response.send_message(
             f"{self.member.mention} has been declined. Reason stored for future reference.",
             ephemeral=False
+        )
+        # Optionally, post the reason in the channel for transparency:
+        await self.channel.send(
+            f"**{self.member.mention}'s application was declined.**\n**Reason:** {reason}"
         )
         try:
             await self.member.send(f"Your application was declined. Reason: {reason}")
