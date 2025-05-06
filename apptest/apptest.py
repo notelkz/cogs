@@ -1,13 +1,13 @@
 import discord
 from redbot.core import commands, Config, checks
 from redbot.core.bot import Red
-from redbot.core.utils.chat_formatting import humanize_list
+from typing import Optional
 import asyncio
 
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.0"
+    __version__ = "1.0.1"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -116,6 +116,22 @@ class AppTest(commands.Cog):
             return
         await self.config.guild(ctx.guild).application_questions.set(questions)
         await ctx.send("Setup complete!")
+
+    @apptest.command()
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def test(self, ctx, member: Optional[discord.Member] = None):
+        """
+        Emulate the application process for a member (or yourself if no member is given).
+        """
+        member = member or ctx.author
+        await ctx.send(f"Emulating application process for {member.mention}...")
+        prev_app = await self.config.member(member).application()
+        if prev_app:
+            await self._reopen_application(member, prev_app)
+        else:
+            await self._open_new_application(member)
+        await ctx.send("Test application process started.")
 
     # --- Application Logic ---
 
