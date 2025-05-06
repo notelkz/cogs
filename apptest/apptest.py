@@ -29,7 +29,7 @@ APPLICATION_QUESTIONS = [
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.4"
+    __version__ = "1.0.5"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -268,7 +268,7 @@ class ApplicationModal(discord.ui.Modal):
         self.channel = channel
         self.questions = APPLICATION_QUESTIONS
         for i, q in enumerate(self.questions):
-            self.add_item(discord.ui.InputText(label=q, custom_id=f"q{i}", style=discord.InputTextStyle.short, required=True))
+            self.add_item(discord.ui.TextInput(label=q, custom_id=f"q{i}", style=discord.TextStyle.short, required=True))
 
     async def callback(self, interaction: discord.Interaction):
         answers = {q: self.children[i].value for i, q in enumerate(self.questions)}
@@ -319,10 +319,10 @@ class DeclineReasonModal(discord.ui.Modal):
         self.cog = cog
         self.member = member
         self.channel = channel
-        self.add_item(discord.ui.InputText(
+        self.add_item(discord.ui.TextInput(
             label="Reason for declining this user",
             custom_id="reason",
-            style=discord.InputTextStyle.long,
+            style=discord.TextStyle.long,
             required=True
         ))
 
