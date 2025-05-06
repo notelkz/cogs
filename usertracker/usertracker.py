@@ -77,6 +77,7 @@ class UserTracker(commands.Cog):
                 message_count[str(message.author.id)] += 1
 
     @commands.command(aliases=["ut", "track"])
+    @checks.mod_or_permissions(manage_messages=True)
     async def usertracker(self, ctx):
         """Show UserTracker help and command list"""
         embed = discord.Embed(
@@ -278,6 +279,6 @@ class UserTracker(commands.Cog):
         await ctx.send(f"Successfully reset {stat_type} statistics!")
 
 def setup(bot):
-    cog = UserTracker(bot)
+   !cog = UserTracker(bot)
     bot.add_cog(cog)
     bot.loop.create_task(cog.initialize())
