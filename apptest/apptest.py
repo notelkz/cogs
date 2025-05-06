@@ -7,7 +7,7 @@ import asyncio
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.1"
+    __version__ = "1.0.2"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -188,13 +188,13 @@ class AppTest(commands.Cog):
             mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
         }
         channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
-        await channel.send(f"{member.mention}, welcome! Please apply to join below.")
-
-        # Post embed with buttons
+        # Send the welcome embed
         embed_json = await self.config.guild(guild).application_embed()
         embed = discord.Embed.from_dict(embed_json)
+        await channel.send(embed=embed)
+        # Send the buttons (not as an embed)
         view = ApplicationView(self, member, channel)
-        await channel.send(embed=embed, view=view)
+        await channel.send(view=view)
 
     async def _ping_mods(self, channel, mod_role):
         online_mods = [m for m in mod_role.members if m.status != discord.Status.offline]
@@ -325,3 +325,4 @@ class DeclineReasonModal(discord.ui.Modal):
             await self.member.send(f"Your application was declined. Reason: {reason}")
         except Exception:
             pass  # User may have DMs closed
+
