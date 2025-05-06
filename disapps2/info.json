@@ -1,13 +1,14 @@
 {
-    "author": ["FileAgent"],
-    "name": "disappstest",
-    "disabled": false,
-    "short": "Discord server applications manager (Test Version)",
-    "description": "Manages applications for new server members with customizable questions and automated processing (Test Version)",
-    "tags": ["applications", "moderation", "utility"],
-    "required_cogs": {},
+    "author": [
+      "YourName"
+    ],
+    "install_msg": "Thanks for installing AppTest! Use `[p]apptest setup` to get started.",
+    "name": "AppTest",
+    "short": "Application management for new users.",
+    "description": "Manages applications for new users, including re-applications, mod notifications, and archiving.",
     "requirements": [],
-    "min_bot_version": "3.5.20",
-    "hidden": false,
-    "end_user_data_statement": "This cog stores Discord User IDs and application responses for application tracking purposes."
-}
+    "tags": ["applications", "moderation", "onboarding"],
+    "min_bot_version": "3.5.0",
+    "end_user_data_statement": "Stores user application data for moderation purposes."
+  }
+  

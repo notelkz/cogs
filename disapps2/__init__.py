@@ -1,5 +1,4 @@
-from .disappstest import Disappstest
+from .apptest import AppTest
 
-async def setup(bot):
-    cog = Disappstest(bot)
-    await bot.add_cog(cog)
+def setup(bot):
+    bot.add_cog(AppTest(bot))
