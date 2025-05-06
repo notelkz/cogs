@@ -55,11 +55,7 @@ class ActivitySelectView(View):
         return True
 
 class AppTrack(commands.Cog):
-    """Track Discord Activities and assign roles automatically.
-    
-    Users can be required to have a specific role to receive automatic role assignments.
-    Use !at setrequired to set up this requirement.
-    """
+    """Track Discord Activities and assign roles automatically."""
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -73,13 +69,13 @@ class AppTrack(commands.Cog):
             "activity_roles": {},  # Maps activity names to role IDs
             "tracked_activities": [],  # List of tracked activity names
             "discovered_activities": {},  # Dictionary of activity names and when they were first seen
-            "last_reset": None,  # Timestamp of last activity reset
-            "required_role": None  # Role ID required for automatic role assignment
+            "last_reset": None  # Timestamp of last activity reset
         }
         
         self.config.register_guild(**default_guild)
         self.activity_check_task = self.bot.loop.create_task(self.periodic_activity_check())
         self.reset_check_task = self.bot.loop.create_task(self.check_daily_reset())
+
     def cog_unload(self):
         """Cleanup when cog is unloaded."""
         if self.activity_check_task:
@@ -131,7 +127,6 @@ class AppTrack(commands.Cog):
             except Exception as e:
                 logging.error(f"Error in activity check: {e}")
                 await asyncio.sleep(1800)
-
     def is_valid_activity(self, activity) -> bool:
         """Check if the activity is valid for tracking."""
         if activity is None:
@@ -168,6 +163,7 @@ class AppTrack(commands.Cog):
                     new_count += 1
                     
         return current_activities, new_count
+
     @commands.group(aliases=["at"])
     @commands.guild_only()
     @commands.mod_or_permissions(manage_roles=True)
@@ -175,35 +171,6 @@ class AppTrack(commands.Cog):
         """Manage activity tracking and role assignments."""
         if ctx.invoked_subcommand is None:
             await ctx.send("Please specify a subcommand. Use `!help apptrack` for more information.")
-
-    @apptrack.command(name="setrequired")
-    @commands.mod_or_permissions(manage_roles=True)
-    async def set_required_role(self, ctx: commands.Context, role: discord.Role = None):
-        """Set or clear the role required for automatic role assignment.
-        
-        Leave role empty to clear the requirement."""
-        if role is None:
-            await self.config.guild(ctx.guild).required_role.set(None)
-            await ctx.send("Cleared the required role. Automatic role assignment will work for all users.")
-            return
-            
-        await self.config.guild(ctx.guild).required_role.set(role.id)
-        await ctx.send(f"Set {role.name} as the required role for automatic role assignment.")
-
-    @apptrack.command(name="required")
-    async def show_required_role(self, ctx: commands.Context):
-        """Show the current required role for automatic role assignment."""
-        role_id = await self.config.guild(ctx.guild).required_role()
-        if role_id is None:
-            await ctx.send("No role is required for automatic role assignment.")
-            return
-            
-        role = ctx.guild.get_role(role_id)
-        if role is None:
-            await ctx.send("The previously set required role no longer exists.")
-            return
-            
-        await ctx.send(f"Users must have the role '{role.name}' to receive automatic role assignments.")
 
     @apptrack.command(name="update")
     @commands.mod_or_permissions(manage_roles=True)
@@ -224,7 +191,6 @@ class AppTrack(commands.Cog):
         async with ctx.typing():
             await self.reset_activities(ctx.guild)
             await ctx.send("Activity list has been reset. Only tracked activities are preserved.")
-
     @apptrack.command(name="discover")
     async def discover_activities(self, ctx: commands.Context):
         """List all discovered Discord Activities in the server."""
@@ -271,6 +237,7 @@ class AppTrack(commands.Cog):
             
         for embed in embeds:
             await ctx.send(embed=embed)
+
     @apptrack.command(name="link")
     @commands.mod_or_permissions(manage_roles=True)
     async def link_role(self, ctx: commands.Context):
@@ -335,7 +302,6 @@ class AppTrack(commands.Cog):
 
         except asyncio.TimeoutError:
             await ctx.send("Command timed out. Please try again.")
-
     @apptrack.command(name="current")
     async def current_activities(self, ctx: commands.Context):
         """List all currently active Discord Activities in the server."""
@@ -381,30 +347,18 @@ class AppTrack(commands.Cog):
             
         for embed in embeds:
             await ctx.send(embed=embed)
+
     @apptrack.command(name="list")
     async def list_activities(self, ctx: commands.Context):
         """List all tracked activities and their assigned roles."""
         activities = await self.config.guild(ctx.guild).tracked_activities()
         activity_roles = await self.config.guild(ctx.guild).activity_roles()
-        required_role_id = await self.config.guild(ctx.guild).required_role()
         
         if not activities:
             await ctx.send("No activities are currently being tracked.")
             return
             
         embed = discord.Embed(title="Tracked Activities", color=discord.Color.blue())
-        
-        # Add required role info
-        if required_role_id:
-            required_role = ctx.guild.get_role(required_role_id)
-            if required_role:
-                embed.description = f"Required role for automatic assignment: {required_role.name}"
-            else:
-                embed.description = "Required role is set but no longer exists"
-        else:
-            embed.description = "No role required for automatic assignment"
-        
-        # Add activities
         for activity in activities:
             role_id = activity_roles.get(activity)
             role = ctx.guild.get_role(role_id) if role_id else None
@@ -451,19 +405,11 @@ class AppTrack(commands.Cog):
             await ctx.send(f"Removed role '{role.name}' from {member.name}")
         except discord.Forbidden:
             await ctx.send("I don't have permission to remove that role.")
-
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         """Handle activity changes and role assignments. Only adds roles, never removes them."""
         if before.guild is None:
             return
-            
-        # Check for required role
-        required_role_id = await self.config.guild(before.guild).required_role()
-        if required_role_id is not None:
-            required_role = before.guild.get_role(required_role_id)
-            if required_role is None or required_role not in after.roles:
-                return  # Skip if user doesn't have the required role
             
         tracked_activities = await self.config.guild(before.guild).tracked_activities()
         activity_roles = await self.config.guild(before.guild).activity_roles()
