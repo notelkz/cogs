@@ -14,7 +14,7 @@ class ZeroEmbed(commands.Cog):
             color=0xFF0000
         )
         embed1.set_author(name="Zero Lives Left")
-        embed1.set_image(url="http://notelkz.net/images/autoroles.png")
+        embed1.set_image(url="https://notelkz.net/images/autoroles.png")
 
         embed2 = discord.Embed(
             description=(
@@ -24,6 +24,6 @@ class ZeroEmbed(commands.Cog):
             ),
             color=0xFF0015
         )
-        embed2.set_image(url="http://notelkz.net/images/discordactivity.png")
+        embed2.set_image(url="https://notelkz.net/images/discordactivity.png")
 
         await ctx.send(embeds=[embed1, embed2])
