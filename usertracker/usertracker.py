@@ -37,7 +37,7 @@ class UserTracker(commands.Cog):
     async def on_voice_state_update(self, member, before, after):
         guild = member.guild
         user_id = str(member.id)
-        now = datetime.datetime.utcnow().timestamp()
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
 
         # Only track if not bot
         if member.bot:
@@ -72,7 +72,7 @@ class UserTracker(commands.Cog):
                 messages[user_id] = []
             messages[user_id].append(now)
             # Keep only last 90 days of messages to save space
-            ninety_days_ago = int((datetime.datetime.utcnow() - datetime.timedelta(days=90)).timestamp())
+            ninety_days_ago = int((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).timestamp())
             messages[user_id] = [ts for ts in messages[user_id] if ts >= ninety_days_ago]
 
     @commands.guild_only()
@@ -92,7 +92,7 @@ class UserTracker(commands.Cog):
             await ctx.send("Please specify a period between 1 and 90 days.")
             return
 
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         since = now - datetime.timedelta(days=days)
 
         # Join date
