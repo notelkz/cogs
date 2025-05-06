@@ -1,8 +1,8 @@
 import discord
 from redbot.core import commands
 from redbot.core.bot import Red
+import os
 
-# === CONFIGURATION ===
 EMBED_CONFIG = {
     "url": "attachment://zeroroles.png",
     "color": 0x210E3E,  # A deep blue, fits Battlefield theme
@@ -37,9 +37,7 @@ ROLES = [
     },
 ]
 
-IMAGE_FILENAME = "zeroroles.png"  # Now expects /zeroroles.png in the bot's root folder
-
-# === END CONFIGURATION ===
+IMAGE_FILENAME = "zeroroles.png"  # Expects zeroroles.png in the same folder as this file
 
 class ZeroRolesView(discord.ui.View):
     def __init__(self, roles):
@@ -97,12 +95,13 @@ class ZeroRoles(commands.Cog):
         )
         embed.set_footer(text=EMBED_CONFIG["footer"])
 
-        # Load image from bot's root folder
-        image_path = f"./{IMAGE_FILENAME}"
+        # Get the directory where zeroroles.py is located
+        cog_folder = os.path.dirname(os.path.abspath(__file__))
+        image_path = os.path.join(cog_folder, IMAGE_FILENAME)
         try:
             file = discord.File(image_path, filename=IMAGE_FILENAME)
         except Exception:
-            await ctx.send("Image file not found. Please add 'zeroroles.png' to the bot's root folder.")
+            await ctx.send("Image file not found. Please add 'zeroroles.png' to the same folder as zeroroles.py.")
             return
 
         await ctx.send(
