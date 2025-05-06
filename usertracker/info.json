@@ -1,0 +1,26 @@
+{
+    "name": "UserTracker",
+    "author": ["YourNameHere"],
+    "description": "Track user activities including voice time and message count",
+    "short": "Track user activities",
+    "tags": ["utility", "moderation", "tracking"],
+    "install_msg": "Thanks for installing UserTracker! Use !usertracker to see available commands.",
+    "end_user_data_statement": "This cog stores user voice time and message counts for tracking purposes.",
+    "min_bot_version": "3.5.0",
+    "commands": {
+        "usertracker": "Show UserTracker help and command list",
+        "userinfo": "Show detailed user activity",
+        "voicetime": "Show voice time for specific period",
+        "topvoice": "Show top users by voice time",
+        "topmessages": "Show top message senders",
+        "resetstats": "Reset statistics (Admin only)"
+    },
+    "aliases": {
+        "ut": "usertracker",
+        "track": "usertracker",
+        "info": "userinfo",
+        "vt": "voicetime",
+        "tv": "topvoice",
+        "tm": "topmessages"
+    }
+}

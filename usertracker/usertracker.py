@@ -1,11 +1,20 @@
 import discord
-from redbot.core import commands, checks, Config
+from discord.ext import commands
+from redbot.core import checks, Config
 from redbot.core.utils.chat_formatting import humanize_timedelta
 from datetime import datetime, timedelta
 import time
 
 class UserTracker(commands.Cog):
-    """Track user activities in the server"""
+    """Track user activities in the server
+    
+    Commands:
+    - userinfo/info [member] - Show detailed user activity
+    - voicetime/vt <member> [days] - Show voice time for specific period
+    - topvoice/tv [limit] - Show top users by voice time
+    - topmessages/tm [limit] - Show top message senders
+    - resetstats (Admin only) - Reset statistics
+    """
     
     def __init__(self, bot):
         self.bot = bot
@@ -67,10 +76,53 @@ class UserTracker(commands.Cog):
                     message_count[str(message.author.id)] = 0
                 message_count[str(message.author.id)] += 1
 
-    @commands.command()
+    @commands.command(aliases=["ut", "track"])
+    async def usertracker(self, ctx):
+        """Show UserTracker help and command list"""
+        embed = discord.Embed(
+            title="UserTracker Commands",
+            description="Track user activities in the server",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+
+        commands_info = {
+            "User Info": [
+                "!userinfo [@user] or !info [@user]",
+                "Shows detailed user activity information"
+            ],
+            "Voice Time": [
+                "!voicetime [@user] [days] or !vt [@user] [days]",
+                "Shows voice time for specific period"
+            ],
+            "Top Voice Users": [
+                "!topvoice [limit] or !tv [limit]",
+                "Shows top users by voice time"
+            ],
+            "Top Message Senders": [
+                "!topmessages [limit] or !tm [limit]",
+                "Shows top users by message count"
+            ],
+            "Reset Stats": [
+                "!resetstats [type]",
+                "Reset statistics (Admin only)\nTypes: all, voice, messages"
+            ]
+        }
+
+        for title, (usage, description) in commands_info.items():
+            embed.add_field(
+                name=title,
+                value=f"Usage: `{usage}`\n{description}",
+                inline=False
+            )
+
+        embed.set_footer(text="All commands require Moderator permissions")
+        await ctx.send(embed=embed)
+
+    @commands.command(aliases=["info"])
     @checks.mod_or_permissions(manage_messages=True)
     async def userinfo(self, ctx, member: discord.Member = None):
-        """Display user activity information"""
+        """Show detailed user activity information"""
         if member is None:
             member = ctx.author
 
@@ -122,10 +174,10 @@ class UserTracker(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.command()
+    @commands.command(aliases=["vt"])
     @checks.mod_or_permissions(manage_messages=True)
     async def voicetime(self, ctx, member: discord.Member, days: int = 7):
-        """Display voice time for a specific period"""
+        """Show voice time for a specific period"""
         voice_time_data = await self.config.guild(ctx.guild).voice_time()
         voice_time = voice_time_data.get(str(member.id), 0)
 
@@ -154,30 +206,10 @@ class UserTracker(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @commands.command()
-    @checks.admin()
-    async def resetstats(self, ctx, stat_type: str = "all"):
-        """Reset statistics for the server
-        
-        stat_type can be: all, voice, messages"""
-        if stat_type.lower() not in ["all", "voice", "messages"]:
-            await ctx.send("Invalid stat type. Use 'all', 'voice', or 'messages'")
-            return
-
-        if stat_type.lower() in ["all", "voice"]:
-            await self.config.guild(ctx.guild).voice_time.set({})
-            await self.config.guild(ctx.guild).voice_sessions.set({})
-            self.voice_sessions = {}  # Clear memory cache too
-
-        if stat_type.lower() in ["all", "messages"]:
-            await self.config.guild(ctx.guild).message_count.set({})
-
-        await ctx.send(f"Successfully reset {stat_type} statistics!")
-
-    @commands.command()
+    @commands.command(aliases=["tv"])
     @checks.mod_or_permissions(manage_messages=True)
     async def topvoice(self, ctx, limit: int = 10):
-        """Display top users by voice time"""
+        """Show top users by voice time"""
         voice_time_data = await self.config.guild(ctx.guild).voice_time()
         
         # Convert to list of tuples and sort
@@ -200,10 +232,10 @@ class UserTracker(commands.Cog):
         embed.description = description if description else "No voice activity recorded"
         await ctx.send(embed=embed)
 
-    @commands.command()
+    @commands.command(aliases=["tm"])
     @checks.mod_or_permissions(manage_messages=True)
     async def topmessages(self, ctx, limit: int = 10):
-        """Display top users by message count"""
+        """Show top users by message count"""
         message_count_data = await self.config.guild(ctx.guild).message_count()
         
         # Convert to list of tuples and sort
@@ -224,6 +256,26 @@ class UserTracker(commands.Cog):
         
         embed.description = description if description else "No messages recorded"
         await ctx.send(embed=embed)
+
+    @commands.command()
+    @checks.admin()
+    async def resetstats(self, ctx, stat_type: str = "all"):
+        """Reset statistics for the server
+        
+        stat_type can be: all, voice, messages"""
+        if stat_type.lower() not in ["all", "voice", "messages"]:
+            await ctx.send("Invalid stat type. Use 'all', 'voice', or 'messages'")
+            return
+
+        if stat_type.lower() in ["all", "voice"]:
+            await self.config.guild(ctx.guild).voice_time.set({})
+            await self.config.guild(ctx.guild).voice_sessions.set({})
+            self.voice_sessions = {}  # Clear memory cache too
+
+        if stat_type.lower() in ["all", "messages"]:
+            await self.config.guild(ctx.guild).message_count.set({})
+
+        await ctx.send(f"Successfully reset {stat_type} statistics!")
 
 def setup(bot):
     cog = UserTracker(bot)
