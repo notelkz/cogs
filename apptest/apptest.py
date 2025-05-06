@@ -20,10 +20,16 @@ WELCOME_EMBED = {
     "color": 3447003
 }
 
+APPLICATION_QUESTIONS = [
+    "How old are you?",
+    "Where are you based?",
+    "What is your preferred platform? (PC/Console)"
+]
+
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.3"
+    __version__ = "1.0.4"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -32,7 +38,6 @@ class AppTest(commands.Cog):
             "applications_category": None,
             "archive_category": None,
             "moderator_role": None,
-            "application_questions": [],
             "application_embed": None,
             "accept_role": None,
         }
@@ -117,21 +122,7 @@ class AppTest(commands.Cog):
             await ctx.send("Invalid JSON or timeout. Setup cancelled.")
             return
 
-        await ctx.send("Now enter the application questions, one per message. Type `done` when finished.")
-        questions = []
-        while True:
-            try:
-                msg = await self.bot.wait_for("message", check=check, timeout=120)
-                if msg.content.lower() == "done":
-                    break
-                questions.append(msg.content)
-            except asyncio.TimeoutError:
-                break
-        if not questions:
-            await ctx.send("No questions set. Setup cancelled.")
-            return
-        await self.config.guild(ctx.guild).application_questions.set(questions)
-        await ctx.send("Setup complete!")
+        await ctx.send("Setup complete! The application questions are now hardcoded.")
 
     @apptest.command()
     @commands.guild_only()
@@ -204,12 +195,12 @@ class AppTest(commands.Cog):
             mod_role: discord.PermissionOverwrite(read_messages=True, send_messages=True),
         }
         channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
-        # Send the welcome embed (use fallback if not set)
+        # Send the welcome embed and ping the user
         embed_json = await self.config.guild(guild).application_embed()
         if not embed_json or "description" not in embed_json:
             embed_json = WELCOME_EMBED
         embed = discord.Embed.from_dict(embed_json)
-        await channel.send(embed=embed)
+        await channel.send(content=member.mention, embed=embed)
         # Send the buttons (not as an embed)
         view = ApplicationView(self, member, channel)
         await channel.send(view=view)
@@ -246,9 +237,8 @@ class ApplicationView(discord.ui.View):
         if self.applied:
             await interaction.response.send_message("You have already applied.", ephemeral=True)
             return
-        # Launch modal
-        questions = await self.cog.config.guild(self.channel.guild).application_questions()
-        modal = ApplicationModal(self.cog, self.member, self.channel, questions)
+        # Launch modal with hardcoded questions
+        modal = ApplicationModal(self.cog, self.member, self.channel)
         await interaction.response.send_modal(modal)
         self.applied = True
         button.disabled = True
@@ -271,14 +261,14 @@ class ApplicationView(discord.ui.View):
         await interaction.response.send_message("Moderators have been notified.", ephemeral=True)
 
 class ApplicationModal(discord.ui.Modal):
-    def __init__(self, cog, member, channel, questions):
+    def __init__(self, cog, member, channel):
         super().__init__(title="Application Form")
         self.cog = cog
         self.member = member
         self.channel = channel
-        self.questions = questions
-        for i, q in enumerate(questions):
-            self.add_item(discord.ui.InputText(label=q, custom_id=f"q{i}", style=discord.InputTextStyle.long, required=True))
+        self.questions = APPLICATION_QUESTIONS
+        for i, q in enumerate(self.questions):
+            self.add_item(discord.ui.InputText(label=q, custom_id=f"q{i}", style=discord.InputTextStyle.short, required=True))
 
     async def callback(self, interaction: discord.Interaction):
         answers = {q: self.children[i].value for i, q in enumerate(self.questions)}
@@ -321,8 +311,7 @@ class ModReviewView(discord.ui.View):
             await interaction.response.send_message("Only moderators can use this.", ephemeral=True)
             return
         # Ask for reason
-        await interaction.response.send_modal(DeclineReasonModal(self.cog, self.member, self.channel))
-
+        await interaction.response.send_modal(DeclineReasonModal
 class DeclineReasonModal(discord.ui.Modal):
     def __init__(self, cog, member, channel):
         super().__init__(title="Decline Reason")
@@ -348,4 +337,3 @@ class DeclineReasonModal(discord.ui.Modal):
             await self.member.send(f"Your application was declined. Reason: {reason}")
         except Exception:
             pass  # User may have DMs closed
-
