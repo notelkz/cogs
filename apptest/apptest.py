@@ -33,7 +33,7 @@ def safe_channel_name(name):
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.9"
+    __version__ = "1.1.0"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -149,9 +149,7 @@ class AppTest(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
-        # Store user ID (Red's config is persistent)
-        await self.config.member(member).application.set(None)
-        # Check for previous application
+        # Do NOT clear application data here!
         prev_app = await self.config.member(member).application()
         if prev_app:
             # Reopen old application
@@ -390,3 +388,4 @@ class DeclineReasonModal(discord.ui.Modal):
             pass  # User may have DMs closed
 
 # End of cog file
+
