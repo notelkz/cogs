@@ -12,27 +12,22 @@ ROLES = [
     {
         "label": "Battlefield 6",
         "role_id": 1369393506635747338,
-        "emoji": "",
     },
     {
         "label": "Battlefield 2042",
         "role_id": 1274316388424745030,
-        "emoji": "",
     },
     {
         "label": "Battlefield V",
         "role_id": 1049456888087068692,
-        "emoji": "",
     },
     {
         "label": "Battlefield 1",
         "role_id": 1274316717442728058,
-        "emoji": "",
     },
     {
         "label": "Battlefield 4/3/2",
         "role_id": 1357985105901256816,
-        "emoji": "",
     },
 ]
 
@@ -50,7 +45,6 @@ class ZeroRoleButton(discord.ui.Button):
             label=role_info["label"],
             style=discord.ButtonStyle.primary,
             custom_id=f"zeroroles_role_{role_info['role_id']}",
-            emoji=role_info.get("emoji"),
         )
         self.role_id = role_info["role_id"]
 
