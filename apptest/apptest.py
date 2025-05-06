@@ -29,7 +29,7 @@ APPLICATION_QUESTIONS = [
 class AppTest(commands.Cog):
     """Application management for new users."""
 
-    __version__ = "1.0.5"
+    __version__ = "1.0.6"
 
     def __init__(self, bot: Red):
         self.bot = bot
@@ -270,7 +270,7 @@ class ApplicationModal(discord.ui.Modal):
         for i, q in enumerate(self.questions):
             self.add_item(discord.ui.TextInput(label=q, custom_id=f"q{i}", style=discord.TextStyle.short, required=True))
 
-    async def callback(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction: discord.Interaction):
         answers = {q: self.children[i].value for i, q in enumerate(self.questions)}
         # Store application
         await self.cog.config.member(self.member).application.set(answers)
@@ -326,7 +326,7 @@ class DeclineReasonModal(discord.ui.Modal):
             required=True
         ))
 
-    async def callback(self, interaction: discord.Interaction):
+    async def on_submit(self, interaction: discord.Interaction):
         reason = self.children[0].value
         await self.cog.config.member(self.member).decline_reason.set(reason)
         await self.cog._move_to_archive(self.channel)
