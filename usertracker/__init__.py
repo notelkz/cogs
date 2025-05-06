@@ -1,3 +1,4 @@
+# __init__.py
 from .usertracker import UserTracker
 
 def setup(bot):

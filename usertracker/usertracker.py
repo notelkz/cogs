@@ -90,6 +90,6 @@ class UserTracker(commands.Cog):
             self.message_tracking[message.author.id].append(datetime.now())
             self.save_data()
 
-def setup(bot):
+async def setup(bot):
     cog = UserTracker(bot)
-    bot.add_cog(cog)
+    await bot.add_cog(cog)
