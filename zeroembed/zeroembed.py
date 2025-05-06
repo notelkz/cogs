@@ -4,6 +4,9 @@ from redbot.core import commands
 class ZeroEmbed(commands.Cog):
     """Posts the Zero Lives Left embed."""
 
+    def __init__(self, bot):
+        self.bot = bot
+
     @commands.command()
     async def zeroembed(self, ctx):
         """Posts the Zero Lives Left embed with images."""
