@@ -1,5 +1,6 @@
 import discord
-from redbot.core import commands, Config, tasks
+from redbot.core import commands, Config
+from redbot.core.tasks import loop
 import feedparser
 import asyncio
 
@@ -151,7 +152,7 @@ class GameUpdates(commands.Cog):
             msg += f"**{g.title()}**: {loc}\n"
         await ctx.send(msg)
 
-    @tasks.loop(minutes=10)
+    @loop(minutes=10)
     async def update_loop(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
