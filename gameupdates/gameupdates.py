@@ -43,7 +43,7 @@ class GameUpdates(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567894)
         default_guild = {
-            "games": {},  # {game_name: {"channel": channel_id, "thread": thread_id, "forum": forum_id, "last_update": update_id}}
+            "games": {},  # {game_name: {"channel": channel_id, "thread": thread_id, "forum": forum_id, "forum_thread": thread_id, "last_update": update_id}}
             "custom_feeds": {}  # {game_name: feed_url}
         }
         self.config.register_global(
@@ -105,14 +105,19 @@ class GameUpdates(commands.Cog):
                         
                     target = None
                     forum = None
+                    forum_thread = None
+                    
                     if data.get("forum"):
                         forum = guild.get_channel(data["forum"])
+                    elif data.get("forum_thread"):
+                        # Get the thread in a forum channel
+                        forum_thread = guild.get_thread(data["forum_thread"])
                     elif data.get("thread"):
                         target = guild.get_thread(data["thread"])
                     elif data.get("channel"):
                         target = guild.get_channel(data["channel"])
                     
-                    if not target and not forum:
+                    if not target and not forum and not forum_thread:
                         continue
                         
                     updates = await self.fetch_patch_notes(feed_url, game)
@@ -146,6 +151,8 @@ class GameUpdates(commands.Cog):
                                         content=embed.description or "Patch notes update",
                                         embed=embed
                                     )
+                                elif forum_thread:
+                                    await forum_thread.send(embed=embed)
                                 elif target:
                                     await target.send(embed=embed)
                             except Exception as e:
@@ -404,13 +411,13 @@ class GameUpdates(commands.Cog):
         
         # Determine the type of channel provided
         if isinstance(channel_or_thread_or_forum, discord.TextChannel):
-            games[game_name] = {"channel": channel_or_thread_or_forum.id, "thread": None, "forum": None, "last_update": None}
+            games[game_name] = {"channel": channel_or_thread_or_forum.id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
             target_type = "channel"
         elif isinstance(channel_or_thread_or_forum, discord.Thread):
-            games[game_name] = {"channel": None, "thread": channel_or_thread_or_forum.id, "forum": None, "last_update": None}
+            games[game_name] = {"channel": None, "thread": channel_or_thread_or_forum.id, "forum": None, "forum_thread": None, "last_update": None}
             target_type = "thread"
         elif isinstance(channel_or_thread_or_forum, discord.ForumChannel):
-            games[game_name] = {"channel": None, "thread": None, "forum": channel_or_thread_or_forum.id, "last_update": None}
+            games[game_name] = {"channel": None, "thread": None, "forum": channel_or_thread_or_forum.id, "forum_thread": None, "last_update": None}
             target_type = "forum"
         else:
             await ctx.send("Invalid channel type. Please provide a text channel, thread, or forum channel.")
@@ -436,7 +443,7 @@ class GameUpdates(commands.Cog):
             return
             
         games = await self.config.guild(ctx.guild).games()
-        games[game_name] = {"channel": channel.id, "thread": None, "forum": None, "last_update": None}
+        games[game_name] = {"channel": channel.id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Patch notes for **{game_name.title()}** will be posted in {channel.mention}.")
 
@@ -457,7 +464,7 @@ class GameUpdates(commands.Cog):
             return
             
         games = await self.config.guild(ctx.guild).games()
-        games[game_name] = {"channel": None, "thread": thread.id, "forum": None, "last_update": None}
+        games[game_name] = {"channel": None, "thread": thread.id, "forum": None, "forum_thread": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Patch notes for **{game_name.title()}** will be posted in thread {thread.mention}.")
 
@@ -478,9 +485,49 @@ class GameUpdates(commands.Cog):
             return
             
         games = await self.config.guild(ctx.guild).games()
-        games[game_name] = {"channel": None, "thread": None, "forum": forum.id, "last_update": None}
+        games[game_name] = {"channel": None, "thread": None, "forum": forum.id, "forum_thread": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Patch notes for **{game_name.title()}** will be posted as new posts in forum {forum.mention}.")
+
+    @gameupdates.command()
+    @commands.has_guild_permissions(manage_channels=True)
+    async def createforumthread(self, ctx, game_name: GameConverter, forum: discord.ForumChannel, thread_name: str = None):
+        """
+        Create a thread in a forum channel for patch notes and set it up.
+        
+        Example: [p]gameupdates createforumthread "Squad" #squad-forum "Squad Patch Notes"
+        You can also mention a user to use their name as the game name: [p]gameupdates createforumthread @Squad #squad-forum
+        """
+        game_name = game_name.lower()
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        
+        # Check if game exists (either built-in or custom)
+        if game_name not in GAME_FEEDS and game_name not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
+            return
+
+        # Default thread name if not provided
+        if not thread_name:
+            thread_name = f"{game_name.title()} Patch Notes"
+
+        try:
+            # Create the thread in the forum
+            thread = await forum.create_thread(
+                name=thread_name,
+                content=f"This thread will be used for **{game_name.title()}** patch notes.",
+                auto_archive_duration=10080  # 7 days
+            )
+            
+            # Set up the game to use this forum thread
+            games = await self.config.guild(ctx.guild).games()
+            games[game_name] = {"channel": None, "thread": None, "forum": None, "forum_thread": thread.thread.id, "last_update": None}
+            await self.config.guild(ctx.guild).games.set(games)
+            
+            await ctx.send(f"Created thread {thread.thread.mention} in forum {forum.mention} and set it up for **{game_name.title()}** patch notes.")
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to create threads in that forum.")
+        except Exception as e:
+            await ctx.send(f"Error creating forum thread: {str(e)}")
 
     @gameupdates.command()
     @commands.has_guild_permissions(manage_channels=True)
@@ -524,7 +571,7 @@ class GameUpdates(commands.Cog):
 
         # Set up the game to use this channel
         games = await self.config.guild(ctx.guild).games()
-        games[game_name] = {"channel": new_channel.id, "thread": None, "forum": None, "last_update": None}
+        games[game_name] = {"channel": new_channel.id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Created {new_channel.mention} and set it up for **{game_name.title()}** patch notes.")
 
@@ -566,51 +613,9 @@ class GameUpdates(commands.Cog):
 
         # Set up the game to use this forum
         games = await self.config.guild(ctx.guild).games()
-        games[game_name] = {"channel": None, "thread": None, "forum": new_forum.id, "last_update": None}
+        games[game_name] = {"channel": None, "thread": None, "forum": new_forum.id, "forum_thread": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Created forum {new_forum.mention} and set it up for **{game_name.title()}** patch notes.")
-
-    @gameupdates.command()
-    @commands.has_guild_permissions(manage_channels=True)
-    async def createforumthread(self, ctx, game_name: GameConverter, forum: discord.ForumChannel, thread_name: str = None):
-        """
-        Create a new thread in an existing forum for game updates.
-        
-        Example: [p]gameupdates createforumthread "Squad" #game-updates "Squad Patch Notes"
-        You can also mention a user to use their name as the game name: [p]gameupdates createforumthread @Squad #game-updates
-        """
-        game_name = game_name.lower()
-        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
-        
-        # Check if game exists (either built-in or custom)
-        if game_name not in GAME_FEEDS and game_name not in custom_feeds:
-            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
-            return
-            
-        # Default thread name if not provided
-        if not thread_name:
-            thread_name = f"{game_name.title()} Patch Notes"
-            
-        try:
-            # Create a thread in the forum
-            thread = await forum.create_thread(
-                name=thread_name,
-                content=f"This thread will be used for **{game_name.title()}** patch notes.",
-                reason=f"Patch notes thread for {game_name.title()} (requested by {ctx.author})"
-            )
-            
-            # Set up the game to use this thread
-            games = await self.config.guild(ctx.guild).games()
-            games[game_name] = {"channel": None, "thread": thread.thread.id, "forum": None, "last_update": None}
-            await self.config.guild(ctx.guild).games.set(games)
-            
-            await ctx.send(f"Created thread {thread.thread.mention} in {forum.mention} for **{game_name.title()}** patch notes.")
-        except discord.Forbidden:
-            await ctx.send("I do not have permission to create threads in that forum.")
-            return
-        except Exception as e:
-            await ctx.send(f"Failed to create thread: {e}")
-            return
 
     @gameupdates.command()
     async def remove(self, ctx, game_name: GameConverter):
@@ -642,20 +647,6 @@ class GameUpdates(commands.Cog):
             if d.get("forum"):
                 forum = ctx.guild.get_channel(d["forum"])
                 loc = forum.mention if forum else f"Forum ID {d['forum']}"
-            elif d.get("thread"):
-                thread = ctx.guild.get_thread(d["thread"])
-                loc = thread.mention if thread else f"Thread ID {d['thread']}"
-            elif d.get("channel"):
-                channel = ctx.guild.get_channel(d["channel"])
-                loc = channel.mention if channel else f"Channel ID {d['channel']}"
-            msg += f"**{g.title()}**: {loc}\n"
-        await ctx.send(msg)
-
-    @gameupdates.command()
-    @commands.is_owner()
-    async def forceupdate(self, ctx):
-        """Force check for updates now (bot owner only)."""
-        await ctx.send("Checking for game updates...")
-        try:
-            await self._check_for_updates()
-            await ctx.send("Update
+            elif d.get("forum_thread"):
+                thread = ctx.guild.get_thread(d["forum_thread"])
+                loc = thread.mention if thread else f"Forum Threa
