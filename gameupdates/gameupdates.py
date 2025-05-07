@@ -3,6 +3,7 @@ from redbot.core import commands, Config, tasks
 import feedparser
 import asyncio
 
+# Initial game feeds dictionary
 GAME_FEEDS = {
     "squad": "https://store.steampowered.com/feeds/news/app/393380/",
     "hell let loose": "https://store.steampowered.com/feeds/news/app/686810/",
@@ -26,10 +27,24 @@ class GameUpdates(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567894)
         default_guild = {
-            "games": {}  # {game_name: {"channel": channel_id, "thread": thread_id, "forum": forum_id, "last_update": update_id}}
+            "games": {},  # {game_name: {"channel": channel_id, "thread": thread_id, "forum": forum_id, "last_update": update_id}}
+            "custom_feeds": {}  # {game_name: feed_url}
         }
+        self.config.register_global(
+            permanent_games={}  # Games added to the built-in list
+        )
         self.config.register_guild(**default_guild)
+        
+        # Load permanent games from config
+        self.bot.loop.create_task(self._load_permanent_games())
         self.update_loop.start()
+        
+    async def _load_permanent_games(self):
+        await self.bot.wait_until_ready()
+        permanent_games = await self.config.permanent_games()
+        # Add permanent games to GAME_FEEDS
+        global GAME_FEEDS
+        GAME_FEEDS.update(permanent_games)
 
     def cog_unload(self):
         self.update_loop.cancel()
@@ -41,12 +56,209 @@ class GameUpdates(commands.Cog):
         pass
 
     @gameupdates.command()
+    @commands.is_owner()
+    async def addpermanent(self, ctx, game_name: str, feed_url: str):
+        """
+        Add a game permanently to the built-in games list.
+        Only bot owner can use this command.
+        
+        Example: [p]gameupdates addpermanent "Minecraft" https://feedback.minecraft.net/hc/en-us/sections/360001185332.rss
+        """
+        game_name = game_name.lower()
+        
+        # Validate the URL format (basic check)
+        if not feed_url.startswith(("http://", "https://")):
+            await ctx.send("Invalid URL. Please provide a valid RSS feed URL starting with http:// or https://")
+            return
+            
+        # Check if it's a valid RSS feed
+        try:
+            loop = asyncio.get_event_loop()
+            feed = await loop.run_in_executor(None, feedparser.parse, feed_url)
+            if not hasattr(feed, 'entries') or len(feed.entries) == 0:
+                await ctx.send("This URL doesn't appear to be a valid RSS feed. Please check the URL and try again.")
+                return
+        except Exception as e:
+            await ctx.send(f"Error validating feed: {str(e)}")
+            return
+        
+        # Add to permanent games
+        permanent_games = await self.config.permanent_games()
+        permanent_games[game_name] = feed_url
+        await self.config.permanent_games.set(permanent_games)
+        
+        # Also add to current GAME_FEEDS
+        global GAME_FEEDS
+        GAME_FEEDS[game_name] = feed_url
+        
+        await ctx.send(f"Added **{game_name}** permanently to the built-in games list. This game will be available to all servers using this bot.")
+
+    @gameupdates.command()
+    @commands.is_owner()
+    async def removepermanent(self, ctx, game_name: str):
+        """
+        Remove a game from the permanent built-in games list.
+        Only bot owner can use this command.
+        
+        Example: [p]gameupdates removepermanent "Minecraft"
+        """
+        game_name = game_name.lower()
+        
+        # Check if it's in the original hardcoded list
+        original_games = {
+            "squad", "hell let loose", "delta force", "arma 3", "arma reforger",
+            "escape from tarkov", "overwatch", "overwatch 2", "marvel rivals",
+            "valorant", "fragpunk", "helldivers 2", "gta online"
+        }
+        
+        if game_name in original_games:
+            await ctx.send(f"**{game_name.title()}** is part of the original hardcoded games list and cannot be removed.")
+            return
+        
+        # Check if it's in permanent games
+        permanent_games = await self.config.permanent_games()
+        if game_name not in permanent_games:
+            await ctx.send(f"**{game_name.title()}** is not in the permanent games list.")
+            return
+            
+        # Remove from permanent games
+        del permanent_games[game_name]
+        await self.config.permanent_games.set(permanent_games)
+        
+        # Also remove from current GAME_FEEDS
+        global GAME_FEEDS
+        if game_name in GAME_FEEDS:
+            del GAME_FEEDS[game_name]
+        
+        await ctx.send(f"Removed **{game_name.title()}** from the permanent games list.")
+
+    @gameupdates.command()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def addgame(self, ctx, game_name: str, feed_url: str):
+        """
+        Add a custom game and its RSS feed URL for this server only.
+        
+        Example: [p]gameupdates addgame "My Game" https://example.com/feed.rss
+        """
+        game_name = game_name.lower()
+        
+        # Validate the URL format (basic check)
+        if not feed_url.startswith(("http://", "https://")):
+            await ctx.send("Invalid URL. Please provide a valid RSS feed URL starting with http:// or https://")
+            return
+            
+        # Check if it's a valid RSS feed
+        try:
+            loop = asyncio.get_event_loop()
+            feed = await loop.run_in_executor(None, feedparser.parse, feed_url)
+            if not hasattr(feed, 'entries') or len(feed.entries) == 0:
+                await ctx.send("This URL doesn't appear to be a valid RSS feed. Please check the URL and try again.")
+                return
+        except Exception as e:
+            await ctx.send(f"Error validating feed: {str(e)}")
+            return
+            
+        # Add to custom feeds
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        custom_feeds[game_name] = feed_url
+        await self.config.guild(ctx.guild).custom_feeds.set(custom_feeds)
+        
+        await ctx.send(f"Added **{game_name}** to custom games. You can now set up channels for it using the other commands.")
+
+    @gameupdates.command()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def removegame(self, ctx, game_name: str):
+        """
+        Remove a custom game from your list.
+        
+        Example: [p]gameupdates removegame "My Game"
+        """
+        game_name = game_name.lower()
+        
+        # Check if it's a built-in game
+        if game_name in GAME_FEEDS:
+            await ctx.send(f"**{game_name.title()}** is a built-in game and cannot be removed with this command. Use `removepermanent` if you're the bot owner.")
+            return
+            
+        # Check if it's in custom games
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        if game_name not in custom_feeds:
+            await ctx.send(f"**{game_name.title()}** is not in your custom games list.")
+            return
+            
+        # Remove from custom feeds
+        del custom_feeds[game_name]
+        await self.config.guild(ctx.guild).custom_feeds.set(custom_feeds)
+        
+        # Also remove any channel settings for this game
+        games = await self.config.guild(ctx.guild).games()
+        if game_name in games:
+            del games[game_name]
+            await self.config.guild(ctx.guild).games.set(games)
+        
+        await ctx.send(f"Removed **{game_name.title()}** from your custom games list.")
+
+    @gameupdates.command()
+    async def listgames(self, ctx):
+        """List all available games (built-in and custom)."""
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        permanent_games = await self.config.permanent_games()
+        
+        # Combine built-in and custom games
+        all_games = list(GAME_FEEDS.keys()) + list(custom_feeds.keys())
+        all_games = sorted(set(all_games))  # Remove duplicates and sort
+        
+        if not all_games:
+            await ctx.send("No games available.")
+            return
+            
+        # Format the list with custom games marked
+        msg = "**Available Games:**\n"
+        for game in all_games:
+            if game in custom_feeds:
+                msg += f"• {game.title()} (custom)\n"
+            elif game in permanent_games:
+                msg += f"• {game.title()} (added by owner)\n"
+            else:
+                msg += f"• {game.title()}\n"
+                
+        # Split into multiple messages if too long
+        if len(msg) > 1900:
+            parts = []
+            current_part = "**Available Games:**\n"
+            for game in all_games:
+                line = f"• {game.title()}"
+                if game in custom_feeds:
+                    line += " (custom)"
+                elif game in permanent_games:
+                    line += " (added by owner)"
+                line += "\n"
+                
+                if len(current_part) + len(line) > 1900:
+                    parts.append(current_part)
+                    current_part = line
+                else:
+                    current_part += line
+            
+            if current_part:
+                parts.append(current_part)
+                
+            for part in parts:
+                await ctx.send(part)
+        else:
+            await ctx.send(msg)
+
+    @gameupdates.command()
     async def addchannel(self, ctx, game: str, channel: discord.TextChannel):
         """Set a channel for patch notes (game name required)."""
         game = game.lower()
-        if game not in GAME_FEEDS:
-            await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        
+        # Check if game exists (either built-in or custom)
+        if game not in GAME_FEEDS and game not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
+            
         games = await self.config.guild(ctx.guild).games()
         games[game] = {"channel": channel.id, "thread": None, "forum": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
@@ -56,9 +268,13 @@ class GameUpdates(commands.Cog):
     async def addthread(self, ctx, game: str, thread: discord.Thread):
         """Set a thread for patch notes (game name required)."""
         game = game.lower()
-        if game not in GAME_FEEDS:
-            await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        
+        # Check if game exists (either built-in or custom)
+        if game not in GAME_FEEDS and game not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
+            
         games = await self.config.guild(ctx.guild).games()
         games[game] = {"channel": None, "thread": thread.id, "forum": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
@@ -68,9 +284,13 @@ class GameUpdates(commands.Cog):
     async def addforum(self, ctx, game: str, forum: discord.ForumChannel):
         """Set a forum channel for patch notes (game name required)."""
         game = game.lower()
-        if game not in GAME_FEEDS:
-            await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        
+        # Check if game exists (either built-in or custom)
+        if game not in GAME_FEEDS and game not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
+            
         games = await self.config.guild(ctx.guild).games()
         games[game] = {"channel": None, "thread": None, "forum": forum.id, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
@@ -85,8 +305,11 @@ class GameUpdates(commands.Cog):
         Example: [p]gameupdates createchannel "Squad" squad-patch-notes
         """
         game = game.lower()
-        if game not in GAME_FEEDS:
-            await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        
+        # Check if game exists (either built-in or custom)
+        if game not in GAME_FEEDS and game not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
 
         # Default channel name if not provided
@@ -156,10 +379,14 @@ class GameUpdates(commands.Cog):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
             games = await self.config.guild(guild).games()
+            custom_feeds = await self.config.guild(guild).custom_feeds()
+            
             for game, data in games.items():
-                feed_url = GAME_FEEDS.get(game)
+                # Get feed URL (check custom feeds first, then built-in)
+                feed_url = custom_feeds.get(game) or GAME_FEEDS.get(game)
                 if not feed_url:
                     continue
+                    
                 target = None
                 forum = None
                 if data.get("forum"):
@@ -168,15 +395,18 @@ class GameUpdates(commands.Cog):
                     target = guild.get_thread(data["thread"])
                 elif data.get("channel"):
                     target = guild.get_channel(data["channel"])
+                    
                 updates = await self.fetch_patch_notes(feed_url, game)
                 if not updates:
                     continue
+                    
                 last_update = data.get("last_update")
                 new_updates = []
                 for update in updates:
                     if update["id"] == last_update:
                         break
                     new_updates.append(update)
+                    
                 if new_updates:
                     for update in reversed(new_updates):
                         embed = discord.Embed(
@@ -212,18 +442,22 @@ class GameUpdates(commands.Cog):
 
     async def fetch_patch_notes(self, url, game):
         loop = asyncio.get_event_loop()
-        feed = await loop.run_in_executor(None, feedparser.parse, url)
-        updates = []
-        for entry in feed.entries:
-            # Try to filter for patch/update notes
-            if any(word in entry.title.lower() for word in ("patch", "update", "notes", "hotfix", "changelog")):
-                updates.append({
-                    "id": getattr(entry, "id", getattr(entry, "link", None)),
-                    "content": f"**{entry.title}**\n\n{getattr(entry, 'summary', '')}",
-                    "date": getattr(entry, "published", getattr(entry, "updated", None)),
-                    "url": getattr(entry, "link", None)
-                })
-        return updates
+        try:
+            feed = await loop.run_in_executor(None, feedparser.parse, url)
+            updates = []
+            for entry in feed.entries:
+                # Try to filter for patch/update notes
+                if any(word in entry.title.lower() for word in ("patch", "update", "notes", "hotfix", "changelog")):
+                    updates.append({
+                        "id": getattr(entry, "id", getattr(entry, "link", None)),
+                        "content": f"**{entry.title}**\n\n{getattr(entry, 'summary', '')}",
+                        "date": getattr(entry, "published", getattr(entry, "updated", None)),
+                        "url": getattr(entry, "link", None)
+                    })
+            return updates
+        except Exception:
+            # Silently handle network errors
+            return []
 
 async def setup(bot):
     await bot.add_cog(GameUpdates(bot))
