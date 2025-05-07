@@ -646,7 +646,7 @@ class GameUpdates(commands.Cog):
 
         # Default thread name if not provided
         if not thread_name:
-            thread_name = f"{game_name.            thread_name = f"{game_name.title()} Patch Notes"
+            thread_name = f"{game_name.title()} Patch Notes"
 
         try:
             # Create the thread in the forum
