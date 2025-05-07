@@ -498,5 +498,48 @@ class GameUpdates(commands.Cog):
         except Exception as e:
             await ctx.send(f"Error during update check: {e}")
 
+    @gameupdates.command()
+@commands.is_owner()
+async def addgame(self, ctx, game_name: str, feed_url: str):
+    """
+    Add a game to the games list.
+    
+    Example: [p]gameupdates addgame "Minecraft" https://feedback.minecraft.net/rss
+    """
+    game_name = game_name.lower()
+    
+    # Check if game already exists
+    if game_name in GAME_FEEDS:
+        await ctx.send(f"Game '{game_name}' already exists in the list.")
+        return
+    
+    # Validate URL format
+    if not feed_url.startswith(("http://", "https://")):
+        await ctx.send("Invalid URL. Please provide a valid RSS feed URL starting with http:// or https://")
+        return
+    
+    # Validate RSS feed
+    try:
+        loop = asyncio.get_event_loop()
+        feed = await loop.run_in_executor(None, feedparser.parse, feed_url)
+        if not hasattr(feed, 'entries') or len(feed.entries) == 0:
+            await ctx.send("This URL doesn't appear to be a valid RSS feed.")
+            return
+    except Exception as e:
+        await ctx.send(f"Error validating feed: {str(e)}")
+        return
+    
+    # Add to GAME_FEEDS
+    global GAME_FEEDS
+    GAME_FEEDS[game_name] = feed_url
+    
+    # Save to permanent_games for persistence
+    permanent_games = await self.config.permanent_games()
+    permanent_games[game_name] = feed_url
+    await self.config.permanent_games.set(permanent_games)
+    
+    await ctx.send(f"Added '{game_name}' to the games list.")
+
+
 async def setup(bot):
     await bot.add_cog(GameUpdates(bot))
