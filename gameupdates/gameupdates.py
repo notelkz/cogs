@@ -221,9 +221,10 @@ class GameUpdates(commands.Cog):
                             pass
                         try:
                             if forum:
-                                # For forums, create a new thread with the update title
+                                # For forums, create a new thread with the game name
+                                thread_name = f"{game.title()} Patch Notes"
                                 await forum.create_thread(
-                                    name=update["title"][:100] if update["title"] else "Patch Notes",
+                                    name=thread_name[:100],  # Discord has a 100 character limit for thread names
                                     content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
                                     embed=embed
                                 )
@@ -262,9 +263,10 @@ class GameUpdates(commands.Cog):
                                     pass
                                 try:
                                     if forum:
-                                        # For forums, create a new thread with the update title
+                                        # For forums, create a new thread with the game name
+                                        thread_name = f"{game.title()} Patch Notes"
                                         await forum.create_thread(
-                                            name=update["title"][:100] if update["title"] else "Patch Notes",
+                                            name=thread_name[:100],  # Discord has a 100 character limit for thread names
                                             content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
                                             embed=embed
                                         )
@@ -644,12 +646,13 @@ class GameUpdates(commands.Cog):
 
         # Default thread name if not provided
         if not thread_name:
-            thread_name = f"{game_name.title()} Patch Notes"
+            thread_name = f"{game_name.            thread_name = f"{game_name.title()} Patch Notes"
 
         try:
             # Create the thread in the forum
             thread = await forum.create_thread(
-                name=thread_name,                content=f"Thread for {game_name.title()} patch notes.",
+                name=thread_name[:100],  # Discord has a 100 character limit for thread names
+                content=f"Thread for {game_name.title()} patch notes.",
                 auto_archive_duration=10080  # 7 days
             )
             
@@ -797,3 +800,4 @@ class GameUpdates(commands.Cog):
 async def setup(bot):
     """Load the GameUpdates cog."""
     await bot.add_cog(GameUpdates(bot))
+
