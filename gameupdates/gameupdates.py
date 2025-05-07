@@ -228,6 +228,45 @@ class GameUpdates(commands.Cog):
         await ctx.send(f"Added '{game_name}' to the games list.")
 
     @gameupdates.command()
+    @commands.is_owner()
+    async def removepermanent(self, ctx, game_name: str):
+        """
+        Remove a game from the permanent built-in games list.
+        Only bot owner can use this command.
+        
+        Example: [p]gameupdates removepermanent "Minecraft"
+        """
+        game_name = game_name.lower()
+        
+        # Check if it's in the original hardcoded list
+        original_games = {
+            "squad", "hell let loose", "delta force", "arma 3", "arma reforger",
+            "escape from tarkov", "overwatch", "overwatch 2", "marvel rivals",
+            "valorant", "fragpunk", "helldivers 2", "gta online"
+        }
+        
+        if game_name in original_games:
+            await ctx.send(f"**{game_name.title()}** is part of the original hardcoded games list and cannot be removed.")
+            return
+        
+        # Check if it's in permanent games
+        permanent_games = await self.config.permanent_games()
+        if game_name not in permanent_games:
+            await ctx.send(f"**{game_name.title()}** is not in the permanent games list.")
+            return
+            
+        # Remove from permanent games
+        del permanent_games[game_name]
+        await self.config.permanent_games.set(permanent_games)
+        
+        # Also remove from current GAME_FEEDS
+        global GAME_FEEDS
+        if game_name in GAME_FEEDS:
+            del GAME_FEEDS[game_name]
+        
+        await ctx.send(f"Removed **{game_name.title()}** from the permanent games list.")
+
+    @gameupdates.command()
     @commands.admin_or_permissions(manage_guild=True)
     async def addcustomgame(self, ctx, game_name: GameConverter, feed_url: str):
         """
