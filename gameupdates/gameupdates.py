@@ -20,13 +20,13 @@ GAME_FEEDS = {
 }
 
 class GameUpdates(commands.Cog):
-    """Fetch and post patch notes for many games to channels or threads."""
+    """Fetch and post patch notes for many games to channels, threads, or forums."""
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567894)
         default_guild = {
-            "games": {}  # {game_name: {"channel": channel_id, "thread": thread_id, "last_update": update_id}}
+            "games": {}  # {game_name: {"channel": channel_id, "thread": thread_id, "forum": forum_id, "last_update": update_id}}
         }
         self.config.register_guild(**default_guild)
         self.update_loop.start()
@@ -48,7 +48,7 @@ class GameUpdates(commands.Cog):
             await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
             return
         games = await self.config.guild(ctx.guild).games()
-        games[game] = {"channel": channel.id, "thread": None, "last_update": None}
+        games[game] = {"channel": channel.id, "thread": None, "forum": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Patch notes for **{game.title()}** will be posted in {channel.mention}.")
 
@@ -60,9 +60,62 @@ class GameUpdates(commands.Cog):
             await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
             return
         games = await self.config.guild(ctx.guild).games()
-        games[game] = {"channel": None, "thread": thread.id, "last_update": None}
+        games[game] = {"channel": None, "thread": thread.id, "forum": None, "last_update": None}
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Patch notes for **{game.title()}** will be posted in thread {thread.mention}.")
+
+    @gameupdates.command()
+    async def addforum(self, ctx, game: str, forum: discord.ForumChannel):
+        """Set a forum channel for patch notes (game name required)."""
+        game = game.lower()
+        if game not in GAME_FEEDS:
+            await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
+            return
+        games = await self.config.guild(ctx.guild).games()
+        games[game] = {"channel": None, "thread": None, "forum": forum.id, "last_update": None}
+        await self.config.guild(ctx.guild).games.set(games)
+        await ctx.send(f"Patch notes for **{game.title()}** will be posted as new posts in forum {forum.mention}.")
+
+    @gameupdates.command()
+    @commands.has_guild_permissions(manage_channels=True)
+    async def createchannel(self, ctx, game: str, channel_name: str = None, category: discord.CategoryChannel = None):
+        """
+        Create a new text channel for a game's patch notes and set it up.
+        Optionally specify a channel name and category.
+        Example: [p]gameupdates createchannel "Squad" squad-patch-notes
+        """
+        game = game.lower()
+        if game not in GAME_FEEDS:
+            await ctx.send("Game not supported. Supported games: " + ", ".join(GAME_FEEDS.keys()))
+            return
+
+        # Default channel name if not provided
+        if not channel_name:
+            channel_name = f"{game.replace(' ', '-')}-patch-notes"
+
+        # Create the channel
+        overwrites = {
+            ctx.guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False)
+        }
+        try:
+            new_channel = await ctx.guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Patch notes channel for {game.title()} (requested by {ctx.author})"
+            )
+        except discord.Forbidden:
+            await ctx.send("I do not have permission to create channels.")
+            return
+        except Exception as e:
+            await ctx.send(f"Failed to create channel: {e}")
+            return
+
+        # Set up the game to use this channel
+        games = await self.config.guild(ctx.guild).games()
+        games[game] = {"channel": new_channel.id, "thread": None, "forum": None, "last_update": None}
+        await self.config.guild(ctx.guild).games.set(games)
+        await ctx.send(f"Created {new_channel.mention} and set it up for **{game.title()}** patch notes.")
 
     @gameupdates.command()
     async def remove(self, ctx, game: str):
@@ -78,21 +131,23 @@ class GameUpdates(commands.Cog):
 
     @gameupdates.command()
     async def list(self, ctx):
-        """List all games and their channels/threads."""
+        """List all games and their channels/threads/forums."""
         games = await self.config.guild(ctx.guild).games()
         if not games:
             await ctx.send("No games set up.")
             return
         msg = ""
         for g, d in games.items():
-            if d["thread"]:
+            loc = "Not set"
+            if d.get("forum"):
+                forum = ctx.guild.get_channel(d["forum"])
+                loc = forum.mention if forum else f"Forum ID {d['forum']}"
+            elif d.get("thread"):
                 thread = ctx.guild.get_thread(d["thread"])
                 loc = thread.mention if thread else f"Thread ID {d['thread']}"
-            elif d["channel"]:
+            elif d.get("channel"):
                 channel = ctx.guild.get_channel(d["channel"])
                 loc = channel.mention if channel else f"Channel ID {d['channel']}"
-            else:
-                loc = "Not set"
             msg += f"**{g.title()}**: {loc}\n"
         await ctx.send(msg)
 
@@ -106,12 +161,13 @@ class GameUpdates(commands.Cog):
                 if not feed_url:
                     continue
                 target = None
-                if data.get("thread"):
+                forum = None
+                if data.get("forum"):
+                    forum = guild.get_channel(data["forum"])
+                elif data.get("thread"):
                     target = guild.get_thread(data["thread"])
                 elif data.get("channel"):
                     target = guild.get_channel(data["channel"])
-                if not target:
-                    continue
                 updates = await self.fetch_patch_notes(feed_url, game)
                 if not updates:
                     continue
@@ -135,7 +191,14 @@ class GameUpdates(commands.Cog):
                         except Exception:
                             pass
                         try:
-                            await target.send(embed=embed)
+                            if forum:
+                                await forum.create_thread(
+                                    name=embed.title[:100] if embed.title else "Patch Notes",
+                                    content=embed.description or "Patch notes update",
+                                    embed=embed
+                                )
+                            elif target:
+                                await target.send(embed=embed)
                         except Exception:
                             pass
                     # Save the latest update id
@@ -162,5 +225,5 @@ class GameUpdates(commands.Cog):
                 })
         return updates
 
-def setup(bot):
-    bot.add_cog(GameUpdates(bot))
+async def setup(bot):
+    await bot.add_cog(GameUpdates(bot))
