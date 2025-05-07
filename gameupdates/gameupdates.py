@@ -3,6 +3,8 @@ from redbot.core import commands, Config
 import feedparser
 import asyncio
 import re
+import html
+from bs4 import BeautifulSoup
 
 # Initial game feeds dictionary
 GAME_FEEDS = {
@@ -90,6 +92,72 @@ class GameUpdates(commands.Cog):
             # Wait 10 minutes before checking again
             await asyncio.sleep(600)
     
+    def clean_html(self, html_content):
+        """Clean HTML content to make it readable in Discord."""
+        if not html_content:
+            return ""
+            
+        try:
+            # Parse HTML with BeautifulSoup
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Replace <br> and <p> tags with newlines
+            for br in soup.find_all(['br', 'p']):
+                br.replace_with('\n' + br.text)
+                
+            # Replace <li> tags with bullet points
+            for li in soup.find_all('li'):
+                li.replace_with('\n• ' + li.text)
+                
+            # Replace <h1>, <h2>, etc. with bold text
+            for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                h.replace_with('\n\n**' + h.text + '**\n')
+                
+            # Get the text and decode HTML entities
+            text = html.unescape(soup.get_text())
+            
+            # Clean up excessive newlines
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            
+            return text.strip()
+        except Exception as e:
+            print(f"Error cleaning HTML: {e}")
+            # Fallback: remove HTML tags with a simple regex
+            text = re.sub(r'<[^>]+>', '', html_content)
+            return html.unescape(text).strip()
+
+    async def fetch_patch_notes(self, url, game):
+        """Fetch and parse patch notes from an RSS feed."""
+        loop = asyncio.get_event_loop()
+        try:
+            feed = await loop.run_in_executor(None, feedparser.parse, url)
+            updates = []
+            for entry in feed.entries:
+                # Try to filter for patch/update notes
+                if any(word in entry.title.lower() for word in ("patch", "update", "notes", "hotfix", "changelog")):
+                    # Get the content from the entry
+                    content = getattr(entry, 'content', [{}])[0].get('value', '') if hasattr(entry, 'content') else ''
+                    if not content:
+                        content = getattr(entry, 'summary', '')
+                    
+                    # Clean the HTML content
+                    cleaned_content = self.clean_html(content)
+                    
+                    # Clean the title
+                    clean_title = self.clean_html(entry.title)
+                    
+                    updates.append({
+                        "id": getattr(entry, "id", getattr(entry, "link", None)),
+                        "title": clean_title,
+                        "content": cleaned_content,
+                        "date": getattr(entry, "published", getattr(entry, "updated", None)),
+                        "url": getattr(entry, "link", None)
+                    })
+            return updates
+        except Exception as e:
+            print(f"Error fetching updates for {game}: {e}")
+            return []
+
     async def _check_for_updates(self):
         """Check for updates for all games in all guilds."""
         for guild in self.bot.guilds:
@@ -134,8 +202,8 @@ class GameUpdates(commands.Cog):
                     if new_updates:
                         for update in reversed(new_updates):
                             embed = discord.Embed(
-                                title=update["content"].split('\n')[0],
-                                description='\n'.join(update["content"].split('\n')[1:]),
+                                title=update["title"][:256],  # Discord embed title limit
+                                description=update["content"][:4000] if len(update["content"]) <= 4000 else update["content"][:3997] + "...",
                                 url=update["url"],
                                 color=discord.Color.blue()
                             )
@@ -147,8 +215,8 @@ class GameUpdates(commands.Cog):
                             try:
                                 if forum:
                                     await forum.create_thread(
-                                        name=embed.title[:100] if embed.title else "Patch Notes",
-                                        content=embed.description or "Patch notes update",
+                                        name=update["title"][:100] if update["title"] else "Patch Notes",
+                                        content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
                                         embed=embed
                                     )
                                 elif forum_thread:
@@ -164,26 +232,6 @@ class GameUpdates(commands.Cog):
                         await self.config.guild(guild).games.set(games)
             except Exception as e:
                 print(f"Error processing guild {guild.name}: {e}")
-
-    async def fetch_patch_notes(self, url, game):
-        """Fetch and parse patch notes from an RSS feed."""
-        loop = asyncio.get_event_loop()
-        try:
-            feed = await loop.run_in_executor(None, feedparser.parse, url)
-            updates = []
-            for entry in feed.entries:
-                # Try to filter for patch/update notes
-                if any(word in entry.title.lower() for word in ("patch", "update", "notes", "hotfix", "changelog")):
-                    updates.append({
-                        "id": getattr(entry, "id", getattr(entry, "link", None)),
-                        "content": f"**{entry.title}**\n\n{getattr(entry, 'summary', '')}",
-                        "date": getattr(entry, "published", getattr(entry, "updated", None)),
-                        "url": getattr(entry, "link", None)
-                    })
-            return updates
-        except Exception as e:
-            print(f"Error fetching updates for {game}: {e}")
-            return []
 
     @commands.group()
     @commands.guild_only()
