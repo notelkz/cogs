@@ -1,0 +1,20 @@
+{
+    "author": [
+        "YourNameHere"
+    ],
+    "name": "GameUpdates",
+    "description": "Fetches and posts patch notes for popular games to channels or threads.",
+    "install_msg": "Thank you for installing GameUpdates! Use [p]gameupdates for setup.",
+    "short": "Game Patch Notes Feeds",
+    "requirements": [
+        "feedparser"
+    ],
+    "tags": [
+        "games",
+        "patch notes",
+        "news",
+        "feeds"
+    ],
+    "min_bot_version": "3.5.0",
+    "end_user_data_statement": "This cog does not store personal user data."
+}
