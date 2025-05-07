@@ -571,6 +571,48 @@ class GameUpdates(commands.Cog):
         await ctx.send(f"Created forum {new_forum.mention} and set it up for **{game_name.title()}** patch notes.")
 
     @gameupdates.command()
+    @commands.has_guild_permissions(manage_channels=True)
+    async def createforumthread(self, ctx, game_name: GameConverter, forum: discord.ForumChannel, thread_name: str = None):
+        """
+        Create a new thread in an existing forum for game updates.
+        
+        Example: [p]gameupdates createforumthread "Squad" #game-updates "Squad Patch Notes"
+        You can also mention a user to use their name as the game name: [p]gameupdates createforumthread @Squad #game-updates
+        """
+        game_name = game_name.lower()
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        
+        # Check if game exists (either built-in or custom)
+        if game_name not in GAME_FEEDS and game_name not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
+            return
+            
+        # Default thread name if not provided
+        if not thread_name:
+            thread_name = f"{game_name.title()} Patch Notes"
+            
+        try:
+            # Create a thread in the forum
+            thread = await forum.create_thread(
+                name=thread_name,
+                content=f"This thread will be used for **{game_name.title()}** patch notes.",
+                reason=f"Patch notes thread for {game_name.title()} (requested by {ctx.author})"
+            )
+            
+            # Set up the game to use this thread
+            games = await self.config.guild(ctx.guild).games()
+            games[game_name] = {"channel": None, "thread": thread.thread.id, "forum": None, "last_update": None}
+            await self.config.guild(ctx.guild).games.set(games)
+            
+            await ctx.send(f"Created thread {thread.thread.mention} in {forum.mention} for **{game_name.title()}** patch notes.")
+        except discord.Forbidden:
+            await ctx.send("I do not have permission to create threads in that forum.")
+            return
+        except Exception as e:
+            await ctx.send(f"Failed to create thread: {e}")
+            return
+
+    @gameupdates.command()
     async def remove(self, ctx, game_name: GameConverter):
         """
         Remove a game from patch notes posting.
@@ -616,9 +658,4 @@ class GameUpdates(commands.Cog):
         await ctx.send("Checking for game updates...")
         try:
             await self._check_for_updates()
-            await ctx.send("Update check completed.")
-        except Exception as e:
-            await ctx.send(f"Error during update check: {e}")
-
-async def setup(bot):
-    await bot.add_cog(GameUpdates(bot))
+            await ctx.send("Update
