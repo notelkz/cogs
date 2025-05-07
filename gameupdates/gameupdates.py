@@ -1,5 +1,5 @@
 import discord
-from redbot.core import commands, Config, tasks
+from redbot.core import commands, Config
 import feedparser
 import asyncio
 
@@ -35,19 +35,132 @@ class GameUpdates(commands.Cog):
         )
         self.config.register_guild(**default_guild)
         
-        # Load permanent games from config
-        self.bot.loop.create_task(self._load_permanent_games())
-        self.update_loop.start()
+        # Task management
+        self.bg_task = None
+        self.is_running = True
+
+    async def cog_load(self):
+        """Called when the cog is loaded."""
+        await self._load_permanent_games()
+        self.bg_task = asyncio.create_task(self._update_loop())
         
+    async def cog_unload(self):
+        """Called when the cog is unloaded."""
+        self.is_running = False
+        if self.bg_task:
+            self.bg_task.cancel()
+
     async def _load_permanent_games(self):
+        """Load permanent games from config and add them to GAME_FEEDS."""
         await self.bot.wait_until_ready()
         permanent_games = await self.config.permanent_games()
         # Add permanent games to GAME_FEEDS
         global GAME_FEEDS
         GAME_FEEDS.update(permanent_games)
 
-    def cog_unload(self):
-        self.update_loop.cancel()
+    async def _update_loop(self):
+        """Main loop that checks for updates periodically."""
+        await self.bot.wait_until_ready()
+        while self.is_running:
+            try:
+                await self._check_for_updates()
+            except asyncio.CancelledError:
+                # Handle cancellation gracefully
+                break
+            except Exception as e:
+                # Log the error but don't crash the loop
+                print(f"Error in update loop: {e}")
+            
+            # Wait 10 minutes before checking again
+            await asyncio.sleep(600)
+    
+    async def _check_for_updates(self):
+        """Check for updates for all games in all guilds."""
+        for guild in self.bot.guilds:
+            try:
+                games = await self.config.guild(guild).games()
+                custom_feeds = await self.config.guild(guild).custom_feeds()
+                
+                for game, data in games.items():
+                    # Get feed URL (check custom feeds first, then built-in)
+                    feed_url = custom_feeds.get(game) or GAME_FEEDS.get(game)
+                    if not feed_url:
+                        continue
+                        
+                    target = None
+                    forum = None
+                    if data.get("forum"):
+                        forum = guild.get_channel(data["forum"])
+                    elif data.get("thread"):
+                        target = guild.get_thread(data["thread"])
+                    elif data.get("channel"):
+                        target = guild.get_channel(data["channel"])
+                    
+                    if not target and not forum:
+                        continue
+                        
+                    updates = await self.fetch_patch_notes(feed_url, game)
+                    if not updates:
+                        continue
+                        
+                    last_update = data.get("last_update")
+                    new_updates = []
+                    for update in updates:
+                        if update["id"] == last_update:
+                            break
+                        new_updates.append(update)
+                        
+                    if new_updates:
+                        for update in reversed(new_updates):
+                            embed = discord.Embed(
+                                title=update["content"].split('\n')[0],
+                                description='\n'.join(update["content"].split('\n')[1:]),
+                                url=update["url"],
+                                color=discord.Color.blue()
+                            )
+                            # Try to parse date, fallback if not possible
+                            try:
+                                embed.timestamp = discord.utils.parse_time(update["date"])
+                            except Exception:
+                                pass
+                            try:
+                                if forum:
+                                    await forum.create_thread(
+                                        name=embed.title[:100] if embed.title else "Patch Notes",
+                                        content=embed.description or "Patch notes update",
+                                        embed=embed
+                                    )
+                                elif target:
+                                    await target.send(embed=embed)
+                            except Exception as e:
+                                print(f"Error sending update for {game} in {guild.name}: {e}")
+                                continue
+                        # Save the latest update id
+                        data["last_update"] = updates[0]["id"]
+                        games[game] = data
+                        await self.config.guild(guild).games.set(games)
+            except Exception as e:
+                print(f"Error processing guild {guild.name}: {e}")
+
+    async def fetch_patch_notes(self, url, game):
+        """Fetch and parse patch notes from an RSS feed."""
+        loop = asyncio.get_event_loop()
+        try:
+            feed = await loop.run_in_executor(None, feedparser.parse, url)
+            updates = []
+            for entry in feed.entries:
+                # Try to filter for patch/update notes
+                if any(word in entry.title.lower() for word in ("patch", "update", "notes", "hotfix", "changelog")):
+                    updates.append({
+                        "id": getattr(entry, "id", getattr(entry, "link", None)),
+                        "content": f"**{entry.title}**\n\n{getattr(entry, 'summary', '')}",
+                        "date": getattr(entry, "published", getattr(entry, "updated", None)),
+                        "url": getattr(entry, "link", None)
+                    })
+            return updates
+        except Exception as e:
+            print(f"Error fetching updates for {game}: {e}")
+            return []
 
     @commands.group()
     @commands.guild_only()
@@ -374,90 +487,16 @@ class GameUpdates(commands.Cog):
             msg += f"**{g.title()}**: {loc}\n"
         await ctx.send(msg)
 
-    @tasks.loop(minutes=10)
-    async def update_loop(self):
-        await self.bot.wait_until_ready()
-        for guild in self.bot.guilds:
-            games = await self.config.guild(guild).games()
-            custom_feeds = await self.config.guild(guild).custom_feeds()
-            
-            for game, data in games.items():
-                # Get feed URL (check custom feeds first, then built-in)
-                feed_url = custom_feeds.get(game) or GAME_FEEDS.get(game)
-                if not feed_url:
-                    continue
-                    
-                target = None
-                forum = None
-                if data.get("forum"):
-                    forum = guild.get_channel(data["forum"])
-                elif data.get("thread"):
-                    target = guild.get_thread(data["thread"])
-                elif data.get("channel"):
-                    target = guild.get_channel(data["channel"])
-                    
-                updates = await self.fetch_patch_notes(feed_url, game)
-                if not updates:
-                    continue
-                    
-                last_update = data.get("last_update")
-                new_updates = []
-                for update in updates:
-                    if update["id"] == last_update:
-                        break
-                    new_updates.append(update)
-                    
-                if new_updates:
-                    for update in reversed(new_updates):
-                        embed = discord.Embed(
-                            title=update["content"].split('\n')[0],
-                            description='\n'.join(update["content"].split('\n')[1:]),
-                            url=update["url"],
-                            color=discord.Color.blue()
-                        )
-                        # Try to parse date, fallback if not possible
-                        try:
-                            embed.timestamp = discord.utils.parse_time(update["date"])
-                        except Exception:
-                            pass
-                        try:
-                            if forum:
-                                await forum.create_thread(
-                                    name=embed.title[:100] if embed.title else "Patch Notes",
-                                    content=embed.description or "Patch notes update",
-                                    embed=embed
-                                )
-                            elif target:
-                                await target.send(embed=embed)
-                        except Exception:
-                            pass
-                    # Save the latest update id
-                    data["last_update"] = updates[0]["id"]
-                    games[game] = data
-                    await self.config.guild(guild).games.set(games)
-
-    @update_loop.before_loop
-    async def before_update_loop(self):
-        await self.bot.wait_until_ready()
-
-    async def fetch_patch_notes(self, url, game):
-        loop = asyncio.get_event_loop()
+    @gameupdates.command()
+    @commands.is_owner()
+    async def forceupdate(self, ctx):
+        """Force check for updates now (bot owner only)."""
+        await ctx.send("Checking for game updates...")
         try:
-            feed = await loop.run_in_executor(None, feedparser.parse, url)
-            updates = []
-            for entry in feed.entries:
-                # Try to filter for patch/update notes
-                if any(word in entry.title.lower() for word in ("patch", "update", "notes", "hotfix", "changelog")):
-                    updates.append({
-                        "id": getattr(entry, "id", getattr(entry, "link", None)),
-                        "content": f"**{entry.title}**\n\n{getattr(entry, 'summary', '')}",
-                        "date": getattr(entry, "published", getattr(entry, "updated", None)),
-                        "url": getattr(entry, "link", None)
-                    })
-            return updates
-        except Exception:
-            # Silently handle network errors
-            return []
+            await self._check_for_updates()
+            await ctx.send("Update check completed.")
+        except Exception as e:
+            await ctx.send(f"Error during update check: {e}")
 
 async def setup(bot):
     await bot.add_cog(GameUpdates(bot))
