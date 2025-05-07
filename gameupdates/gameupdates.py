@@ -2,6 +2,7 @@ import discord
 from redbot.core import commands, Config
 import feedparser
 import asyncio
+import re
 
 # Initial game feeds dictionary
 GAME_FEEDS = {
@@ -19,6 +20,21 @@ GAME_FEEDS = {
     "helldivers 2": "https://store.steampowered.com/feeds/news/app/553850/",
     "gta online": "https://store.steampowered.com/feeds/news/app/271590/",
 }
+
+class GameConverter(commands.Converter):
+    """Converter that allows mentioning a game or typing its name."""
+    async def convert(self, ctx, argument):
+        # Check if it's a mention format like @GameName
+        mention_match = re.match(r'<@!?(\d+)>', argument)
+        if mention_match:
+            # Try to get the member and use their display name as the game name
+            member_id = int(mention_match.group(1))
+            member = ctx.guild.get_member(member_id)
+            if member:
+                return member.display_name.lower()
+        
+        # If not a mention or member not found, just return the argument as is
+        return argument.lower()
 
 class GameUpdates(commands.Cog):
     """Fetch and post patch notes for many games to channels, threads, or forums."""
@@ -168,13 +184,14 @@ class GameUpdates(commands.Cog):
         """Game patch notes setup."""
         pass
 
-    @gameupdates.command(name="addgame")
+    @gameupdates.command()
     @commands.is_owner()
-    async def add_game(self, ctx, game_name: str, feed_url: str):
+    async def addgame(self, ctx, game_name: GameConverter, feed_url: str):
         """
         Add a game to the global games list.
         
         Example: [p]gameupdates addgame "Minecraft" https://feedback.minecraft.net/rss
+        You can also mention a user to use their name as the game name: [p]gameupdates addgame @Minecraft https://...
         """
         game_name = game_name.lower()
         
@@ -211,51 +228,13 @@ class GameUpdates(commands.Cog):
         await ctx.send(f"Added '{game_name}' to the games list.")
 
     @gameupdates.command()
-    @commands.is_owner()
-    async def removepermanent(self, ctx, game_name: str):
-        """
-        Remove a game from the permanent built-in games list.
-        Only bot owner can use this command.
-        
-        Example: [p]gameupdates removepermanent "Minecraft"
-        """
-        game_name = game_name.lower()
-        
-        # Check if it's in the original hardcoded list
-        original_games = {
-            "squad", "hell let loose", "delta force", "arma 3", "arma reforger",
-            "escape from tarkov", "overwatch", "overwatch 2", "marvel rivals",
-            "valorant", "fragpunk", "helldivers 2", "gta online"
-        }
-        
-        if game_name in original_games:
-            await ctx.send(f"**{game_name.title()}** is part of the original hardcoded games list and cannot be removed.")
-            return
-        
-        # Check if it's in permanent games
-        permanent_games = await self.config.permanent_games()
-        if game_name not in permanent_games:
-            await ctx.send(f"**{game_name.title()}** is not in the permanent games list.")
-            return
-            
-        # Remove from permanent games
-        del permanent_games[game_name]
-        await self.config.permanent_games.set(permanent_games)
-        
-        # Also remove from current GAME_FEEDS
-        global GAME_FEEDS
-        if game_name in GAME_FEEDS:
-            del GAME_FEEDS[game_name]
-        
-        await ctx.send(f"Removed **{game_name.title()}** from the permanent games list.")
-
-    @gameupdates.command()
     @commands.admin_or_permissions(manage_guild=True)
-    async def addcustomgame(self, ctx, game_name: str, feed_url: str):
+    async def addcustomgame(self, ctx, game_name: GameConverter, feed_url: str):
         """
         Add a custom game and its RSS feed URL for this server only.
         
         Example: [p]gameupdates addcustomgame "My Game" https://example.com/feed.rss
+        You can also mention a user to use their name as the game name: [p]gameupdates addcustomgame @GameName https://...
         """
         game_name = game_name.lower()
         
@@ -284,11 +263,12 @@ class GameUpdates(commands.Cog):
 
     @gameupdates.command()
     @commands.admin_or_permissions(manage_guild=True)
-    async def removegame(self, ctx, game_name: str):
+    async def removegame(self, ctx, game_name: GameConverter):
         """
         Remove a custom game from your list.
         
         Example: [p]gameupdates removegame "My Game"
+        You can also mention a user to use their name as the game name: [p]gameupdates removegame @GameName
         """
         game_name = game_name.lower()
         
@@ -366,33 +346,48 @@ class GameUpdates(commands.Cog):
             await ctx.send(msg)
 
     @gameupdates.command()
-    async def addchannel(self, ctx, game: discord.Role = None, *, game_name: str = None, channel: discord.TextChannel = None):
+    async def setup(self, ctx, game_name: GameConverter, channel_or_thread_or_forum: discord.abc.GuildChannel):
         """
-        Set a channel for patch notes. You can mention a role with the game's name or type the game name.
+        Set up a game to post updates in a channel, thread, or forum.
         
-        Examples:
-        [p]gameupdates addchannel @Squad #squad-updates
-        [p]gameupdates addchannel "Minecraft" #minecraft-updates
+        Example: [p]gameupdates setup "Squad" #squad-updates
+        You can also mention a user to use their name as the game name: [p]gameupdates setup @Squad #squad-updates
         """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-            # Extract the channel from the remaining text
-            if not channel and ctx.message.channel_mentions:
-                channel = ctx.message.channel_mentions[0]
+        game_name = game_name.lower()
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
         
-        # If no channel was found, check if it was the last argument
-        if not channel and ctx.message.channel_mentions:
-            channel = ctx.message.channel_mentions[0]
-        
-        # If still no channel, use the current channel
-        if not channel:
-            channel = ctx.channel
-            
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
+        # Check if game exists (either built-in or custom)
+        if game_name not in GAME_FEEDS and game_name not in custom_feeds:
+            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
             
+        games = await self.config.guild(ctx.guild).games()
+        
+        # Determine the type of channel provided
+        if isinstance(channel_or_thread_or_forum, discord.TextChannel):
+            games[game_name] = {"channel": channel_or_thread_or_forum.id, "thread": None, "forum": None, "last_update": None}
+            target_type = "channel"
+        elif isinstance(channel_or_thread_or_forum, discord.Thread):
+            games[game_name] = {"channel": None, "thread": channel_or_thread_or_forum.id, "forum": None, "last_update": None}
+            target_type = "thread"
+        elif isinstance(channel_or_thread_or_forum, discord.ForumChannel):
+            games[game_name] = {"channel": None, "thread": None, "forum": channel_or_thread_or_forum.id, "last_update": None}
+            target_type = "forum"
+        else:
+            await ctx.send("Invalid channel type. Please provide a text channel, thread, or forum channel.")
+            return
+            
+        await self.config.guild(ctx.guild).games.set(games)
+        await ctx.send(f"Patch notes for **{game_name.title()}** will be posted in the {target_type} {channel_or_thread_or_forum.mention}.")
+
+    @gameupdates.command()
+    async def addchannel(self, ctx, game_name: GameConverter, channel: discord.TextChannel):
+        """
+        Set a channel for patch notes.
+        
+        Example: [p]gameupdates addchannel "Squad" #squad-updates
+        You can also mention a user to use their name as the game name: [p]gameupdates addchannel @Squad #squad-updates
+        """
         game_name = game_name.lower()
         custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
         
@@ -407,33 +402,13 @@ class GameUpdates(commands.Cog):
         await ctx.send(f"Patch notes for **{game_name.title()}** will be posted in {channel.mention}.")
 
     @gameupdates.command()
-    async def addthread(self, ctx, game: discord.Role = None, *, game_name: str = None, thread: discord.Thread = None):
+    async def addthread(self, ctx, game_name: GameConverter, thread: discord.Thread):
         """
-        Set a thread for patch notes. You can mention a role with the game's name or type the game name.
+        Set a thread for patch notes.
         
-        Examples:
-        [p]gameupdates addthread @Squad #squad-thread
-        [p]gameupdates addthread "Minecraft" #minecraft-thread
+        Example: [p]gameupdates addthread "Squad" #squad-thread
+        You can also mention a user to use their name as the game name: [p]gameupdates addthread @Squad #squad-thread
         """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-            # Extract the thread from the remaining text
-            if not thread and ctx.message.thread:
-                thread = ctx.message.thread
-        
-        # If no thread was found, check if the command was used in a thread
-        if not thread and isinstance(ctx.channel, discord.Thread):
-            thread = ctx.channel
-            
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
-            return
-            
-        if not thread:
-            await ctx.send("Please provide a thread or use this command inside a thread.")
-            return
-            
         game_name = game_name.lower()
         custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
         
@@ -448,37 +423,13 @@ class GameUpdates(commands.Cog):
         await ctx.send(f"Patch notes for **{game_name.title()}** will be posted in thread {thread.mention}.")
 
     @gameupdates.command()
-    async def addforum(self, ctx, game: discord.Role = None, *, game_name: str = None, forum: discord.ForumChannel = None):
+    async def addforum(self, ctx, game_name: GameConverter, forum: discord.ForumChannel):
         """
-        Set a forum channel for patch notes. You can mention a role with the game's name or type the game name.
+        Set a forum channel for patch notes.
         
-        Examples:
-        [p]gameupdates addforum @Squad #squad-forum
-        [p]gameupdates addforum "Minecraft" #minecraft-forum
+        Example: [p]gameupdates addforum "Squad" #squad-forum
+        You can also mention a user to use their name as the game name: [p]gameupdates addforum @Squad #squad-forum
         """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-            # Extract the forum from the remaining text
-            if not forum and ctx.message.channel_mentions:
-                channel = ctx.message.channel_mentions[0]
-                if isinstance(channel, discord.ForumChannel):
-                    forum = channel
-        
-        # If no forum was found, check if it was the last argument
-        if not forum and ctx.message.channel_mentions:
-            channel = ctx.message.channel_mentions[0]
-            if isinstance(channel, discord.ForumChannel):
-                forum = channel
-            
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
-            return
-            
-        if not forum:
-            await ctx.send("Please provide a forum channel.")
-            return
-            
         game_name = game_name.lower()
         custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
         
@@ -494,26 +445,14 @@ class GameUpdates(commands.Cog):
 
     @gameupdates.command()
     @commands.has_guild_permissions(manage_channels=True)
-    async def createchannel(self, ctx, game: discord.Role = None, *, game_name: str = None, channel_name: str = None, category: discord.CategoryChannel = None):
+    async def createchannel(self, ctx, game_name: GameConverter, channel_name: str = None, category: discord.CategoryChannel = None):
         """
         Create a new text channel for a game's patch notes and set it up.
-        You can mention a role with the game's name or type the game name.
+        Optionally specify a channel name and category.
         
-        Examples:
-        [p]gameupdates createchannel @Squad squad-patch-notes
-        [p]gameupdates createchannel "Minecraft" minecraft-updates
+        Example: [p]gameupdates createchannel "Squad" squad-patch-notes
+        You can also mention a user to use their name as the game name: [p]gameupdates createchannel @Squad squad-patch-notes
         """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-            # The rest of the arguments would be the channel name
-            if not channel_name and ctx.message.content.split(" ", 3)[3:]:
-                channel_name = ctx.message.content.split(" ", 3)[3]
-        
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
-            return
-            
         game_name = game_name.lower()
         custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
         
@@ -552,39 +491,14 @@ class GameUpdates(commands.Cog):
 
     @gameupdates.command()
     @commands.has_guild_permissions(manage_channels=True)
-    async def createforumpost(self, ctx, game: discord.Role = None, *, game_name: str = None, forum: discord.ForumChannel = None, title: str = None):
+    async def createforum(self, ctx, game_name: GameConverter, forum_name: str = None, category: discord.CategoryChannel = None):
         """
-        Create a forum post for a game's patch notes.
-        You can mention a role with the game's name or type the game name.
+        Create a new forum channel for a game's patch notes and set it up.
+        Optionally specify a forum name and category.
         
-        Examples:
-        [p]gameupdates createforumpost @Squad #game-updates "Squad Patch Notes"
-        [p]gameupdates createforumpost "Minecraft" #game-updates "Minecraft Updates"
+        Example: [p]gameupdates createforum "Squad" squad-updates
+        You can also mention a user to use their name as the game name: [p]gameupdates createforum @Squad squad-updates
         """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-            # Extract the forum from the remaining text
-            if not forum and ctx.message.channel_mentions:
-                channel = ctx.message.channel_mentions[0]
-                if isinstance(channel, discord.ForumChannel):
-                    forum = channel
-                    # Extract title from remaining text
-                    parts = ctx.message.content.split(" ", 4)
-                    if len(parts) > 4:
-                        title = parts[4]
-        
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
-            return
-            
-        if not forum:
-            await ctx.send("Please provide a forum channel.")
-            return
-            
-        if not title:
-            title = f"{game_name.title()} Patch Notes"
-            
         game_name = game_name.lower()
         custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
         
@@ -592,103 +506,80 @@ class GameUpdates(commands.Cog):
         if game_name not in GAME_FEEDS and game_name not in custom_feeds:
             await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
-            
+
+        # Default forum name if not provided
+        if not forum_name:
+            forum_name = f"{game_name.replace(' ', '-')}-updates"
+
+        # Create the forum
         try:
-            thread = await forum.create_thread(
-                name=title,
-                content=f"This thread will be updated with patch notes for {game_name.title()}.",
-                reason=f"Patch notes thread for {game_name.title()} (requested by {ctx.author})"
+            new_forum = await ctx.guild.create_forum(
+                name=forum_name,
+                category=category,
+                reason=f"Patch notes forum for {game_name.title()} (requested by {ctx.author})"
             )
-            
-            # Set up the game to use this thread
-            games = await self.config.guild(ctx.guild).games()
-            games[game_name] = {"channel": None, "thread": thread.thread.id, "forum": None, "last_update": None}
-            await self.config.guild(ctx.guild).games.set(games)
-            
-            await ctx.send(f"Created forum post {thread.thread.mention} for **{game_name.title()}** patch notes.")
         except discord.Forbidden:
-            await ctx.send("I do not have permission to create forum posts.")
+            await ctx.send("I do not have permission to create forum channels.")
+            return
         except Exception as e:
-            await ctx.send(f"Failed to create forum post: {e}")
+            await ctx.send(f"Failed to create forum: {e}")
+            return
+
+        # Set up the game to use this forum
+        games = await self.config.guild(ctx.guild).games()
+        games[game_name] = {"channel": None, "thread": None, "forum": new_forum.id, "last_update": None}
+        await self.config.guild(ctx.guild).games.set(games)
+        await ctx.send(f"Created forum {new_forum.mention} and set it up for **{game_name.title()}** patch notes.")
 
     @gameupdates.command()
-    @commands.has_guild_permissions(manage_channels=True)
-    async def createthread(self, ctx, game: discord.Role = None, *, game_name: str = None, channel: discord.TextChannel = None, thread_name: str = None):
-        """
-        Create a thread for a game's patch notes.
-        You can mention a role with the game's name or type the game name.
-        
-        Examples:
-        [p]gameupdates createthread @Squad #general "Squad Patch Notes"
-        [p]gameupdates createthread "Minecraft" #general "Minecraft Updates"
-        """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-            # Extract the channel from the remaining text
-            if not channel and ctx.message.channel_mentions:
-                channel = ctx.message.channel_mentions[0]
-                # Extract thread name from remaining text
-                parts = ctx.message.content.split(" ", 4)
-                if len(parts) > 4:
-                    thread_name = parts[4]
-        
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
-            return
-            
-        if not channel:
-            channel = ctx.channel
-            
-        if not thread_name:
-            thread_name = f"{game_name.title()} Patch Notes"
-            
-        game_name = game_name.lower()
-        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
-        
-        # Check if game exists (either built-in or custom)
-        if game_name not in GAME_FEEDS and game_name not in custom_feeds:
-            await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
-            return
-            
-        try:
-            message = await channel.send(f"Thread for {game_name.title()} patch notes.")
-            thread = await message.create_thread(
-                name=thread_name,
-                reason=f"Patch notes thread for {game_name.title()} (requested by {ctx.author})"
-            )
-            
-            # Set up the game to use this thread
-            games = await self.config.guild(ctx.guild).games()
-            games[game_name] = {"channel": None, "thread": thread.id, "forum": None, "last_update": None}
-            await self.config.guild(ctx.guild).games.set(games)
-            
-            await ctx.send(f"Created thread {thread.mention} for **{game_name.title()}** patch notes.")
-        except discord.Forbidden:
-            await ctx.send("I do not have permission to create threads.")
-        except Exception as e:
-            await ctx.send(f"Failed to create thread: {e}")
-
-    @gameupdates.command()
-    async def remove(self, ctx, game: discord.Role = None, *, game_name: str = None):
+    async def remove(self, ctx, game_name: GameConverter):
         """
         Remove a game from patch notes posting.
-        You can mention a role with the game's name or type the game name.
         
-        Examples:
-        [p]gameupdates remove @Squad
-        [p]gameupdates remove "Minecraft"
+        Example: [p]gameupdates remove "Squad"
+        You can also mention a user to use their name as the game name: [p]gameupdates remove @Squad
         """
-        # Get the game name either from the role or from the provided string
-        if game and isinstance(game, discord.Role):
-            game_name = game.name.lower()
-        
-        if not game_name:
-            await ctx.send("Please provide a game name or mention a role with the game's name.")
-            return
-            
         game_name = game_name.lower()
         games = await self.config.guild(ctx.guild).games()
         if game_name in games:
             del games[game_name]
-            await
+            await self.config.guild(ctx.guild).games.set(games)
+            await ctx.send(f"Removed **{game_name.title()}** from updates.")
+        else:
+            await ctx.send("Game not found.")
+
+    @gameupdates.command()
+    async def list(self, ctx):
+        """List all games and their channels/threads/forums."""
+        games = await self.config.guild(ctx.guild).games()
+        if not games:
+            await ctx.send("No games set up.")
+            return
+        msg = ""
+        for g, d in games.items():
+            loc = "Not set"
+            if d.get("forum"):
+                forum = ctx.guild.get_channel(d["forum"])
+                loc = forum.mention if forum else f"Forum ID {d['forum']}"
+            elif d.get("thread"):
+                thread = ctx.guild.get_thread(d["thread"])
+                loc = thread.mention if thread else f"Thread ID {d['thread']}"
+            elif d.get("channel"):
+                channel = ctx.guild.get_channel(d["channel"])
+                loc = channel.mention if channel else f"Channel ID {d['channel']}"
+            msg += f"**{g.title()}**: {loc}\n"
+        await ctx.send(msg)
+
+    @gameupdates.command()
+    @commands.is_owner()
+    async def forceupdate(self, ctx):
+        """Force check for updates now (bot owner only)."""
+        await ctx.send("Checking for game updates...")
+        try:
+            await self._check_for_updates()
+            await ctx.send("Update check completed.")
+        except Exception as e:
+            await ctx.send(f"Error during update check: {e}")
+
+async def setup(bot):
+    await bot.add_cog(GameUpdates(bot))
