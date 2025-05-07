@@ -649,4 +649,28 @@ class GameUpdates(commands.Cog):
                 loc = forum.mention if forum else f"Forum ID {d['forum']}"
             elif d.get("forum_thread"):
                 thread = ctx.guild.get_thread(d["forum_thread"])
-                loc = thread.mention if thread else f"Forum Threa
+                loc = thread.mention if thread else f"Forum Thread ID {d['forum_thread']}"
+            elif d.get("thread"):
+                thread = ctx.guild.get_thread(d["thread"])
+                loc = thread.mention if thread else f"Thread ID {d['thread']}"
+            elif d.get("channel"):
+                channel = ctx.guild.get_channel(d["channel"])
+                loc = channel.mention if channel else f"Channel ID {d['channel']}"
+            msg += f"**{g.title()}**: {loc}\n"
+        await ctx.send(msg)
+
+    @gameupdates.command()
+    @commands.is_owner()
+    async def forceupdate(self, ctx):
+        """Force check for updates now (bot owner only)."""
+        await ctx.send("Checking for game updates...")
+        try:
+            await self._check_for_updates()
+            await ctx.send("Update check completed.")
+        except Exception as e:
+            await ctx.send(f"Error during update check: {str(e)}")
+
+async def setup(bot):
+    """Load the GameUpdates cog."""
+    await bot.add_cog(GameUpdates(bot))
+
