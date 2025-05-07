@@ -158,14 +158,27 @@ class GameUpdates(commands.Cog):
             print(f"Error fetching updates for {game}: {e}")
             return []
 
-    async def _check_for_updates(self):
-        """Check for updates for all games in all guilds."""
-        for guild in self.bot.guilds:
+    async def _check_for_updates(self, specific_game=None, specific_guild=None, force_post=False):
+        """
+        Check for updates for games in guilds.
+        
+        Parameters:
+        - specific_game: If provided, only check this game
+        - specific_guild: If provided, only check in this guild
+        - force_post: If True, post the latest update regardless of last_update
+        """
+        guilds = [specific_guild] if specific_guild else self.bot.guilds
+        
+        for guild in guilds:
             try:
                 games = await self.config.guild(guild).games()
                 custom_feeds = await self.config.guild(guild).custom_feeds()
                 
-                for game, data in games.items():
+                # Filter games if specific_game is provided
+                game_items = [(g, d) for g, d in games.items() 
+                             if specific_game is None or g.lower() == specific_game.lower()]
+                
+                for game, data in game_items:
                     # Get feed URL (check custom feeds first, then built-in)
                     feed_url = custom_feeds.get(game) or GAME_FEEDS.get(game)
                     if not feed_url:
@@ -191,53 +204,126 @@ class GameUpdates(commands.Cog):
                     updates = await self.fetch_patch_notes(feed_url, game)
                     if not updates:
                         continue
-                        
-                    last_update = data.get("last_update")
-                    new_updates = []
-                    for update in updates:
-                        if update["id"] == last_update:
-                            break
-                        new_updates.append(update)
-                        
-                    if new_updates:
-                        for update in reversed(new_updates):
-                            embed = discord.Embed(
-                                title=update["title"][:256],  # Discord embed title limit
-                                description=update["content"][:4000] if len(update["content"]) <= 4000 else update["content"][:3997] + "...",
-                                url=update["url"],
-                                color=discord.Color.blue()
-                            )
-                            # Try to parse date, fallback if not possible
-                            try:
-                                embed.timestamp = discord.utils.parse_time(update["date"])
-                            except Exception:
-                                pass
-                            try:
-                                if forum:
-                                    await forum.create_thread(
-                                        name=update["title"][:100] if update["title"] else "Patch Notes",
-                                        content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
-                                        embed=embed
-                                    )
-                                elif forum_thread:
-                                    await forum_thread.send(embed=embed)
-                                elif target:
-                                    await target.send(embed=embed)
-                            except Exception as e:
-                                print(f"Error sending update for {game} in {guild.name}: {e}")
-                                continue
-                        # Save the latest update id
-                        data["last_update"] = updates[0]["id"]
-                        games[game] = data
-                        await self.config.guild(guild).games.set(games)
+                    
+                    if force_post:
+                        # When forcing, just post the latest update
+                        update = updates[0]
+                        embed = discord.Embed(
+                            title=update["title"][:256],  # Discord embed title limit
+                            description=update["content"][:4000] if len(update["content"]) <= 4000 else update["content"][:3997] + "...",
+                            url=update["url"],
+                            color=discord.Color.blue()
+                        )
+                        # Try to parse date, fallback if not possible
+                        try:
+                            embed.timestamp = discord.utils.parse_time(update["date"])
+                        except Exception:
+                            pass
+                        try:
+                            if forum:
+                                await forum.create_thread(
+                                    name=update["title"][:100] if update["title"] else "Patch Notes",
+                                    content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
+                                    embed=embed
+                                )
+                            elif forum_thread:
+                                await forum_thread.send(embed=embed)
+                            elif target:
+                                await target.send(embed=embed)
+                            
+                            # Update the last_update field
+                            data["last_update"] = update["id"]
+                            games[game] = data
+                            await self.config.guild(guild).games.set(games)
+                        except Exception as e:
+                            print(f"Error sending update for {game} in {guild.name}: {e}")
+                    else:
+                        # Normal update checking
+                        last_update = data.get("last_update")
+                        new_updates = []
+                        for update in updates:
+                            if update["id"] == last_update:
+                                break
+                            new_updates.append(update)
+                            
+                        if new_updates:
+                            for update in reversed(new_updates):
+                                embed = discord.Embed(
+                                    title=update["title"][:256],  # Discord embed title limit
+                                    description=update["content"][:4000] if len(update["content"]) <= 4000 else update["content"][:3997] + "...",
+                                    url=update["url"],
+                                    color=discord.Color.blue()
+                                )
+                                # Try to parse date, fallback if not possible
+                                try:
+                                    embed.timestamp = discord.utils.parse_time(update["date"])
+                                except Exception:
+                                    pass
+                                try:
+                                    if forum:
+                                        await forum.create_thread(
+                                            name=update["title"][:100] if update["title"] else "Patch Notes",
+                                            content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
+                                            embed=embed
+                                        )
+                                    elif forum_thread:
+                                        await forum_thread.send(embed=embed)
+                                    elif target:
+                                        await target.send(embed=embed)
+                                except Exception as e:
+                                    print(f"Error sending update for {game} in {guild.name}: {e}")
+                                    continue
+                            # Save the latest update id
+                            data["last_update"] = updates[0]["id"]
+                            games[game] = data
+                            await self.config.guild(guild).games.set(games)
             except Exception as e:
                 print(f"Error processing guild {guild.name}: {e}")
 
-    @commands.group()
+    @commands.group(name="gameupdates", aliases=["gu"])
     @commands.guild_only()
     async def gameupdates(self, ctx):
         """Game patch notes setup."""
         pass
+
+    @gameupdates.command()
+    @commands.is_owner()
+    async def forceupdate(self, ctx, game_name: GameConverter = None):
+        """
+        Force check for updates now (bot owner only).
+        
+        If a game name is provided, only that game's updates will be posted.
+        The latest patch notes will always be posted, even if they've been posted before.
+        
+        Example: [p]gameupdates forceupdate "Squad"
+        You can also mention a user to use their name as the game name: [p]gameupdates forceupdate @Squad
+        """
+        if game_name:
+            # Check if the game exists in any feed
+            custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+            if game_name.lower() not in GAME_FEEDS and game_name.lower() not in custom_feeds:
+                await ctx.send(f"Game **{game_name}** not found. Use `[p]gameupdates listgames` to see available games.")
+                return
+                
+            # Check if the game is set up in this guild
+            games = await self.config.guild(ctx.guild).games()
+            if game_name.lower() not in games:
+                await ctx.send(f"Game **{game_name}** is not set up in this server. Use `[p]gameupdates setup` to set it up first.")
+                return
+                
+            await ctx.send(f"Checking for **{game_name}** updates...")
+            try:
+                await self._check_for_updates(specific_game=game_name.lower(), specific_guild=ctx.guild, force_post=True)
+                await ctx.send(f"Posted the latest update for **{game_name}**.")
+            except Exception as e:
+                await ctx.send(f"Error during update check: {str(e)}")
+        else:
+            await ctx.send("Checking for all game updates...")
+            try:
+                await self._check_for_updates(specific_guild=ctx.guild, force_post=True)
+                await ctx.send("Update check completed and latest updates posted.")
+            except Exception as e:
+                await ctx.send(f"Error during update check: {str(e)}")
 
     @gameupdates.command()
     @commands.is_owner()
@@ -568,10 +654,10 @@ class GameUpdates(commands.Cog):
             
             # Set up the game to use this forum thread
             games = await self.config.guild(ctx.guild).games()
-            games[game_name] = {"channel": None, "thread": None, "forum": None, "forum_thread": thread.thread.id, "last_update": None}
+            games[game_name] = {"channel": None, "thread": None, "forum": None, "forum_thread": thread.id, "last_update": None}
             await self.config.guild(ctx.guild).games.set(games)
             
-            await ctx.send(f"Created thread {thread.thread.mention} in forum {forum.mention} and set it up for **{game_name.title()}** patch notes.")
+            await ctx.send(f"Created thread {thread.mention} in forum {forum.mention} and set it up for **{game_name.title()}** patch notes.")
         except discord.Forbidden:
             await ctx.send("I don't have permission to create threads in that forum.")
         except Exception as e:
@@ -709,16 +795,16 @@ class GameUpdates(commands.Cog):
 
     @gameupdates.command()
     @commands.is_owner()
-    async def forceupdate(self, ctx):
-        """Force check for updates now (bot owner only)."""
-        await ctx.send("Checking for game updates...")
-        try:
-            await self._check_for_updates()
-            await ctx.send("Update check completed.")
-        except Exception as e:
-            await ctx.send(f"Error during update check: {str(e)}")
-
-async def setup(bot):
-    """Load the GameUpdates cog."""
-    await bot.add_cog(GameUpdates(bot))
-
+    async def forceupdate(self, ctx, game_name: GameConverter = None):
+        """
+        Force check for updates now (bot owner only).
+        
+        If a game name is provided, only that game's updates will be posted.
+        The latest patch notes will always be posted, even if they've been posted before.
+        
+        Example: [p]gameupdates forceupdate "Squad"
+        You can also mention a user to use their name as the game name: [p]gameupdates forceupdate @Squad
+        """
+        if game_name:
+            # Check if the game exists in any feed
+    
