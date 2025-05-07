@@ -221,15 +221,16 @@ class GameUpdates(commands.Cog):
                             pass
                         try:
                             if forum:
+                                # For forums, create a new thread with the update title
                                 await forum.create_thread(
                                     name=update["title"][:100] if update["title"] else "Patch Notes",
                                     content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
                                     embed=embed
                                 )
-                            elif forum_thread:
-                                await forum_thread.send(embed=embed)
-                            elif target:
-                                await target.send(embed=embed)
+                            elif forum_thread or target:
+                                # For existing threads or channels, just send the message without changing the name
+                                target_to_send = forum_thread if forum_thread else target
+                                await target_to_send.send(embed=embed)
                             
                             # Update the last_update field
                             data["last_update"] = update["id"]
@@ -261,15 +262,16 @@ class GameUpdates(commands.Cog):
                                     pass
                                 try:
                                     if forum:
+                                        # For forums, create a new thread with the update title
                                         await forum.create_thread(
                                             name=update["title"][:100] if update["title"] else "Patch Notes",
                                             content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
                                             embed=embed
                                         )
-                                    elif forum_thread:
-                                        await forum_thread.send(embed=embed)
-                                    elif target:
-                                        await target.send(embed=embed)
+                                    elif forum_thread or target:
+                                        # For existing threads or channels, just send the message without changing the name
+                                        target_to_send = forum_thread if forum_thread else target
+                                        await target_to_send.send(embed=embed)
                                 except Exception as e:
                                     print(f"Error sending update for {game} in {guild.name}: {e}")
                                     continue
@@ -647,8 +649,7 @@ class GameUpdates(commands.Cog):
         try:
             # Create the thread in the forum
             thread = await forum.create_thread(
-                name=thread_name,
-                content=f"This thread will be used for **{game_name.title()}** patch notes.",
+                name=thread_name,                content=f"Thread for {game_name.title()} patch notes.",
                 auto_archive_duration=10080  # 7 days
             )
             
@@ -783,4 +784,16 @@ class GameUpdates(commands.Cog):
                 loc = forum.mention if forum else f"Forum ID {d['forum']}"
             elif d.get("forum_thread"):
                 thread = ctx.guild.get_thread(d["forum_thread"])
+                loc = thread.mention if thread else f"Forum Thread ID {d['forum_thread']}"
+            elif d.get("thread"):
+                thread = ctx.guild.get_thread(d["thread"])
+                loc = thread.mention if thread else f"Thread ID {d['thread']}"
+            elif d.get("channel"):
+                channel = ctx.guild.get_channel(d["channel"])
+                loc = channel.mention if channel else f"Channel ID {d['channel']}"
+            msg += f"**{g.title()}**: {loc}\n"
+        await ctx.send(msg)
 
+async def setup(bot):
+    """Load the GameUpdates cog."""
+    await bot.add_cog(GameUpdates(bot))
