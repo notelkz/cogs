@@ -68,10 +68,10 @@ class GameUpdates(commands.Cog):
 
     async def _load_permanent_games(self):
         """Load permanent games from config and add them to GAME_FEEDS."""
+        global GAME_FEEDS  # Declare global before using it
         await self.bot.wait_until_ready()
         permanent_games = await self.config.permanent_games()
         # Add permanent games to GAME_FEEDS
-        global GAME_FEEDS
         GAME_FEEDS.update(permanent_games)
 
     async def _update_loop(self):
@@ -193,6 +193,7 @@ class GameUpdates(commands.Cog):
         Example: [p]gameupdates addgame "Minecraft" https://feedback.minecraft.net/rss
         You can also mention a user to use their name as the game name: [p]gameupdates addgame @Minecraft https://...
         """
+        global GAME_FEEDS  # Declare global before using it
         game_name = game_name.lower()
         
         # Check if game already exists
@@ -217,7 +218,6 @@ class GameUpdates(commands.Cog):
             return
         
         # Add to GAME_FEEDS
-        global GAME_FEEDS
         GAME_FEEDS[game_name] = feed_url
         
         # Save to permanent_games for persistence
@@ -236,6 +236,7 @@ class GameUpdates(commands.Cog):
         
         Example: [p]gameupdates removepermanent "Minecraft"
         """
+        global GAME_FEEDS  # Declare global before using it
         game_name = game_name.lower()
         
         # Check if it's in the original hardcoded list
@@ -260,7 +261,6 @@ class GameUpdates(commands.Cog):
         await self.config.permanent_games.set(permanent_games)
         
         # Also remove from current GAME_FEEDS
-        global GAME_FEEDS
         if game_name in GAME_FEEDS:
             del GAME_FEEDS[game_name]
         
