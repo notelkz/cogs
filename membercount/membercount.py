@@ -1,6 +1,6 @@
 from redbot.core import commands
 from aiohttp import web
-from datetime import datetime, timedelta
+from datetime import datetime
 import json
 import os
 
@@ -9,7 +9,7 @@ VOICE_DATA_FILE = "voice_data.json"
 MESSAGE_DATA_FILE = "message_data.json"
 
 class MemberCount(commands.Cog):
-    """Expose member count, role count, voice minutes, and message count via HTTP endpoints."""
+    """Expose member count, role count, voice minutes, message count, and application stats via HTTP endpoints."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -56,6 +56,7 @@ class MemberCount(commands.Cog):
         self.webserver.router.add_get('/rolecount', self.handle_rolecount)
         self.webserver.router.add_get('/voiceminutes', self.handle_voiceminutes)
         self.webserver.router.add_get('/messagecount', self.handle_messagecount)
+        self.webserver.router.add_get('/appstats', self.handle_appstats)
         self.runner = web.AppRunner(self.webserver)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)  # Use your chosen port
@@ -110,10 +111,30 @@ class MemberCount(commands.Cog):
         count = sum(1 for ts, _ in self.message_log if ts >= week_ago)
         return web.json_response({"messages_7d": count})
 
+    async def handle_appstats(self, request):
+        zeroapps = self.bot.get_cog("ZeroApplications")
+        if not zeroapps:
+            return web.json_response({"error": "ZeroApplications cog not loaded"}, status=500)
+        try:
+            all_apps = zeroapps.applications  # {guild_id: {member_id: application_dict}}
+            # Try both int and str keys for guild_id
+            guild_apps = all_apps.get(GUILD_ID) or all_apps.get(str(GUILD_ID), {})
+            app_list = list(guild_apps.values())
+        except Exception as e:
+            return web.json_response({"error": f"Failed to fetch applications: {e}"}, status=500)
+        total = len(app_list)
+        accepted = sum(1 for app in app_list if app.get("status") == "accepted")
+        rejected = sum(1 for app in app_list if app.get("status") == "rejected")
+        return web.json_response({
+            "total": total,
+            "accepted": accepted,
+            "rejected": rejected
+        })
+
     # --- Listeners ---
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        if member.guild.id != GUILD_ID:
+        if member.guild.id != 995753617611042916:
             return
         now = datetime.utcnow().timestamp()
         if before.channel is None and after.channel is not None:
@@ -134,4 +155,3 @@ class MemberCount(commands.Cog):
             self.message_log.append([now, message.author.id])
             self._save_message_data()
         # Optionally, prune old data here
-

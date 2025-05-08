@@ -30,7 +30,7 @@ def safe_channel_name(name):
     # Remove spaces and special characters, lowercase
     return ''.join(c for c in name.lower().replace(" ", "-") if c.isalnum() or c == "-") + "-application"
 
-class AppTest(commands.Cog):
+class ZeroApplications(commands.Cog):
     """Application management for new users."""
 
     __version__ = "1.1.0"
@@ -51,15 +51,55 @@ class AppTest(commands.Cog):
         }
         self.config.register_guild(**default_guild)
         self.config.register_member(**default_member)
+        self._application_cache = {}  # {guild_id: {member_id: application_dict}}
+
+    @property
+    def applications(self):
+        """
+        Returns a dict of all applications in all guilds, cached.
+        Format: {guild_id: {member_id: application_dict}}
+        """
+        return self._application_cache
+
+    async def update_application_cache(self):
+        """
+        Loads all applications from config into the cache.
+        """
+        all_guilds = self.bot.guilds
+        for guild in all_guilds:
+            members = guild.members
+            guild_cache = {}
+            for member in members:
+                app = await self.config.member(member).application()
+                if app:
+                    guild_cache[member.id] = app
+            self._application_cache[guild.id] = guild_cache
+
+    async def update_member_application_cache(self, member):
+        """
+        Updates the cache for a single member.
+        """
+        app = await self.config.member(member).application()
+        if app:
+            if member.guild.id not in self._application_cache:
+                self._application_cache[member.guild.id] = {}
+            self._application_cache[member.guild.id][member.id] = app
+        else:
+            if member.guild.id in self._application_cache:
+                self._application_cache[member.guild.id].pop(member.id, None)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.update_application_cache()
 
     @commands.group()
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
-    async def apptest(self, ctx):
-        """Application Test Setup"""
+    async def zeroapplications(self, ctx):
+        """ZeroApplications Setup"""
         pass
 
-    @apptest.command()
+    @zeroapplications.command()
     async def setup(self, ctx):
         """Setup application system."""
         await ctx.send("Let's set up your application system!\n"
@@ -128,7 +168,7 @@ class AppTest(commands.Cog):
 
         await ctx.send("Setup complete! The application questions are now hardcoded.")
 
-    @apptest.command()
+    @zeroapplications.command()
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
     async def test(self, ctx, member: Optional[discord.Member] = None):
@@ -149,13 +189,10 @@ class AppTest(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         guild = member.guild
-        # Do NOT clear application data here!
         prev_app = await self.config.member(member).application()
         if prev_app:
-            # Reopen old application
             await self._reopen_application(member, prev_app)
         else:
-            # Open new application
             await self._open_new_application(member)
 
     async def _reopen_application(self, member, prev_app):
@@ -168,19 +205,14 @@ class AppTest(commands.Cog):
         archive_cat = guild.get_channel(archive_cat_id)
         channel_name = safe_channel_name(member.name)
 
-        # Try to find the channel in the applications category
         channel = discord.utils.get(app_cat.channels, name=channel_name)
         if not channel:
-            # Try to find the channel in the archive category
             channel = discord.utils.get(archive_cat.channels, name=channel_name)
             if channel:
-                # Move it back to applications category
                 await channel.edit(category=app_cat)
-                # Restore permissions for the user and mod role
                 await channel.set_permissions(member, read_messages=True, send_messages=True)
                 await channel.set_permissions(mod_role, read_messages=True, send_messages=True)
             else:
-                # Create a new channel if not found anywhere
                 overwrites = {
                     guild.default_role: discord.PermissionOverwrite(read_messages=False),
                     member: discord.PermissionOverwrite(read_messages=True, send_messages=True),
@@ -188,7 +220,6 @@ class AppTest(commands.Cog):
                 }
                 channel = await guild.create_text_channel(channel_name, category=app_cat, overwrites=overwrites)
         else:
-            # Channel already in applications category, ensure permissions are correct
             await channel.set_permissions(member, read_messages=True, send_messages=True)
             await channel.set_permissions(mod_role, read_messages=True, send_messages=True)
 
@@ -234,12 +265,42 @@ class AppTest(commands.Cog):
         archive_cat_id = await self.config.guild(guild).archive_category()
         archive_cat = guild.get_channel(archive_cat_id)
         await channel.edit(category=archive_cat)
-        # Lock and hide for the user
         if member:
             overwrite = discord.PermissionOverwrite()
             overwrite.read_messages = False
             overwrite.send_messages = False
             await channel.set_permissions(member, overwrite=overwrite)
+
+    @zeroapplications.command(name="sendembed")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def sendembed(self, ctx, channel_id: int):
+        """
+        Send the application embed with buttons to a specified channel by channel ID.
+        Usage: !zeroapplications sendembed <channel_id>
+        """
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            await ctx.send("That is not a valid text channel ID in this server.")
+            return
+
+        hashtag = "#welcome"
+
+        embed = discord.Embed(
+            title="Welcome",
+            description=(
+                "Please use the button below to create a new application if one wasn't created for you automatically upon you joining the Discord.\n\n"
+                "This can also be used if <@&1274512593842606080> wish to join and become a full <@&1018116224158273567>."
+            ),
+            color=6962372,
+            timestamp=discord.utils.parse_time("2025-05-08T12:07:00.000Z")
+        )
+        embed.set_author(name="Zero Lives Left", url="http://zerolivesleft.net")
+        embed.set_footer(text="If you have any issues, please use the Contact Moderator button.")
+        embed.set_thumbnail(url="attachment://zerosmall.png")
+
+        await channel.send(content=hashtag, embed=embed, view=PublicApplicationView(self, ctx.guild))
+        await ctx.send(f"Embed sent to {channel.mention} with hashtag {hashtag}.")
 
 # --- UI Views and Modals ---
 
@@ -294,6 +355,7 @@ class ApplicationModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         answers = {q: self.children[i].value for i, q in enumerate(self.questions)}
         await self.cog.config.member(self.member).application.set(answers)
+        await self.cog.update_member_application_cache(self.member)
         await interaction.response.send_message(
             "Your application has been submitted! Moderators will review it soon.",
             ephemeral=True
@@ -345,6 +407,8 @@ class ModReviewView(discord.ui.View):
         accept_role = self.channel.guild.get_role(accept_role_id)
         await self.member.add_roles(accept_role, reason="Application accepted")
         await self.cog._move_to_archive(self.channel, self.member)
+        await self.cog.config.member(self.member).application.set(None)
+        await self.cog.update_member_application_cache(self.member)
         await interaction.response.send_message(f"{self.member.mention} has been accepted and given the role.", ephemeral=False)
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.red, custom_id="decline_app")
@@ -354,7 +418,6 @@ class ModReviewView(discord.ui.View):
         if mod_role not in interaction.user.roles:
             await interaction.response.send_message("Only moderators can use this.", ephemeral=True)
             return
-        # Ask for reason
         await interaction.response.send_modal(DeclineReasonModal(self.cog, self.member, self.channel))
 
 class DeclineReasonModal(discord.ui.Modal):
@@ -374,11 +437,12 @@ class DeclineReasonModal(discord.ui.Modal):
         reason = self.children[0].value
         await self.cog.config.member(self.member).decline_reason.set(reason)
         await self.cog._move_to_archive(self.channel, self.member)
+        await self.cog.config.member(self.member).application.set(None)
+        await self.cog.update_member_application_cache(self.member)
         await interaction.response.send_message(
             f"{self.member.mention} has been declined. Reason stored for future reference.",
             ephemeral=False
         )
-        # Optionally, post the reason in the channel for transparency:
         await self.channel.send(
             f"**{self.member.mention}'s application was declined.**\n**Reason:** {reason}"
         )
@@ -387,5 +451,36 @@ class DeclineReasonModal(discord.ui.Modal):
         except Exception:
             pass  # User may have DMs closed
 
-# End of cog file
+class PublicApplicationView(discord.ui.View):
+    def __init__(self, cog, guild):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.guild = guild
 
+    @discord.ui.button(label="Create New Application", style=discord.ButtonStyle.green, custom_id="public_create_app")
+    async def create_app(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+        prev_app = await self.cog.config.member(member).application()
+        if prev_app:
+            await self.cog._reopen_application(member, prev_app)
+            await interaction.response.send_message("Your previous application has been reopened (check your application channel).", ephemeral=True)
+        else:
+            await self.cog._open_new_application(member)
+            await interaction.response.send_message("A new application channel has been created for you.", ephemeral=True)
+
+    @discord.ui.button(label="Contact Moderator", style=discord.ButtonStyle.red, custom_id="public_contact_mod")
+    async def contact_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
+        mod_role_id = await self.cog.config.guild(self.guild).moderator_role()
+        mod_role = self.guild.get_role(mod_role_id)
+        channel = interaction.channel
+        online_mods = [m for m in mod_role.members if m.status != discord.Status.offline]
+        if online_mods:
+            await channel.send(f"{' '.join(m.mention for m in online_mods)}, attention needed!")
+        else:
+            await channel.send(f"{mod_role.mention}, attention needed!")
+        await interaction.response.send_message("Moderators have been notified.", ephemeral=True)
+
+# --- End of cog file ---
+
+async def setup(bot):
+    await bot.add_cog(ZeroApplications(bot))
