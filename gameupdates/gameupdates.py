@@ -158,6 +158,21 @@ class GameUpdates(commands.Cog):
             print(f"Error fetching updates for {game}: {e}")
             return []
 
+    def _extract_version_from_title(self, title):
+        """Extract version number from update title."""
+        # Try to find version patterns like v1.2.3, 1.2.3, or "version 1.2"
+        version_info = re.search(r'(v\d+\.\d+|\d+\.\d+|version\s+\d+\.\d+)', title, re.IGNORECASE)
+        if version_info:
+            return version_info.group(0)
+        
+        # If no version pattern found, try to find any number that might be a version
+        version_info = re.search(r'(\d+\.\d+|\d+)', title)
+        if version_info:
+            return version_info.group(0)
+        
+        # Fallback if no version number found
+        return "Patch_Notes"
+
     async def _check_for_updates(self, specific_game=None, specific_guild=None, force_post=False):
         """
         Check for updates for games in guilds.
@@ -221,8 +236,9 @@ class GameUpdates(commands.Cog):
                             pass
                         try:
                             if forum:
-                                # For forums, create a new thread with the game name
-                                thread_name = f"{game.title()} Patch Notes"
+                                # For forums, create a new thread with the game name + patch version
+                                version_str = self._extract_version_from_title(update["title"])
+                                thread_name = f"[{game.title()}] {version_str}"
                                 await forum.create_thread(
                                     name=thread_name[:100],  # Discord has a 100 character limit for thread names
                                     content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
@@ -263,8 +279,9 @@ class GameUpdates(commands.Cog):
                                     pass
                                 try:
                                     if forum:
-                                        # For forums, create a new thread with the game name
-                                        thread_name = f"{game.title()} Patch Notes"
+                                        # For forums, create a new thread with the game name + patch version
+                                        version_str = self._extract_version_from_title(update["title"])
+                                        thread_name = f"[{game.title()}] {version_str}"
                                         await forum.create_thread(
                                             name=thread_name[:100],  # Discord has a 100 character limit for thread names
                                             content=update["content"][:2000] if len(update["content"]) <= 2000 else update["content"][:1997] + "...",
@@ -800,4 +817,3 @@ class GameUpdates(commands.Cog):
 async def setup(bot):
     """Load the GameUpdates cog."""
     await bot.add_cog(GameUpdates(bot))
-
