@@ -69,11 +69,13 @@ class MemberCount(commands.Cog):
         cors = aiohttp_cors.setup(
             self.webserver,
             defaults={
-                "*": aiohttp_cors.ResourceOptions(
-                    allow_credentials=True,
-                    expose_headers="*",
-                    allow_headers="*",
-                )
+                "https://notelkz.net": aiohttp_cors.ResourceOptions(
+                allow_credentials=True,
+                expose_headers="*",
+                allow_headers="*",
+        )
+    },
+)
                 # If you want to restrict to your domain only, use:
                 # "https://notelkz.net": aiohttp_cors.ResourceOptions(
                 #     allow_credentials=True,
