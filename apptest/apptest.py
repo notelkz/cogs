@@ -241,18 +241,21 @@ class AppTest(commands.Cog):
             overwrite.send_messages = False
             await channel.set_permissions(member, overwrite=overwrite)
 
-    # --- NEW FEATURE: Send Embed with Buttons to Any Channel ---
+    # --- NEW FEATURE: Send Embed with Buttons to Any Channel by Channel ID ---
     @apptest.command(name="sendembed")
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
-    async def sendembed(self, ctx, channel: discord.TextChannel, hashtag: str = None):
+    async def sendembed(self, ctx, channel_id: int):
         """
-        Send the application embed with buttons to a specified channel.
-        Usage: !apptest sendembed #channel #hashtag
+        Send the application embed with buttons to a specified channel by channel ID.
+        Usage: !apptest sendembed <channel_id>
         """
-        if not hashtag or not hashtag.startswith("#"):
-            await ctx.send("Please provide a hashtag (e.g. #welcome).")
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            await ctx.send("That is not a valid text channel ID in this server.")
             return
+
+        hashtag = "#welcome"  # Change or remove as needed
 
         embed = discord.Embed(
             title="Welcome",
@@ -453,5 +456,5 @@ class PublicApplicationView(discord.ui.View):
 
 # --- End of cog file ---
 
-def setup(bot):
-    bot.add_cog(AppTest(bot))
+async def setup(bot):
+    await bot.add_cog(AppTest(bot))
