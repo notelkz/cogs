@@ -159,30 +159,32 @@ class MemberCount(commands.Cog):
         })
 
     async def handle_appstats(self, request):
+        guild = self.bot.get_guild(GUILD_ID)
         zeroapps = self.bot.get_cog("ZeroApplications")
-        if not zeroapps:
-            return web.json_response({"error": "ZeroApplications cog not loaded"}, status=500)
-        try:
-            # Get active and archived applications for the guild
-            all_apps = zeroapps.applications  # {guild_id: {member_id: application_dict}}
-            archived_apps = getattr(zeroapps, "archived_applications", {})  # fallback to empty if not present
+        if not zeroapps or not guild:
+            return web.json_response({"error": "ZeroApplications cog or guild not loaded"}, status=500)
+        accept_role_id = await zeroapps.config.guild(guild).accept_role()
+        accept_role = guild.get_role(accept_role_id)
+        total = accepted = rejected = waiting = 0
 
-            # Get both active and archived for this guild
-            guild_apps = all_apps.get(GUILD_ID) or all_apps.get(str(GUILD_ID), {})
-            guild_archived = archived_apps.get(GUILD_ID) or archived_apps.get(str(GUILD_ID), {})
+        for member in guild.members:
+            application = await zeroapps.config.member(member).application()
+            decline_reason = await zeroapps.config.member(member).decline_reason()
+            if application:
+                waiting += 1
+                total += 1
+            elif decline_reason:
+                rejected += 1
+                total += 1
+            elif accept_role and accept_role in member.roles:
+                accepted += 1
+                total += 1
 
-            # Combine all applications
-            app_list = list(guild_apps.values()) + list(guild_archived.values())
-        except Exception as e:
-            return web.json_response({"error": f"Failed to fetch applications: {e}"}, status=500)
-
-        total = len(app_list)
-        accepted = sum(1 for app in app_list if app.get("status") == "accepted")
-        rejected = sum(1 for app in app_list if app.get("status") == "rejected")
         return web.json_response({
             "total": total,
             "accepted": accepted,
-            "rejected": rejected
+            "rejected": rejected,
+            "waiting": waiting
         })
 
     # --- Listeners ---
