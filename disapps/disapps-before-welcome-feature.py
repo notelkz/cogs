@@ -22,63 +22,6 @@ class DeclineModal(discord.ui.Modal):
         await interaction.response.defer()
         self.decline_reason = self.children[0].value
 
-class WelcomeButtons(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="Create New Application", style=discord.ButtonStyle.green)
-    async def create_application(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if user already has an application
-        applications = await self.cog.config.guild(interaction.guild).applications()
-        existing_application = applications.get(str(interaction.user.id), {})
-        
-        if existing_application:
-            channel_id = existing_application.get('channel_id')
-            if channel_id:
-                channel = interaction.guild.get_channel(channel_id)
-                if channel:
-                    # Restore channel from archive if needed
-                    archive_id = await self.cog.config.guild(interaction.guild).archive_category()
-                    if channel.category_id == archive_id:
-                        await self.cog.restore_channel(channel, interaction.guild, interaction.user)
-                        await interaction.response.send_message(
-                            f"Your existing application channel has been restored: {channel.mention}",
-                            ephemeral=True
-                        )
-                    else:
-                        await interaction.response.send_message(
-                            f"You already have an active application channel: {channel.mention}",
-                            ephemeral=True
-                        )
-                    return
-
-        # Create new application channel
-        await self.cog.on_member_join(interaction.user)
-        await interaction.response.send_message(
-            "Creating your application channel...",
-            ephemeral=True
-        )
-
-    @discord.ui.button(label="Contact Moderator", style=discord.ButtonStyle.red)
-    async def contact_mod(self, interaction: discord.Interaction, button: discord.ui.Button):
-        mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
-        mod_role = interaction.guild.get_role(mod_role_id)
-        
-        # Check for online moderators
-        online_mods = [member for member in interaction.guild.members 
-                      if mod_role in member.roles and member.status != discord.Status.offline]
-        
-        if online_mods:
-            mentions = " ".join([mod.mention for mod in online_mods])
-            await interaction.response.send_message(
-                f"{mentions}\n{interaction.user.mention} needs assistance!"
-            )
-        else:
-            await interaction.response.send_message(
-                f"{mod_role.mention} - No moderators are currently online. "
-                f"{interaction.user.mention} needs assistance!"
-            )
 class ModButtons(discord.ui.View):
     def __init__(self, cog, applicant):
         super().__init__(timeout=None)
@@ -86,7 +29,6 @@ class ModButtons(discord.ui.View):
         self.applicant = applicant
         self.accept_button.disabled = False
         self.decline_button.disabled = False
-
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.green)
     async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.manage_roles:
@@ -161,6 +103,7 @@ class ModButtons(discord.ui.View):
             applications[str(self.applicant.id)]['declines'] = declines
             applications[str(self.applicant.id)]['status'] = 'declined'
             await self.cog.config.guild(interaction.guild).applications.set(applications)
+
             try:
                 # Handle previously accepted members who are now declined
                 if previously_accepted:
@@ -343,6 +286,48 @@ class ApplicationModal(discord.ui.Modal):
                 f"{mod_role.mention}\nNew application submitted by {interaction.user.mention} (No moderators are currently online)"
             )
 
+class ApplicationButtons(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.contact_mod_used = False
+        self.message = None
+
+    @discord.ui.button(label="Apply Now", style=discord.ButtonStyle.green)
+    async def apply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.message:
+            self.message = interaction.message
+        
+        modal = ApplicationModal(self)
+        await interaction.response.send_modal(modal)
+        button.disabled = True
+        await interaction.message.edit(view=self)
+
+    @discord.ui.button(label="Contact Mod", style=discord.ButtonStyle.red)
+    async def contact_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.message:
+            self.message = interaction.message
+            
+        if self.contact_mod_used:
+            await interaction.response.send_message("This button has already been used.", ephemeral=True)
+            return
+
+        mod_role_id = await self.cog.config.guild(interaction.guild).mod_role()
+        mod_role = interaction.guild.get_role(mod_role_id)
+        
+        # Check for online moderators
+        online_mods = [member for member in interaction.guild.members 
+                      if mod_role in member.roles and member.status != discord.Status.offline]
+        
+        if online_mods:
+            mentions = " ".join([mod.mention for mod in online_mods])
+            await interaction.response.send_message(f"Online moderators: {mentions}")
+        else:
+            await interaction.response.send_message(f"{mod_role.mention} - No moderators are currently online.")
+
+        self.contact_mod_used = True
+        button.disabled = True
+        await interaction.message.edit(view=self)
 class DisApps(commands.Cog):
     """Discord Applications Management System"""
 
@@ -360,43 +345,6 @@ class DisApps(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    @commands.group(aliases=["da"])
-    @checks.admin_or_permissions(administrator=True)
-    async def disapps(self, ctx):
-        """Discord Applications Management Commands"""
-        pass
-
-    @disapps.command()
-    @checks.admin_or_permissions(administrator=True)
-    async def welcome(self, ctx, channel: discord.TextChannel):
-        """Set up a welcome message with application buttons in the specified channel."""
-        
-        # Create the embed
-        embed = discord.Embed(
-            title="Welcome",
-            description="Please use the button below to create a new application if one wasn't created for you automatically upon you joining the Discord.\n\nThis can also be used if <@&1274512593842606080> wish to join and become a full <@&1018116224158273567>.",
-            color=6962372,
-            timestamp=datetime.fromisoformat("2025-05-08T12:07:00.000Z")
-        )
-        
-        # Set author
-        embed.set_author(
-            name="Zero Lives Left",
-            url="http://zerolivesleft.net"
-        )
-        
-        # Set thumbnail
-        embed.set_thumbnail(url="https://notelkz.net/images/zerosmall.png")
-        
-        # Set footer
-        embed.set_footer(text="If you have any issues, please use the Contact Moderator button.")
-
-        # Send the welcome message with buttons
-        view = WelcomeButtons(self)
-        await channel.send(embed=embed, view=view)
-        await ctx.send(f"Welcome message set up in {channel.mention}")
-
-    # [Your existing methods remain unchanged: move_to_archive, restore_channel, setup, unban, checkban, etc.]
     async def move_to_archive(self, channel, guild, reason=""):
         """Helper function to move channels to archive"""
         archive_id = await self.config.guild(guild).archive_category()
@@ -436,8 +384,118 @@ class DisApps(commands.Cog):
             
             await channel.send(f"Channel restored for {member.mention}")
 
+    @commands.group(aliases=["da"])
+    @checks.admin_or_permissions(administrator=True)
+    async def disapps(self, ctx):
+        """Discord Applications Management Commands"""
+        pass
+
     @disapps.command()
     @checks.admin_or_permissions(administrator=True)
+    async def unban(self, ctx, user: discord.User):
+        """Unban a user from the application system, allowing them to apply again."""
+        guild = ctx.guild
+        applications = await self.config.guild(guild).applications()
+        
+        if str(user.id) not in applications:
+            await ctx.send(f"{user.mention} has no application history in this server.")
+            return
+            
+        # Completely reset their application status while preserving the channel_id if it exists
+        channel_id = applications[str(user.id)].get('channel_id', None)
+        applications[str(user.id)] = {
+            'channel_id': channel_id,
+            'status': 'none',
+            'declines': 0,
+            'previously_accepted': False,
+            'timestamp': datetime.utcnow().timestamp()
+        }
+        await self.config.guild(guild).applications.set(applications)
+        
+        # Create confirmation embed
+        embed = discord.Embed(
+            title="Application Ban Removed",
+            description=f"{user.mention} has been unbanned from the application system.\nThey can now join and apply again.",
+            color=discord.Color.green(),
+            timestamp=datetime.utcnow()
+        )
+        embed.add_field(name="Moderator", value=ctx.author.mention)
+        embed.add_field(name="Previous Status", value="Reset to None", inline=True)
+        embed.add_field(name="Declines Reset", value="Yes", inline=True)
+        
+        await ctx.send(embed=embed)
+        
+        # Try to DM the user
+        try:
+            await user.send(f"You have been unbanned from applying to {guild.name}. You may now join and submit a new application.")
+        except discord.Forbidden:
+            await ctx.send("Could not DM the user, but they have been unbanned from the application system.")
+
+    @disapps.command()
+    @checks.admin_or_permissions(administrator=True)
+    async def checkban(self, ctx, user: discord.User):
+        """Check if a user is banned from applying and see their application history."""
+        guild = ctx.guild
+        applications = await self.config.guild(guild).applications()
+        
+        if str(user.id) not in applications:
+            await ctx.send(f"{user.mention} has no application history in this server.")
+            return
+            
+        user_app = applications[str(user.id)]
+        
+        # Create status embed
+        embed = discord.Embed(
+            title="Application Status Check",
+            description=f"Application history for {user.mention}",
+            color=discord.Color.blue(),
+            timestamp=datetime.utcnow()
+        )
+        
+        # Add application details
+        embed.add_field(
+            name="Current Status", 
+            value=user_app.get('status', 'none').title(),
+            inline=False
+        )
+        embed.add_field(
+            name="Times Declined",
+            value=str(user_app.get('declines', 0)),
+            inline=True
+        )
+        embed.add_field(
+            name="Previously Accepted",
+            value="Yes" if user_app.get('previously_accepted', False) else "No",
+            inline=True
+        )
+        
+        # Calculate if they're banned
+        is_banned = (user_app.get('declines', 0) >= 2 or 
+                    (user_app.get('status') not in ['accepted', 'none']))
+        
+        ban_reason = ""
+        if is_banned:
+            if user_app.get('declines', 0) >= 2:
+                ban_reason = "Too many declined applications"
+            elif user_app.get('status') not in ['accepted', 'none']:
+                ban_reason = f"Left during {user_app.get('status')} status"
+        
+        embed.add_field(
+            name="Can Apply?",
+            value=f"No - {ban_reason}" if is_banned else "Yes",
+            inline=False
+        )
+        
+        if is_banned:
+            embed.add_field(
+                name="Unban Command",
+                value=f"Use `{ctx.prefix}disapps unban @{user.name}` to allow this user to apply again.",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+
+    @disapps.command()
     async def setup(self, ctx):
         """Setup the applications system"""
         guild = ctx.guild
@@ -664,4 +722,3 @@ class DisApps(commands.Cog):
         """Test the application system with a fake member join"""
         await self.on_member_join(ctx.author)
         await ctx.send("Test application created!")
-
