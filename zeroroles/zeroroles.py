@@ -75,18 +75,18 @@ ROLE_MENUS = {
     },
 }
 
-class RolesView(discord.ui.View):
+class ZeroRolesView(discord.ui.View):
     def __init__(self, roles, style):
         super().__init__(timeout=None)
         for role in roles:
-            self.add_item(RoleButton(role, style))
+            self.add_item(ZeroRoleButton(role, style))
 
-class RoleButton(discord.ui.Button):
+class ZeroRoleButton(discord.ui.Button):
     def __init__(self, role_info, style):
         super().__init__(
             label=role_info["label"],
             style=style,
-            custom_id=f"rolesel_{role_info['role_id']}",
+            custom_id=f"zerorolesel_{role_info['role_id']}",
         )
         self.role_id = role_info["role_id"]
 
@@ -100,51 +100,51 @@ class RoleButton(discord.ui.Button):
 
         if role in member.roles:
             try:
-                await member.remove_roles(role, reason="Role selector button")
+                await member.remove_roles(role, reason="ZeroRoles role button")
                 await interaction.response.send_message(f"Removed {role.name} role.", ephemeral=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I don't have permission to remove that role.", ephemeral=True)
         else:
             try:
-                await member.add_roles(role, reason="Role selector button")
+                await member.add_roles(role, reason="ZeroRoles role button")
                 await interaction.response.send_message(f"Added {role.name} role.", ephemeral=True)
             except discord.Forbidden:
                 await interaction.response.send_message("I don't have permission to add that role.", ephemeral=True)
 
-class RoleSelector(commands.Cog):
-    """Multi-section Role Selector"""
+class ZeroRoles(commands.Cog):
+    """Multi-section Role Selector (ZeroRoles)"""
 
     def __init__(self, bot: Red):
         self.bot = bot
 
     @commands.admin_or_permissions(manage_guild=True)
     @commands.group()
-    async def roles(self, ctx: commands.Context):
-        """Send a role selector menu. Usage: [p]roles <section>"""
+    async def zeroroles(self, ctx: commands.Context):
+        """Send a role selector menu. Usage: [p]zeroroles <section>"""
         if ctx.invoked_subcommand is None:
             await ctx.send("Please specify a section: battlefield, fps, hero, extraction, br, others.")
 
-    @roles.command()
+    @zeroroles.command()
     async def battlefield(self, ctx: commands.Context):
         await self._send_menu(ctx, "battlefield")
 
-    @roles.command()
+    @zeroroles.command()
     async def fps(self, ctx: commands.Context):
         await self._send_menu(ctx, "fps")
 
-    @roles.command()
+    @zeroroles.command()
     async def hero(self, ctx: commands.Context):
         await self._send_menu(ctx, "hero")
 
-    @roles.command()
+    @zeroroles.command()
     async def extraction(self, ctx: commands.Context):
         await self._send_menu(ctx, "extraction")
 
-    @roles.command()
+    @zeroroles.command()
     async def br(self, ctx: commands.Context):
         await self._send_menu(ctx, "br")
 
-    @roles.command()
+    @zeroroles.command()
     async def others(self, ctx: commands.Context):
         await self._send_menu(ctx, "others")
 
@@ -169,8 +169,8 @@ class RoleSelector(commands.Cog):
         await ctx.send(
             embed=embed,
             file=file,
-            view=RolesView(config["roles"], config["style"])
+            view=ZeroRolesView(config["roles"], config["style"])
         )
 
 async def setup(bot: Red):
-    await bot.add_cog(RoleSelector(bot))
+    await bot.add_cog(ZeroRoles(bot))
