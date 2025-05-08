@@ -343,6 +343,97 @@ class GameUpdates(commands.Cog):
         pass
 
     @gameupdates.command()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def setupall(self, ctx, channel_or_thread_or_forum: discord.abc.GuildChannel):
+        """
+        Set up ALL available games to post updates in a channel, thread, or forum.
+        
+        This will configure every built-in and custom game to post in the specified destination.
+        Use with caution as this could result in many updates being posted.
+        
+        Example: [p]gameupdates setupall #game-updates
+        """
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        games = await self.config.guild(ctx.guild).games()
+        
+        # Get all available games (built-in + custom)
+        all_games = list(GAME_FEEDS.keys()) + list(custom_feeds.keys())
+        all_games = sorted(set(all_games))  # Remove duplicates and sort
+        
+        if not all_games:
+            await ctx.send("No games available to set up.")
+            return
+        
+        # Determine the type of channel provided
+        if isinstance(channel_or_thread_or_forum, discord.TextChannel):
+            target_type = "channel"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": target_id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
+        elif isinstance(channel_or_thread_or_forum, discord.Thread):
+            target_type = "thread"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": None, "thread": target_id, "forum": None, "forum_thread": None, "last_update": None}
+        elif isinstance(channel_or_thread_or_forum, discord.ForumChannel):
+            target_type = "forum"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": None, "thread": None, "forum": target_id, "forum_thread": None, "last_update": None}
+        else:
+            await ctx.send("Invalid channel type. Please provide a text channel, thread, or forum channel.")
+            return
+        
+        # Confirm with the user before proceeding
+        game_count = len(all_games)
+        confirm_msg = await ctx.send(
+            f"⚠️ **Warning**: You are about to set up **{game_count} games** to post updates in {channel_or_thread_or_forum.mention}.\n"
+            f"This could result in many notifications. Are you sure you want to continue?\n\n"
+            f"React with ✅ to confirm or ❌ to cancel."
+        )
+        
+        # Add reactions
+        await confirm_msg.add_reaction("✅")
+        await confirm_msg.add_reaction("❌")
+        
+        def check(reaction, user):
+            return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+        
+        try:
+            reaction, user = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
+            
+            if str(reaction.emoji) == "❌":
+                await ctx.send("Setup cancelled.")
+                return
+                
+        except asyncio.TimeoutError:
+            await ctx.send("Setup timed out. No changes were made.")
+            return
+        
+        # Process setup for all games
+        setup_count = 0
+        
+        # Create a progress message
+        progress_msg = await ctx.send(f"Setting up games... (0/{game_count})")
+        
+        for i, game_name in enumerate(all_games):
+            # Update every 5 games to avoid rate limits
+            if i % 5 == 0 and i > 0:
+                await progress_msg.edit(content=f"Setting up games... ({i}/{game_count})")
+            
+            games[game_name] = target_dict.copy()  # Use a copy to avoid reference issues
+            setup_count += 1
+        
+        # Save the updated games configuration
+        await self.config.guild(ctx.guild).games.set(games)
+        
+        # Final update
+        await progress_msg.edit(content=f"Setting up games... ({game_count}/{game_count}) ✅")
+        
+        # Send completion message
+        await ctx.send(
+            f"✅ Successfully set up **{setup_count} games** to post updates in the {target_type} {channel_or_thread_or_forum.mention}.\n"
+            f"You can use `{ctx.prefix}gameupdates list` to see all configured games."
+        )
+
+    @gameupdates.command()
     @commands.is_owner()
     async def forceupdate(self, ctx, game_name: GameConverter = None):
         """
@@ -576,54 +667,59 @@ class GameUpdates(commands.Cog):
             
             if current_part:
                 parts.append(current_part)
-                
+            
             for part in parts:
                 await ctx.send(part)
         else:
             await ctx.send(msg)
 
     @gameupdates.command()
+    @commands.has_guild_permissions(manage_channels=True)
     async def setup(self, ctx, game_name: GameConverter, channel_or_thread_or_forum: discord.abc.GuildChannel):
         """
-        Set up a game to post updates in a channel, thread, or forum.
+        Set a channel, thread, or forum for patch notes.
         
         Example: [p]gameupdates setup "Squad" #squad-updates
         You can also mention a user to use their name as the game name: [p]gameupdates setup @Squad #squad-updates
         """
-        game_name = game_name.lower()
         custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        games = await self.config.guild(ctx.guild).games()
+        
+        game_name = game_name.lower()
         
         # Check if game exists (either built-in or custom)
         if game_name not in GAME_FEEDS and game_name not in custom_feeds:
             await ctx.send("Game not supported. Use `[p]gameupdates listgames` to see available games.")
             return
-            
-        games = await self.config.guild(ctx.guild).games()
         
         # Determine the type of channel provided
         if isinstance(channel_or_thread_or_forum, discord.TextChannel):
-            games[game_name] = {"channel": channel_or_thread_or_forum.id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
             target_type = "channel"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": target_id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
         elif isinstance(channel_or_thread_or_forum, discord.Thread):
-            games[game_name] = {"channel": None, "thread": channel_or_thread_or_forum.id, "forum": None, "forum_thread": None, "last_update": None}
             target_type = "thread"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": None, "thread": target_id, "forum": None, "forum_thread": None, "last_update": None}
         elif isinstance(channel_or_thread_or_forum, discord.ForumChannel):
-            games[game_name] = {"channel": None, "thread": None, "forum": channel_or_thread_or_forum.id, "forum_thread": None, "last_update": None}
             target_type = "forum"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": None, "thread": None, "forum": target_id, "forum_thread": None, "last_update": None}
         else:
             await ctx.send("Invalid channel type. Please provide a text channel, thread, or forum channel.")
             return
-            
+        
+        games[game_name] = target_dict
         await self.config.guild(ctx.guild).games.set(games)
         await ctx.send(f"Patch notes for **{game_name.title()}** will be posted in the {target_type} {channel_or_thread_or_forum.mention}.")
 
     @gameupdates.command()
+    @commands.has_guild_permissions(manage_channels=True)
     async def setupmultiple(self, ctx, channel_or_thread_or_forum: discord.abc.GuildChannel, *game_names: GameConverter):
         """
         Set up multiple games to post updates in a channel, thread, or forum.
         
-        Example: [p]gameupdates setupmultiple #updates "Squad" "Battlefield 2042" "Hell Let Loose"
-        You can also mention users: [p]gameupdates setupmultiple #updates @Squad @Battlefield
+        Example: [p]gameupdates setupmultiple #game-updates "Squad" "Battlefield 2042" "Hell Let Loose"
         """
         if not game_names:
             await ctx.send("Please provide at least one game name.")
@@ -679,6 +775,97 @@ class GameUpdates(commands.Cog):
             response.append("Use `[p]gameupdates listgames` to see available games.")
         
         await ctx.send("\n".join(response))
+
+    @gameupdates.command()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def setupall(self, ctx, channel_or_thread_or_forum: discord.abc.GuildChannel):
+        """
+        Set up ALL available games to post updates in a channel, thread, or forum.
+        
+        This will configure every built-in and custom game to post in the specified destination.
+        Use with caution as this could result in many updates being posted.
+        
+        Example: [p]gameupdates setupall #game-updates
+        """
+        custom_feeds = await self.config.guild(ctx.guild).custom_feeds()
+        games = await self.config.guild(ctx.guild).games()
+        
+        # Get all available games (built-in + custom)
+        all_games = list(GAME_FEEDS.keys()) + list(custom_feeds.keys())
+        all_games = sorted(set(all_games))  # Remove duplicates and sort
+        
+        if not all_games:
+            await ctx.send("No games available to set up.")
+            return
+        
+        # Determine the type of channel provided
+        if isinstance(channel_or_thread_or_forum, discord.TextChannel):
+            target_type = "channel"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": target_id, "thread": None, "forum": None, "forum_thread": None, "last_update": None}
+        elif isinstance(channel_or_thread_or_forum, discord.Thread):
+            target_type = "thread"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": None, "thread": target_id, "forum": None, "forum_thread": None, "last_update": None}
+        elif isinstance(channel_or_thread_or_forum, discord.ForumChannel):
+            target_type = "forum"
+            target_id = channel_or_thread_or_forum.id
+            target_dict = {"channel": None, "thread": None, "forum": target_id, "forum_thread": None, "last_update": None}
+        else:
+            await ctx.send("Invalid channel type. Please provide a text channel, thread, or forum channel.")
+            return
+        
+        # Confirm with the user before proceeding
+        game_count = len(all_games)
+        confirm_msg = await ctx.send(
+            f"⚠️ **Warning**: You are about to set up **{game_count} games** to post updates in {channel_or_thread_or_forum.mention}.\n"
+            f"This could result in many notifications. Are you sure you want to continue?\n\n"
+            f"React with ✅ to confirm or ❌ to cancel."
+        )
+        
+        # Add reactions
+        await confirm_msg.add_reaction("✅")
+        await confirm_msg.add_reaction("❌")
+        
+        def check(reaction, user):
+            return user == ctx.author and str(reaction.emoji) in ["✅", "❌"] and reaction.message.id == confirm_msg.id
+        
+        try:
+            reaction, user = await self.bot.wait_for("reaction_add", timeout=60.0, check=check)
+            
+            if str(reaction.emoji) == "❌":
+                await ctx.send("Setup cancelled.")
+                return
+                
+        except asyncio.TimeoutError:
+            await ctx.send("Setup timed out. No changes were made.")
+            return
+        
+        # Process setup for all games
+        setup_count = 0
+        
+        # Create a progress message
+        progress_msg = await ctx.send(f"Setting up games... (0/{game_count})")
+        
+        for i, game_name in enumerate(all_games):
+            # Update every 5 games to avoid rate limits
+            if i % 5 == 0 and i > 0:
+                await progress_msg.edit(content=f"Setting up games... ({i}/{game_count})")
+            
+            games[game_name] = target_dict.copy()  # Use a copy to avoid reference issues
+            setup_count += 1
+        
+        # Save the updated games configuration
+        await self.config.guild(ctx.guild).games.set(games)
+        
+        # Final update
+        await progress_msg.edit(content=f"Setting up games... ({game_count}/{game_count}) ✅")
+        
+        # Send completion message
+        await ctx.send(
+            f"✅ Successfully set up **{setup_count} games** to post updates in the {target_type} {channel_or_thread_or_forum.mention}.\n"
+            f"You can use `{ctx.prefix}gameupdates list` to see all configured games."
+        )
 
     @gameupdates.command()
     @commands.has_guild_permissions(manage_channels=True)
