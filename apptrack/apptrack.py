@@ -1,16 +1,11 @@
 from redbot.core import commands, Config
 from redbot.core.bot import Red
-from typing import List, Optional
+from typing import List
 import discord
 import datetime
 import asyncio
 import logging
-from discord.ui import Select, View, Button
-
-# --- NEW FEATURE: apptest ---
-import re
-
-# --- END NEW FEATURE ---
+from discord.ui import Select, View
 
 class ActivitySelect(Select):
     def __init__(self, activities: List[str]):
@@ -50,103 +45,9 @@ class ActivitySelectView(View):
         self.original_activities = {f"{idx}:{activity[:90]}": activity for idx, activity in enumerate(activities)}
         self.add_item(ActivitySelect(activities))
 
-# --- NEW FEATURE: apptest ---
-class AppTestView(View):
-    def __init__(self, cog, guild: discord.Guild, user: discord.Member, channel: discord.TextChannel, embed: discord.Embed, thumbnail_file: Optional[discord.File]):
-        super().__init__(timeout=180)
-        self.cog = cog
-        self.guild = guild
-        self.user = user
-        self.channel = channel
-        self.embed = embed
-        self.thumbnail_file = thumbnail_file
-
-        self.add_item(CreateApplicationButton(cog, guild, user, embed, thumbnail_file))
-        self.add_item(ContactModeratorButton(cog, guild, user))
-
-class CreateApplicationButton(Button):
-    def __init__(self, cog, guild, user, embed, thumbnail_file):
-        super().__init__(label="Create New Application", style=discord.ButtonStyle.success, custom_id="create_application")
-        self.cog = cog
-        self.guild = guild
-        self.user = user
-        self.embed = embed
-        self.thumbnail_file = thumbnail_file
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        # Check if user already has an application channel
-        # We'll use a naming convention: "application-USERID"
-        existing_channel = discord.utils.get(self.guild.text_channels, name=f"application-{self.user.id}")
-        if existing_channel:
-            # If archived (category named "Archive" or "Archived"), move out
-            if existing_channel.category and "archive" in existing_channel.category.name.lower():
-                # Find a category to move to (first non-archive, or uncategorized)
-                for cat in self.guild.categories:
-                    if "archive" not in cat.name.lower():
-                        await existing_channel.edit(category=cat)
-                        break
-                else:
-                    await existing_channel.edit(category=None)
-            # Ensure user has permission to view/send
-            overwrite = existing_channel.overwrites_for(self.user)
-            changed = False
-            if not overwrite.view_channel or not overwrite.send_messages:
-                overwrite.view_channel = True
-                overwrite.send_messages = True
-                await existing_channel.set_permissions(self.user, overwrite=overwrite)
-                changed = True
-            await existing_channel.send(f"{self.user.mention} Your application channel has been reopened.")
-            await existing_channel.send(embed=self.embed, file=self.thumbnail_file if self.thumbnail_file else None)
-            await interaction.followup.send(f"Your application channel has been reopened: {existing_channel.mention}", ephemeral=True)
-        else:
-            # Create a new channel
-            overwrites = {
-                self.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-                self.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            }
-            # Optionally, allow mods to see
-            mod_role = discord.utils.get(self.guild.roles, id=1274512593842606080)
-            if mod_role:
-                overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-            new_channel = await self.guild.create_text_channel(
-                name=f"application-{self.user.id}",
-                overwrites=overwrites,
-                topic=f"Application channel for {self.user} ({self.user.id})"
-            )
-            await new_channel.send(f"{self.user.mention} Welcome to your application channel.")
-            await new_channel.send(embed=self.embed, file=self.thumbnail_file if self.thumbnail_file else None)
-            await interaction.followup.send(f"Your application channel has been created: {new_channel.mention}", ephemeral=True)
-
-class ContactModeratorButton(Button):
-    def __init__(self, cog, guild, user):
-        super().__init__(label="Contact Moderator", style=discord.ButtonStyle.primary, custom_id="contact_moderator")
-        self.cog = cog
-        self.guild = guild
-        self.user = user
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        # Find online moderators (role id 1274512593842606080)
-        mod_role = discord.utils.get(self.guild.roles, id=1274512593842606080)
-        if not mod_role:
-            await interaction.followup.send("Moderator role not found.", ephemeral=True)
-            return
-        online_mods = [m for m in mod_role.members if m.status in (discord.Status.online, discord.Status.idle, discord.Status.dnd) and not m.bot]
-        if online_mods:
-            mentions = " ".join(m.mention for m in online_mods)
-            await interaction.channel.send(f"{mentions} {self.user.mention} is requesting moderator assistance.", allowed_mentions=discord.AllowedMentions(users=True, roles=True))
-            await interaction.followup.send("A moderator has been pinged.", ephemeral=True)
-        else:
-            # Ping the role (all online mods)
-            await interaction.channel.send(f"{mod_role.mention} {self.user.mention} is requesting moderator assistance.", allowed_mentions=discord.AllowedMentions(users=True, roles=True))
-            await interaction.followup.send("All moderators have been pinged.", ephemeral=True)
-
-# --- END NEW FEATURE ---
-
 class AppTrack(commands.Cog):
     """Track Discord Activities and assign roles automatically.
-
+    
     Users can be required to have a specific role to receive automatic role assignments.
     Use !at setrequired to set up this requirement.
     """
@@ -313,7 +214,7 @@ class AppTrack(commands.Cog):
         for activity_name, first_seen in sorted_activities:
             if field_count == 25:
                 embeds.append(current_embed)
-                current_embed = discord.Embed
+                current_embed = discord.Embed(
                     title="Discovered Discord Activities (Continued)",
                     color=discord.Color.blue()
                 )
@@ -513,70 +414,3 @@ class AppTrack(commands.Cog):
             for activity_name in after_activities:
                 if activity_name not in discovered:
                     discovered[activity_name] = str(datetime.datetime.now())
-
-    # --- NEW FEATURE: apptest ---
-    @commands.command(name="apptest")
-    @commands.guild_only()
-    async def apptest(self, ctx: commands.Context, channel_mention: str = None):
-        """
-        Send the application embed to the specified channel (by hashtag mention).
-        Usage: !apptest #welcome
-        """
-        if not channel_mention:
-            await ctx.send("Please specify a channel (e.g. `#welcome`).")
-            return
-
-        # Extract channel ID from mention
-        match = re.match(r"<#(\d+)>", channel_mention)
-        if match:
-            channel_id = int(match.group(1))
-        elif channel_mention.startswith("#"):
-            # Try to find by name
-            name = channel_mention.lstrip("#")
-            channel = discord.utils.get(ctx.guild.text_channels, name=name)
-            if not channel:
-                await ctx.send(f"Channel {channel_mention} not found.")
-                return
-            channel_id = channel.id
-        else:
-            await ctx.send("Please mention a channel (e.g. `#welcome`).")
-            return
-
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel or not isinstance(channel, discord.TextChannel):
-            await ctx.send("Channel not found or is not a text channel.")
-            return
-
-        # Build the embed as per your JSON
-        embed = discord.Embed(
-            title="Welcome",
-            description="Please use the button below to create a new application if one wasn't created for you automatically upon you joining the Discord.\n\nThis can also be used if <@&1274512593842606080> wish to join and become a full <@&1018116224158273567>.",
-            color=6962372,
-            timestamp=datetime.datetime(2025, 5, 8, 12, 7, 0)
-        )
-        embed.set_footer(text="If you have any issues, please use the Contact Moderator button.")
-        embed.set_author(name="Zero Lives Left", url="http://zerolivesleft.net")
-        embed.set_thumbnail(url="attachment://zerosmall.png")
-
-        # Prepare the thumbnail file (if you want to send it as an attachment)
-        try:
-            thumbnail_file = discord.File("zerosmall.png", filename="zerosmall.png")
-        except Exception:
-            thumbnail_file = None
-
-        view = AppTestView(self, ctx.guild, ctx.author, channel, embed, thumbnail_file)
-
-        # Send the embed and buttons to the target channel
-        await channel.send(
-            content="",
-            embed=embed,
-            view=view,
-            file=thumbnail_file if thumbnail_file else None
-        )
-        await ctx.send(f"Embed sent to {channel.mention}.")
-
-    # --- END NEW FEATURE ---
-
-# End of cog
-def setup(bot):
-    bot.add_cog(AppTrack(bot))
