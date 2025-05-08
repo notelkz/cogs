@@ -1,10 +1,15 @@
 from redbot.core import commands
 from aiohttp import web
+from datetime import datetime, timedelta
+import json
+import os
 
 GUILD_ID = 995753617611042916  # Your Guild ID
+VOICE_DATA_FILE = "voice_data.json"
+MESSAGE_DATA_FILE = "message_data.json"
 
 class MemberCount(commands.Cog):
-    """Expose member count via HTTP endpoint."""
+    """Expose member count, role count, voice minutes, and message count via HTTP endpoints."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -12,31 +17,121 @@ class MemberCount(commands.Cog):
         self.runner = None
         self.site = None
 
+        # Voice tracking
+        self.voice_sessions = {}  # user_id: join_time
+        self.voice_minutes = []   # list of [user_id, join_time, leave_time]
+        self._load_voice_data()
+
+        # Message tracking
+        self.message_log = []  # list of [timestamp, user_id]
+        self._load_message_data()
+
+    # --- Persistence ---
+    def _load_voice_data(self):
+        if os.path.exists(VOICE_DATA_FILE):
+            with open(VOICE_DATA_FILE, "r") as f:
+                self.voice_minutes = json.load(f)
+        else:
+            self.voice_minutes = []
+
+    def _save_voice_data(self):
+        with open(VOICE_DATA_FILE, "w") as f:
+            json.dump(self.voice_minutes, f)
+
+    def _load_message_data(self):
+        if os.path.exists(MESSAGE_DATA_FILE):
+            with open(MESSAGE_DATA_FILE, "r") as f:
+                self.message_log = json.load(f)
+        else:
+            self.message_log = []
+
+    def _save_message_data(self):
+        with open(MESSAGE_DATA_FILE, "w") as f:
+            json.dump(self.message_log, f)
+
+    # --- Red events ---
     async def cog_load(self):
-        # Start webserver on cog load
         self.webserver = web.Application()
         self.webserver.router.add_get('/membercount', self.handle_membercount)
+        self.webserver.router.add_get('/rolecount', self.handle_rolecount)
+        self.webserver.router.add_get('/voiceminutes', self.handle_voiceminutes)
+        self.webserver.router.add_get('/messagecount', self.handle_messagecount)
         self.runner = web.AppRunner(self.webserver)
         await self.runner.setup()
-        # Use a port that's open on your server (e.g., 8080)
-        self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)
+        self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)  # Use your chosen port
         await self.site.start()
 
     async def cog_unload(self):
-        # Properly close the webserver
         if self.site:
             await self.site.stop()
         if self.runner:
             await self.runner.cleanup()
 
+    # --- Endpoints ---
     async def handle_membercount(self, request):
         guild = self.bot.get_guild(GUILD_ID)
-        headers = {
-            "Access-Control-Allow-Origin": "https://notelkz.net",  # Or set to your domain for more security
-            "Access-Control-Allow-Methods": "GET",
-            "Access-Control-Allow-Headers": "Content-Type",
-        }
         if guild:
             return web.json_response({"member_count": guild.member_count})
         else:
-            return web.json_response({"error": "Guild not found"}, status=404, headers=headers)
+            return web.json_response({"error": "Guild not found"}, status=404)
+
+    async def handle_rolecount(self, request):
+        guild = self.bot.get_guild(GUILD_ID)
+        params = request.rel_url.query
+        role_id = params.get("role_id")
+        if not role_id:
+            return web.json_response({"error": "Missing role_id"}, status=400)
+        try:
+            role_id = int(role_id)
+        except ValueError:
+            return web.json_response({"error": "Invalid role_id"}, status=400)
+        role = guild.get_role(role_id)
+        if not role:
+            return web.json_response({"error": "Role not found"}, status=404)
+        count = len(role.members)
+        return web.json_response({"role_member_count": count})
+
+    async def handle_voiceminutes(self, request):
+        now = datetime.utcnow().timestamp()
+        week_ago = now - 7 * 24 * 60 * 60
+        total_minutes = 0
+        for entry in self.voice_minutes:
+            user_id, join_time, leave_time = entry
+            if leave_time >= week_ago:
+                # Only count time within the last 7 days
+                start = max(join_time, week_ago)
+                end = leave_time
+                total_minutes += (end - start) / 60
+        return web.json_response({"voice_minutes_7d": int(total_minutes)})
+
+    async def handle_messagecount(self, request):
+        now = datetime.utcnow().timestamp()
+        week_ago = now - 7 * 24 * 60 * 60
+        count = sum(1 for ts, _ in self.message_log if ts >= week_ago)
+        return web.json_response({"messages_7d": count})
+
+    # --- Listeners ---
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member.guild.id != GUILD_ID:
+            return
+        now = datetime.utcnow().timestamp()
+        if before.channel is None and after.channel is not None:
+            # Joined voice
+            self.voice_sessions[member.id] = now
+        elif before.channel is not None and after.channel is None:
+            # Left voice
+            join_time = self.voice_sessions.pop(member.id, None)
+            if join_time:
+                self.voice_minutes.append([member.id, join_time, now])
+                self._save_voice_data()
+        # Optionally, prune old data here
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
+            now = datetime.utcnow().timestamp()
+            self.message_log.append([now, message.author.id])
+            self._save_message_data()
+        # Optionally, prune old data here
+
