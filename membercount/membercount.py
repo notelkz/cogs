@@ -7,7 +7,6 @@ import os
 GUILD_ID = 995753617611042916  # Your Guild ID
 ROLE_ID = 1018116224158273567  # The role you want to track
 
-# Use Red's data folder for this cog
 DATA_PATH = data_manager.cog_data_path(__file__)
 os.makedirs(DATA_PATH, exist_ok=True)
 VOICE_DATA_FILE = os.path.join(DATA_PATH, "voice_data.json")
@@ -58,11 +57,11 @@ class MemberCount(commands.Cog):
     async def cog_load(self):
         self.webserver = web.Application()
         self.webserver.router.add_get('/membercount', self.handle_membercount)
-        self.webserver.router.add_get('/rolecount', self.handle_rolecount)
-        self.webserver.router.add_get('/voiceminutes', self.handle_voiceminutes)
         self.webserver.router.add_get('/messagecount', self.handle_messagecount)
-        self.webserver.router.add_get('/appstats', self.handle_appstats)
+        self.webserver.router.add_get('/voiceminutes', self.handle_voiceminutes)
+        self.webserver.router.add_get('/rolecount', self.handle_rolecount)
         self.webserver.router.add_get('/rolevoiceminutes', self.handle_rolevoiceminutes)
+        self.webserver.router.add_get('/appstats', self.handle_appstats)
         self.runner = web.AppRunner(self.webserver)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)  # Use your chosen port
@@ -82,6 +81,24 @@ class MemberCount(commands.Cog):
         else:
             return web.json_response({"error": "Guild not found"}, status=404)
 
+    async def handle_messagecount(self, request):
+        now = datetime.utcnow().timestamp()
+        week_ago = now - 7 * 24 * 60 * 60
+        count = sum(1 for ts, _ in self.message_log if ts >= week_ago)
+        return web.json_response({"messages_7d": count})
+
+    async def handle_voiceminutes(self, request):
+        now = datetime.utcnow().timestamp()
+        week_ago = now - 7 * 24 * 60 * 60
+        total_minutes = 0
+        for entry in self.voice_minutes:
+            user_id, join_time, leave_time = entry
+            if leave_time >= week_ago:
+                start = max(join_time, week_ago)
+                end = leave_time
+                total_minutes += (end - start) / 60
+        return web.json_response({"voice_minutes_7d": int(total_minutes)})
+
     async def handle_rolecount(self, request):
         guild = self.bot.get_guild(GUILD_ID)
         params = request.rel_url.query
@@ -97,45 +114,6 @@ class MemberCount(commands.Cog):
             return web.json_response({"error": "Role not found"}, status=404)
         count = len(role.members)
         return web.json_response({"role_member_count": count})
-
-    async def handle_voiceminutes(self, request):
-        now = datetime.utcnow().timestamp()
-        week_ago = now - 7 * 24 * 60 * 60
-        total_minutes = 0
-        for entry in self.voice_minutes:
-            user_id, join_time, leave_time = entry
-            if leave_time >= week_ago:
-                # Only count time within the last 7 days
-                start = max(join_time, week_ago)
-                end = leave_time
-                total_minutes += (end - start) / 60
-        return web.json_response({"voice_minutes_7d": int(total_minutes)})
-
-    async def handle_messagecount(self, request):
-        now = datetime.utcnow().timestamp()
-        week_ago = now - 7 * 24 * 60 * 60
-        count = sum(1 for ts, _ in self.message_log if ts >= week_ago)
-        return web.json_response({"messages_7d": count})
-
-    async def handle_appstats(self, request):
-        zeroapps = self.bot.get_cog("ZeroApplications")
-        if not zeroapps:
-            return web.json_response({"error": "ZeroApplications cog not loaded"}, status=500)
-        try:
-            all_apps = zeroapps.applications  # {guild_id: {member_id: application_dict}}
-            # Try both int and str keys for guild_id
-            guild_apps = all_apps.get(GUILD_ID) or all_apps.get(str(GUILD_ID), {})
-            app_list = list(guild_apps.values())
-        except Exception as e:
-            return web.json_response({"error": f"Failed to fetch applications: {e}"}, status=500)
-        total = len(app_list)
-        accepted = sum(1 for app in app_list if app.get("status") == "accepted")
-        rejected = sum(1 for app in app_list if app.get("status") == "rejected")
-        return web.json_response({
-            "total": total,
-            "accepted": accepted,
-            "rejected": rejected
-        })
 
     async def handle_rolevoiceminutes(self, request):
         guild = self.bot.get_guild(GUILD_ID)
@@ -161,6 +139,25 @@ class MemberCount(commands.Cog):
             "role_voice_minutes_7d": int(total_minutes)
         })
 
+    async def handle_appstats(self, request):
+        zeroapps = self.bot.get_cog("ZeroApplications")
+        if not zeroapps:
+            return web.json_response({"error": "ZeroApplications cog not loaded"}, status=500)
+        try:
+            all_apps = zeroapps.applications  # {guild_id: {member_id: application_dict}}
+            guild_apps = all_apps.get(GUILD_ID) or all_apps.get(str(GUILD_ID), {})
+            app_list = list(guild_apps.values())
+        except Exception as e:
+            return web.json_response({"error": f"Failed to fetch applications: {e}"}, status=500)
+        total = len(app_list)
+        accepted = sum(1 for app in app_list if app.get("status") == "accepted")
+        rejected = sum(1 for app in app_list if app.get("status") == "rejected")
+        return web.json_response({
+            "total": total,
+            "accepted": accepted,
+            "rejected": rejected
+        })
+
     # --- Listeners ---
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
@@ -176,7 +173,6 @@ class MemberCount(commands.Cog):
             if join_time:
                 self.voice_minutes.append([member.id, join_time, now])
                 self._save_voice_data()
-        # Optionally, prune old data here
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -184,4 +180,27 @@ class MemberCount(commands.Cog):
             now = datetime.utcnow().timestamp()
             self.message_log.append([now, message.author.id])
             self._save_message_data()
-        # Optionally, prune old data here
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        if member.guild.id != GUILD_ID:
+            return
+        now = datetime.utcnow().timestamp()
+        if before.channel is None and after.channel is not None:
+            # Joined voice
+            self.voice_sessions[member.id] = now
+        elif before.channel is not None and after.channel is None:
+            # Left voice
+            join_time = self.voice_sessions.pop(member.id, None)
+            if join_time:
+                self.voice_minutes.append([member.id, join_time, now])
+                self._save_voice_data()
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
+            now = datetime.utcnow().timestamp()
+            self.message_log.append([now, message.author.id])
+            self._save_message_data()
+
+async def setup(bot):
+    await bot.add_cog(MemberCount(bot))
