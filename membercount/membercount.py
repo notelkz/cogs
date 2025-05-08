@@ -32,11 +32,11 @@ class MemberCount(commands.Cog):
     async def handle_membercount(self, request):
         guild = self.bot.get_guild(GUILD_ID)
         headers = {
-            "Access-Control-Allow-Origin": "*",  # Or set to your domain for more security
+            "Access-Control-Allow-Origin": "https://notelkz.net",  # Or set to your domain for more security
             "Access-Control-Allow-Methods": "GET",
             "Access-Control-Allow-Headers": "Content-Type",
         }
         if guild:
-            return web.json_response({"member_count": guild.member_count}, headers=headers)
+            return web.json_response({"member_count": guild.member_count})
         else:
             return web.json_response({"error": "Guild not found"}, status=404, headers=headers)
