@@ -1,5 +1,6 @@
 from redbot.core import commands, data_manager
 from aiohttp import web
+import aiohttp_cors
 from datetime import datetime
 import json
 import os
@@ -56,12 +57,36 @@ class MemberCount(commands.Cog):
     # --- Red events ---
     async def cog_load(self):
         self.webserver = web.Application()
+        # Register all your routes
         self.webserver.router.add_get('/membercount', self.handle_membercount)
         self.webserver.router.add_get('/messagecount', self.handle_messagecount)
         self.webserver.router.add_get('/voiceminutes', self.handle_voiceminutes)
         self.webserver.router.add_get('/rolecount', self.handle_rolecount)
         self.webserver.router.add_get('/rolevoiceminutes', self.handle_rolevoiceminutes)
         self.webserver.router.add_get('/appstats', self.handle_appstats)
+
+        # --- CORS setup ---
+        cors = aiohttp_cors.setup(
+            self.webserver,
+            defaults={
+                "*": aiohttp_cors.ResourceOptions(
+                    allow_credentials=True,
+                    expose_headers="*",
+                    allow_headers="*",
+                )
+                # If you want to restrict to your domain only, use:
+                # "https://notelkz.net": aiohttp_cors.ResourceOptions(
+                #     allow_credentials=True,
+                #     expose_headers="*",
+                #     allow_headers="*",
+                # )
+            },
+        )
+
+        # Apply CORS to all routes
+        for route in list(self.webserver.router.routes()):
+            cors.add(route)
+
         self.runner = web.AppRunner(self.webserver)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)  # Use your chosen port
@@ -159,27 +184,6 @@ class MemberCount(commands.Cog):
         })
 
     # --- Listeners ---
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
-        if member.guild.id != GUILD_ID:
-            return
-        now = datetime.utcnow().timestamp()
-        if before.channel is None and after.channel is not None:
-            # Joined voice
-            self.voice_sessions[member.id] = now
-        elif before.channel is not None and after.channel is None:
-            # Left voice
-            join_time = self.voice_sessions.pop(member.id, None)
-            if join_time:
-                self.voice_minutes.append([member.id, join_time, now])
-                self._save_voice_data()
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.guild and message.guild.id == GUILD_ID and not message.author.bot:
-            now = datetime.utcnow().timestamp()
-            self.message_log.append([now, message.author.id])
-            self._save_message_data()
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member.guild.id != GUILD_ID:
