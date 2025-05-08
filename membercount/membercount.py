@@ -19,7 +19,7 @@ class MemberCount(commands.Cog):
         self.runner = web.AppRunner(self.webserver)
         await self.runner.setup()
         # Use a port that's open on your server (e.g., 8080)
-        self.site = web.TCPSite(self.runner, '0.0.0.0', 8080)
+        self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)
         await self.site.start()
 
     async def cog_unload(self):
