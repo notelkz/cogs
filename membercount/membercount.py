@@ -69,17 +69,11 @@ class MemberCount(commands.Cog):
         cors = aiohttp_cors.setup(
             self.webserver,
             defaults={
-                "*": aiohttp_cors.ResourceOptions(
+                "https://notelkz.net": aiohttp_cors.ResourceOptions(
                     allow_credentials=True,
                     expose_headers="*",
                     allow_headers="*",
                 )
-                # If you want to restrict to your domain only, use:
-                # "https://notelkz.net": aiohttp_cors.ResourceOptions(
-                #     allow_credentials=True,
-                #     expose_headers="*",
-                #     allow_headers="*",
-                # )
             },
         )
 
@@ -169,11 +163,19 @@ class MemberCount(commands.Cog):
         if not zeroapps:
             return web.json_response({"error": "ZeroApplications cog not loaded"}, status=500)
         try:
+            # Get active and archived applications for the guild
             all_apps = zeroapps.applications  # {guild_id: {member_id: application_dict}}
+            archived_apps = getattr(zeroapps, "archived_applications", {})  # fallback to empty if not present
+
+            # Get both active and archived for this guild
             guild_apps = all_apps.get(GUILD_ID) or all_apps.get(str(GUILD_ID), {})
-            app_list = list(guild_apps.values())
+            guild_archived = archived_apps.get(GUILD_ID) or archived_apps.get(str(GUILD_ID), {})
+
+            # Combine all applications
+            app_list = list(guild_apps.values()) + list(guild_archived.values())
         except Exception as e:
             return web.json_response({"error": f"Failed to fetch applications: {e}"}, status=500)
+
         total = len(app_list)
         accepted = sum(1 for app in app_list if app.get("status") == "accepted")
         rejected = sum(1 for app in app_list if app.get("status") == "rejected")
