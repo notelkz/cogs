@@ -1,12 +1,16 @@
-from redbot.core import commands
+from redbot.core import commands, data_manager
 from aiohttp import web
 from datetime import datetime
 import json
 import os
 
 GUILD_ID = 995753617611042916  # Your Guild ID
-VOICE_DATA_FILE = "voice_data.json"
-MESSAGE_DATA_FILE = "message_data.json"
+
+# Use Red's data folder for this cog
+DATA_PATH = data_manager.cog_data_path(__file__)
+os.makedirs(DATA_PATH, exist_ok=True)
+VOICE_DATA_FILE = os.path.join(DATA_PATH, "voice_data.json")
+MESSAGE_DATA_FILE = os.path.join(DATA_PATH, "message_data.json")
 
 class MemberCount(commands.Cog):
     """Expose member count, role count, voice minutes, message count, and application stats via HTTP endpoints."""
@@ -134,7 +138,7 @@ class MemberCount(commands.Cog):
     # --- Listeners ---
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        if member.guild.id != 995753617611042916:
+        if member.guild.id != GUILD_ID:
             return
         now = datetime.utcnow().timestamp()
         if before.channel is None and after.channel is not None:
