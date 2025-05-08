@@ -5,6 +5,7 @@ import json
 import os
 
 GUILD_ID = 995753617611042916  # Your Guild ID
+ROLE_ID = 1018116224158273567  # The role you want to track
 
 # Use Red's data folder for this cog
 DATA_PATH = data_manager.cog_data_path(__file__)
@@ -61,6 +62,7 @@ class MemberCount(commands.Cog):
         self.webserver.router.add_get('/voiceminutes', self.handle_voiceminutes)
         self.webserver.router.add_get('/messagecount', self.handle_messagecount)
         self.webserver.router.add_get('/appstats', self.handle_appstats)
+        self.webserver.router.add_get('/rolevoiceminutes', self.handle_rolevoiceminutes)
         self.runner = web.AppRunner(self.webserver)
         await self.runner.setup()
         self.site = web.TCPSite(self.runner, '0.0.0.0', 8081)  # Use your chosen port
@@ -133,6 +135,30 @@ class MemberCount(commands.Cog):
             "total": total,
             "accepted": accepted,
             "rejected": rejected
+        })
+
+    async def handle_rolevoiceminutes(self, request):
+        guild = self.bot.get_guild(GUILD_ID)
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=404)
+        role = guild.get_role(ROLE_ID)
+        if not role:
+            return web.json_response({"error": "Role not found"}, status=404)
+        role_member_ids = {m.id for m in role.members}
+        member_count = len(role_member_ids)
+
+        now = datetime.utcnow().timestamp()
+        week_ago = now - 7 * 24 * 60 * 60
+        total_minutes = 0
+        for user_id, join_time, leave_time in self.voice_minutes:
+            if user_id in role_member_ids and leave_time >= week_ago:
+                start = max(join_time, week_ago)
+                end = leave_time
+                total_minutes += (end - start) / 60
+
+        return web.json_response({
+            "role_member_count": member_count,
+            "role_voice_minutes_7d": int(total_minutes)
         })
 
     # --- Listeners ---
