@@ -74,11 +74,6 @@ class MemberCount(commands.Cog):
             expose_headers="*",
             allow_headers="*",
         ),
-        "https://www.zerolivesleft.net": aiohttp_cors.ResourceOptions(
-            allow_credentials=True,
-            expose_headers="*",
-            allow_headers="*",
-        ),
     },
 )
 
