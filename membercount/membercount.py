@@ -67,15 +67,21 @@ class MemberCount(commands.Cog):
 
         # --- CORS setup ---
         cors = aiohttp_cors.setup(
-            self.webserver,
-            defaults={
-                "https://zerolivesleft.net": aiohttp_cors.ResourceOptions(
-                    allow_credentials=True,
-                    expose_headers="*",
-                    allow_headers="*",
-                )
-            },
-        )
+    self.webserver,
+    defaults={
+        "https://zerolivesleft.net": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        ),
+        "https://www.zerolivesleft.net": aiohttp_cors.ResourceOptions(
+            allow_credentials=True,
+            expose_headers="*",
+            allow_headers="*",
+        ),
+    },
+)
+
 
         # Apply CORS to all routes
         for route in list(self.webserver.router.routes()):
