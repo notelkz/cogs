@@ -25,5 +25,5 @@ class ZeroWPSync(commands.Cog):
                 if resp.status != 200:
                     print(f"Failed to sync roles for {after.id}: {resp.status}")
 
-def setup(bot):
+async def setup(bot):
     bot.add_cog(ZeroWPSync(bot))
