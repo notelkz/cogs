@@ -1,0 +1,7 @@
+{
+    "name": "zerolivesleft",
+    "author": ["elkz"],  
+    "short": "Short Description",
+    "description": "Community Management",
+    "requirements": ["aiohttp"] 
+}
