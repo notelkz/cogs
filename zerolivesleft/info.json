@@ -1,9 +1,0 @@
-{
-  "author": ["Your Name"],
-  "install_msg": "Cog installed successfully!",
-  "short": "Short description",
-  "description": "Longer description of your cog",
-  "requirements": ["aiohttp"],
-  "tags": ["tag1", "tag2"],
-  "name": "zerolivesleft" 
-}
