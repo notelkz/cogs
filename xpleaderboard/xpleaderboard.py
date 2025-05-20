@@ -127,13 +127,16 @@ class XPLeaderboard(commands.Cog):
                     break
         except asyncio.CancelledError:
             pass
-
-    @commands.group()
+    @commands.group(aliases=["xp"])
     @commands.guild_only()
-    async def activityxp(self, ctx):
-        """Activity XP settings and info."""
+    async def xplb(self, ctx):
+        """XP Leaderboard settings and info."""
+        if ctx.invoked_subcommand is None:
+            xp = await self.config.member(ctx.author).xp()
+            rank = await self.get_rank(ctx.guild, xp)
+            await ctx.send(f"**{ctx.author.display_name}** has **{xp} XP** and is ranked **{rank}**.")
 
-    @activityxp.command()
+    @xplb.command()
     async def xp(self, ctx, member: discord.Member = None):
         """Show your or another user's XP and rank."""
         member = member or ctx.author
@@ -141,21 +144,21 @@ class XPLeaderboard(commands.Cog):
         rank = await self.get_rank(ctx.guild, xp)
         await ctx.send(f"**{member.display_name}** has **{xp} XP** and is ranked **{rank}**.")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def setchatxp(self, ctx, amount: int):
         """Set XP per chat message."""
         await self.config.guild(ctx.guild).chat_xp_per_message.set(amount)
         await ctx.send(f"Set chat XP per message to {amount}.")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def setvoicexp(self, ctx, amount: int):
         """Set XP per minute in voice."""
         await self.config.guild(ctx.guild).voice_xp_per_minute.set(amount)
         await ctx.send(f"Set voice XP per minute to {amount}.")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def setrank(self, ctx, xp: int, *, name: str):
         """Set a rank name for a given XP threshold."""
@@ -163,7 +166,7 @@ class XPLeaderboard(commands.Cog):
             ranks[str(xp)] = name
         await ctx.send(f"Set rank '{name}' for {xp} XP.")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def removerank(self, ctx, xp: int):
         """Remove a rank at a given XP threshold."""
@@ -174,7 +177,7 @@ class XPLeaderboard(commands.Cog):
             else:
                 await ctx.send("No rank at that XP threshold.")
 
-    @activityxp.command(name="bulkranks")
+    @xplb.command(name="bulkranks")
     @checks.admin_or_permissions(manage_guild=True)
     async def bulkranks(self, ctx, *, ranks: str):
         """
@@ -200,14 +203,14 @@ class XPLeaderboard(commands.Cog):
         else:
             await ctx.send("No valid ranks provided.")
 
-    @activityxp.command(name="clearranks")
+    @xplb.command(name="clearranks")
     @checks.admin_or_permissions(manage_guild=True)
     async def clearranks(self, ctx):
         """Remove all ranks."""
         await self.config.guild(ctx.guild).ranks.clear()
         await ctx.send("All ranks have been cleared.")
 
-    @activityxp.command()
+    @xplb.command()
     async def ranks(self, ctx):
         """Show all ranks."""
         ranks = await self.config.guild(ctx.guild).ranks()
@@ -218,7 +221,7 @@ class XPLeaderboard(commands.Cog):
         msg = "\n".join(f"{xp} XP: {name}" for xp, name in sorted_ranks)
         await ctx.send(f"**Ranks:**\n{msg}")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def setrankrole(self, ctx, xp: int, role: discord.Role):
         """Link a role to a rank (XP threshold)."""
@@ -226,7 +229,7 @@ class XPLeaderboard(commands.Cog):
             rr[str(xp)] = role.id
         await ctx.send(f"Linked {role.mention} to {xp} XP.")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def removerankrole(self, ctx, xp: int):
         """Remove the role linked to a rank (XP threshold)."""
@@ -237,7 +240,7 @@ class XPLeaderboard(commands.Cog):
             else:
                 await ctx.send("No role linked to that XP threshold.")
 
-    @activityxp.command()
+    @xplb.command()
     async def rankroles(self, ctx):
         """Show all rank role links."""
         rank_roles = await self.config.guild(ctx.guild).rank_roles()
@@ -253,7 +256,7 @@ class XPLeaderboard(commands.Cog):
                 msg.append(f"{xp} XP: (role not found)")
         await ctx.send("**Rank Roles:**\n" + "\n".join(msg))
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def setrequiredrole(self, ctx, role: discord.Role = None):
         """Set a role required to earn XP. Use without a role to clear."""
@@ -264,7 +267,7 @@ class XPLeaderboard(commands.Cog):
             await self.config.guild(ctx.guild).required_role.set(None)
             await ctx.send("No role is now required to earn XP.")
 
-    @activityxp.command()
+    @xplb.command()
     async def requiredrole(self, ctx):
         """Show the role required to earn XP."""
         role_id = await self.config.guild(ctx.guild).required_role()
@@ -275,7 +278,7 @@ class XPLeaderboard(commands.Cog):
                 return
         await ctx.send("No role is currently required to earn XP.")
 
-    @activityxp.command()
+    @xplb.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def setup(self, ctx):
         """
@@ -284,7 +287,7 @@ class XPLeaderboard(commands.Cog):
         def check_author(m):
             return m.author == ctx.author and m.channel == ctx.channel
 
-        await ctx.send("Welcome to ActivityXP setup!\nHow many ranks do you want? (e.g. 10, 20, 30)")
+        await ctx.send("Welcome to XP Leaderboard setup!\nHow many ranks do you want? (e.g. 10, 20, 30)")
         try:
             msg = await self.bot.wait_for("message", check=check_author, timeout=120)
             num_ranks = int(msg.content)
