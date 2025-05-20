@@ -1,4 +1,5 @@
-from .activityxp import ActivityXP
+from .xpleaderboard import XPLeaderboard
 
-def setup(bot):
-    bot.add_cog(ActivityXP(bot))
+async def setup(bot):  # Make sure this is async
+    cog = XPLeaderboard(bot)
+    await bot.add_cog(cog)

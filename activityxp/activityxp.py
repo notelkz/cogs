@@ -3,12 +3,12 @@ from redbot.core import commands, Config, checks
 import asyncio
 import datetime
 
-class ActivityXP(commands.Cog):
-    """Reward users with XP for chat and voice activity, with ranks and role rewards."""
-
+class XPLeaderboard(commands.Cog):
+    """Track user XP and display leaderboards with ranks and role rewards."""
+    
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890)
+        self.config = Config.get_conf(self, identifier=987654321)
         self.config.register_guild(
             chat_xp_per_message=10,
             voice_xp_per_minute=5,
