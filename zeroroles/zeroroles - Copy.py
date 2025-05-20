@@ -2,7 +2,6 @@ import discord
 from redbot.core import commands
 from redbot.core.bot import Red
 import os
-import asyncio
 
 ROLE_MENUS = {
     "battlefield": {
@@ -123,7 +122,7 @@ class ZeroRoles(commands.Cog):
     async def zeroroles(self, ctx: commands.Context):
         """Send a role selector menu. Usage: [p]zeroroles <section>"""
         if ctx.invoked_subcommand is None:
-            await ctx.send("Please specify a section: battlefield, fps, hero, extraction, br, others, all")
+            await ctx.send("Please specify a section: battlefield, fps, hero, extraction, br, others.")
 
     @zeroroles.command()
     async def battlefield(self, ctx: commands.Context):
@@ -148,25 +147,6 @@ class ZeroRoles(commands.Cog):
     @zeroroles.command()
     async def others(self, ctx: commands.Context):
         await self._send_menu(ctx, "others")
-
-    @zeroroles.command()
-    async def all(self, ctx: commands.Context):
-        """Send all role selector menus in sequence."""
-        sections = ["battlefield", "fps", "hero", "extraction", "br", "others"]
-        
-        # Send initial status message
-        status_msg = await ctx.send("Sending role menus (0/{})...".format(len(sections)))
-        
-        try:
-            for i, section in enumerate(sections, 1):
-                await self._send_menu(ctx, section)
-                await status_msg.edit(content="Sending role menus ({}/{})...".format(i, len(sections)))
-                await asyncio.sleep(1)
-            
-            # Update final status
-            await status_msg.edit(content="✅ All role menus have been sent!")
-        except Exception as e:
-            await status_msg.edit(content=f"❌ Error sending menus: {str(e)}")
 
     async def _send_menu(self, ctx, section):
         config = ROLE_MENUS[section]
