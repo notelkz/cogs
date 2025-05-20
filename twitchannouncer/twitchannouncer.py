@@ -160,7 +160,8 @@ class TwitchAnnouncer(commands.Cog):
     @checks.admin_or_permissions(manage_guild=True)
     async def twitchannouncer(self, ctx):
         """Twitch announcer settings."""
-        pass
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
 
     @twitchannouncer.command(name="setup")
     async def setup_announcer(self, ctx, channel: discord.TextChannel):
@@ -224,15 +225,10 @@ class TwitchAnnouncer(commands.Cog):
         await ctx.send(f"Removed {role.name} from announcement pings.")
 
     @twitchannouncer.command(name="setauth")
-    async def set_twitch_auth(self, ctx, client_id: str, client_secret: str):
-        """Set Twitch API authentication (Only use in DMs!)."""
-        if ctx.guild:
-            await ctx.send("Please use this command in DMs for security!")
-            return
-            
-        await self.config.guild(ctx.guild).client_id.set(client_id)
-        await self.config.guild(ctx.guild).client_secret.set(client_secret)
-        await ctx.send("Twitch API authentication set!")
+    async def set_twitch_auth(self, ctx):
+        """Set Twitch API authentication via secure modal."""
+        modal = TwitchAuthModal(self, ctx.guild)
+        await ctx.send_modal(modal)
 
     @twitchannouncer.command(name="test")
     async def test_announcement(self, ctx, twitch_name: str):
@@ -282,6 +278,59 @@ class StreamView(discord.ui.View):
             url=f"https://twitch.tv/{twitch_name}/subscribe",
             style=discord.ButtonStyle.url
         ))
+
+class TwitchAuthModal(discord.ui.Modal):
+    def __init__(self, cog, guild):
+        super().__init__(title="Twitch API Authentication")
+        self.cog = cog
+        self.guild = guild
+        
+        self.add_item(
+            discord.ui.TextInput(
+                label="Client ID",
+                placeholder="Enter your Twitch Client ID",
+                style=discord.TextStyle.short,
+                required=True
+            )
+        )
+        
+        self.add_item(
+            discord.ui.TextInput(
+                label="Client Secret",
+                placeholder="Enter your Twitch Client Secret",
+                style=discord.TextStyle.short,
+                required=True
+            )
+        )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        client_id = self.children[0].value
+        client_secret = self.children[1].value
+        
+        await self.cog.config.guild(self.guild).client_id.set(client_id)
+        await self.cog.config.guild(self.guild).client_secret.set(client_secret)
+        
+        # Test the credentials
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://id.twitch.tv/oauth2/token",
+                params={
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "client_credentials"
+                }
+            ) as resp:
+                if resp.status != 200:
+                    await interaction.response.send_message(
+                        "❌ Invalid credentials! Please check your Client ID and Secret.",
+                        ephemeral=True
+                    )
+                    return
+                
+                await interaction.response.send_message(
+                    "✅ Twitch API authentication successfully set and verified!",
+                    ephemeral=True
+                )
 
 async def setup(bot):
     await bot.add_cog(TwitchAnnouncer(bot))
