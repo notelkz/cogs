@@ -523,136 +523,35 @@ class CommunityApplications(commands.Cog):
 
     @applications.command(name="test")
     @checks.admin_or_permissions(manage_guild=True)
-    async def test_system(self, ctx):
-        """Run a series of tests on the application system."""
-        
-        async def check_mark(success):
-            return "✅" if success else "❌"
-        
-        results = []
-        
-        # Test 1: Check Configuration
+    async def test_application(self, ctx):
+        """Create a test application to verify system functionality."""
         try:
-            guild_data = await self.config.guild(ctx.guild).all()
-            config_check = all([
-                guild_data["applications_category"],
-                guild_data["archive_category"],
-                guild_data["staff_role"],
-                guild_data["accept_role"]
-            ])
-            results.append(("Basic Configuration", config_check))
-        except Exception as e:
-            results.append(("Basic Configuration", False))
-
-        # Test 2: Check Categories
-        try:
-            app_cat = ctx.guild.get_channel(guild_data["applications_category"])
-            arch_cat = ctx.guild.get_channel(guild_data["archive_category"])
-            categories_check = isinstance(app_cat, discord.CategoryChannel) and isinstance(arch_cat, discord.CategoryChannel)
-            results.append(("Categories Exist", categories_check))
-        except Exception as e:
-            results.append(("Categories Exist", False))
-
-        # Test 3: Check Roles
-        try:
-            staff_role = ctx.guild.get_role(guild_data["staff_role"])
-            accept_role = ctx.guild.get_role(guild_data["accept_role"])
-            roles_check = staff_role is not None and accept_role is not None
-            results.append(("Roles Exist", roles_check))
-        except Exception as e:
-            results.append(("Roles Exist", False))
-
-        # Test 4: Check Bot Permissions
-        try:
-            required_perms = [
-                "manage_channels",
-                "manage_roles",
-                "read_messages",
-                "send_messages",
-                "manage_messages",
-                "embed_links",
-                "attach_files",
-                "read_message_history",
-                "add_reactions"
-            ]
-            bot_member = ctx.guild.me
-            missing_perms = [perm for perm in required_perms if not getattr(bot_member.guild_permissions, perm)]
-            perms_check = len(missing_perms) == 0
-            results.append(("Bot Permissions", perms_check))
-            if not perms_check:
-                results.append(("Missing Permissions", f"Missing: {', '.join(missing_perms)}"))
-        except Exception as e:
-            results.append(("Bot Permissions", False))
-
-        # Test 5: Check Questions
-        try:
-            questions = await self.config.guild(ctx.guild).application_questions()
-            questions_check = len(questions) > 0 and all(isinstance(q, str) for q in questions)
-            results.append(("Questions Setup", questions_check))
-        except Exception as e:
-            results.append(("Questions Setup", False))
-
-        # Test 6: Check Statistics
-        try:
-            stats = await self.config.guild(ctx.guild).stats()
-            stats_check = all(isinstance(stats[key], int) for key in ["total", "accepted", "declined", "pending"])
-            results.append(("Statistics System", stats_check))
-        except Exception as e:
-            results.append(("Statistics System", False))
-
-        # Create test results embed
-        embed = discord.Embed(
-            title="Application System Test Results",
-            color=discord.Color.blue(),
-            timestamp=datetime.datetime.utcnow()
-        )
-
-        # Add test results to embed
-        for test_name, result in results:
-            if isinstance(result, bool):
-                embed.add_field(
-                    name=test_name,
-                    value=f"{await check_mark(result)} {'Passed' if result else 'Failed'}",
-                    inline=False
+            # Create test application channel
+            await ctx.send("📝 Creating test application channel...")
+            
+            # Use command invoker as the test applicant
+            member = ctx.author
+            
+            # Create the application channel
+            await self._open_new_application(member)
+            
+            # Find the created channel
+            channel_name = safe_channel_name(member.name)
+            test_channel = discord.utils.get(ctx.guild.channels, name=channel_name)
+            
+            if test_channel:
+                await ctx.send(
+                    f"✅ Test application created successfully!\n\n"
+                    f"Please go to {test_channel.mention} to test the application process.\n"
+                    f"You can submit a test application and verify all buttons work correctly.\n"
+                    f"When finished, you can archive the channel manually or let it timeout."
                 )
             else:
-                embed.add_field(
-                    name=test_name,
-                    value=result,
-                    inline=False
-                )
+                await ctx.send("❌ Failed to create test application channel. Please check bot permissions.")
+                
+        except Exception as e:
+            await ctx.send(f"❌ Error creating test application: {str(e)}")
 
-        # Add system version
-        embed.set_footer(text=f"System Version: {self.__version__}")
-
-        # Calculate overall health
-        passed_tests = len([r for r in results if r[1] is True])
-        total_tests = len([r for r in results if isinstance(r[1], bool)])
-        health_percentage = (passed_tests / total_tests) * 100 if total_tests > 0 else 0
-
-        embed.description = (
-            f"System Health: {health_percentage:.1f}%\n"
-            f"Passed: {passed_tests}/{total_tests} tests\n\n"
-            f"{'System is fully operational' if health_percentage == 100 else 'System needs attention'}"
-        )
-
-        await ctx.send(embed=embed)
-
-        # If any tests failed, provide troubleshooting tips
-        if health_percentage < 100:
-            troubleshooting = discord.Embed(
-                title="Troubleshooting Tips",
-                color=discord.Color.gold(),
-                description=(
-                    "To fix failed tests:\n\n"
-                    "• Run `!applications setup` to reconfigure the system\n"
-                    "• Ensure the bot has proper permissions\n"
-                    "• Verify all categories and roles exist\n"
-                    "• Check `!applications questions` to manage application questions\n"
-                    "• Use `!help applications` for more commands"
-                )
-            )
-            await ctx.send(embed=troubleshooting)
 
 # UI Components
 
