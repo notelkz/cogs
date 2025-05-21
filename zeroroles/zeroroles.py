@@ -112,6 +112,42 @@ class ZeroRoleButton(discord.ui.Button):
             except discord.Forbidden:
                 await interaction.response.send_message("I don't have permission to add that role.", ephemeral=True)
 
+class AutoRoleButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="Toggle Automatic Roles",
+            style=discord.ButtonStyle.danger,
+            custom_id="zeroroles_autorole_toggle"
+        )
+        self.auto_role_id = 1369334433714409576
+
+    async def callback(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = interaction.user
+        role = guild.get_role(self.auto_role_id)
+        
+        if not role:
+            await interaction.response.send_message("Auto-role not found. Please contact an admin.", ephemeral=True)
+            return
+
+        if role in member.roles:
+            try:
+                await member.remove_roles(role, reason="Auto-roles toggle button")
+                await interaction.response.send_message("Automatic roles have been disabled.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to remove that role.", ephemeral=True)
+        else:
+            try:
+                await member.add_roles(role, reason="Auto-roles toggle button")
+                await interaction.response.send_message("Automatic roles have been enabled.", ephemeral=True)
+            except discord.Forbidden:
+                await interaction.response.send_message("I don't have permission to add that role.", ephemeral=True)
+
+class AutoRoleView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(AutoRoleButton())
+
 class ZeroRoles(commands.Cog):
     """Multi-section Role Selector (ZeroRoles)"""
 
@@ -123,7 +159,7 @@ class ZeroRoles(commands.Cog):
     async def zeroroles(self, ctx: commands.Context):
         """Send a role selector menu. Usage: [p]zeroroles <section>"""
         if ctx.invoked_subcommand is None:
-            await ctx.send("Please specify a section: battlefield, fps, hero, extraction, br, others, all")
+            await ctx.send("Please specify a section: battlefield, fps, hero, extraction, br, others, all, autoroles")
 
     @zeroroles.command()
     async def battlefield(self, ctx: commands.Context):
@@ -148,6 +184,36 @@ class ZeroRoles(commands.Cog):
     @zeroroles.command()
     async def others(self, ctx: commands.Context):
         await self._send_menu(ctx, "others")
+
+    @zeroroles.command()
+    async def autoroles(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Send the auto-roles embed with toggle button."""
+        if channel is None:
+            channel = ctx.channel
+
+        # Create the first embed
+        embed1 = discord.Embed(color=0xFF0000)
+        embed1.set_author(name="Zero Lives Left")
+        embed1.set_image(url="https://zerolivesleft.net/images/autoroles.png")
+
+        # Create the second embed
+        embed2 = discord.Embed(
+            description="To receive automatic game roles, you need to have your [Discord User Activity Privacy](http://link.com) setup correctly and click the button below.",
+            color=0xFF0005
+        )
+        embed2.set_image(url="https://zerolivesleft.net/images/discordactivity.png")
+
+        try:
+            await channel.send(
+                embeds=[embed1, embed2],
+                view=AutoRoleView()
+            )
+            if channel != ctx.channel:
+                await ctx.send(f"Auto-roles menu sent to {channel.mention}")
+        except discord.Forbidden:
+            await ctx.send("I don't have permission to send messages in that channel.")
+        except Exception as e:
+            await ctx.send(f"Error sending auto-roles menu: {str(e)}")
 
     @zeroroles.command()
     async def all(self, ctx: commands.Context):
