@@ -45,6 +45,25 @@ class Welcome(commands.Cog):
         # Lockdown status tracker
         self.lockdown_status: Dict[int, bool] = {}
 
+    def get_ordinal(self, number: int) -> str:
+        """Convert a number to its ordinal representation (1st, 2nd, 3rd, etc.)"""
+        if 10 <= number % 100 <= 20:
+            suffix = 'th'
+        else:
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(number % 10, 'th')
+        return f"{number}{suffix}"
+
+    def get_milestone_message(self, count: int) -> str:
+        """Get special message for milestone counts"""
+        milestones = {
+            100: "🎉 Wow! Our 100th member!",
+            500: "🎊 Amazing! Member #500!",
+            1000: "⭐ Incredible! Member #1000!",
+            5000: "🌟 Phenomenal! Member #5000!",
+            10000: "💫 Legendary! Member #10000!"
+        }
+        return milestones.get(count, "")
+
     async def log_event(self, guild: discord.Guild, embed: discord.Embed):
         """Log events to the designated logging channel"""
         log_channel_id = await self.config.guild(guild).log_channel()
@@ -99,22 +118,6 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).embed_color.set(color.value)
         await ctx.send(f"Embed color set to {color}")
 
-    @welcomeset.command(name="toggle")
-    async def toggle_welcome(self, ctx):
-        """Toggle welcome messages on/off"""
-        current = await self.config.guild(ctx.guild).welcome_enabled()
-        await self.config.guild(ctx.guild).welcome_enabled.set(not current)
-        state = "enabled" if not current else "disabled"
-        await ctx.send(f"Welcome messages {state}")
-
-    @welcomeset.command(name="ping")
-    async def toggle_ping(self, ctx):
-        """Toggle user pinging on/off"""
-        current = await self.config.guild(ctx.guild).ping_user()
-        await self.config.guild(ctx.guild).ping_user.set(not current)
-        state = "enabled" if not current else "disabled"
-        await ctx.send(f"User pinging {state}")
-
     @welcomeset.command(name="embedjson")
     @commands.admin_or_permissions(manage_guild=True)
     async def set_welcome_embed_json(self, ctx, *, json_str: str = None):
@@ -122,17 +125,21 @@ class Welcome(commands.Cog):
         
         Available variables: 
         - {member} - Member's name
-        - {member.mention} - Member's mention
         - {member.name} - Member's name
+        - {member.mention} - Member's mention
         - {member.avatar_url} - Member's avatar URL
         - {server} - Server name
         - {server.member_count} - Server member count
+        - {count} - Current member count
+        - {count.ordinal} - Ordinal member count (1st, 2nd, etc.)
+        - {milestone} - Special milestone message
+        - {is_milestone} - "true" if milestone, "false" if not
         
         Example:
         ```json
         {
             "title": "Welcome to {server}!",
-            "description": "Hey {member.mention}, welcome to our community!",
+            "description": "Hey {member.mention}, you're our {count.ordinal} member! {milestone}",
             "color": 3066993,
             "thumbnail": {
                 "url": "{member.avatar_url}"
@@ -140,12 +147,7 @@ class Welcome(commands.Cog):
             "fields": [
                 {
                     "name": "Member Count",
-                    "value": "You are member #{server.member_count}!",
-                    "inline": true
-                },
-                {
-                    "name": "Getting Started",
-                    "value": "Please read our rules in <#CHANNEL_ID>",
+                    "value": "You are member #{count}!",
                     "inline": true
                 }
             ],
@@ -159,7 +161,7 @@ class Welcome(commands.Cog):
         if json_str is None:
             example = {
                 "title": "Welcome to {server}!",
-                "description": "Hey {member.mention}, welcome to our community!",
+                "description": "Hey {member.mention}, you're our {count.ordinal} member! {milestone}",
                 "color": 3066993,
                 "thumbnail": {
                     "url": "{member.avatar_url}"
@@ -167,7 +169,7 @@ class Welcome(commands.Cog):
                 "fields": [
                     {
                         "name": "Member Count",
-                        "value": "You are member #{server.member_count}!",
+                        "value": "You are member #{count}!",
                         "inline": True
                     }
                 ],
@@ -241,6 +243,64 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).use_custom_embed.set(False)
         await self.config.guild(ctx.guild).custom_welcome_embed.set(None)
         await ctx.send("Reset to default welcome embed")
+
+    async def create_custom_embed(self, embed_data: dict, member: discord.Member, guild: discord.Guild) -> discord.Embed:
+        """Create a custom embed from JSON data with variable replacement"""
+        # Create a copy of the embed data to modify
+        embed_data = json.loads(json.dumps(embed_data))
+        
+        # Get member count and ordinal
+        member_count = len(guild.members)
+        ordinal_count = self.get_ordinal(member_count)
+        milestone_msg = self.get_milestone_message(member_count)
+        
+        # Create variable mapping
+        variables = {
+            # Member variables
+            "{member}": member.name,
+            "{member.name}": member.name,
+            "{member.mention}": member.mention,
+            "{member.avatar_url}": str(member.avatar.url if member.avatar else member.default_avatar.url),
+            "{member.id}": str(member.id),
+            "{member.created_at}": member.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "{member.joined_at}": member.joined_at.strftime("%Y-%m-%d %H:%M:%S") if member.joined_at else "Unknown",
+            
+            # Server variables
+            "{server}": guild.name,
+            "{server.member_count}": str(member_count),
+            "{server.id}": str(guild.id),
+            "{server.owner}": str(guild.owner),
+            "{server.created_at}": guild.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            
+            # Count variables
+            "{count}": str(member_count),
+            "{count.ordinal}": ordinal_count,
+            "{milestone}": milestone_msg,
+            "{is_milestone}": "true" if milestone_msg else "false",
+            
+            # Timestamp
+            "{timestamp}": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # Replace variables in strings
+        def replace_vars(obj):
+            if isinstance(obj, str):
+                result = obj
+                for var, value in variables.items():
+                    result = result.replace(var, value)
+                return result
+            elif isinstance(obj, dict):
+                return {k: replace_vars(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [replace_vars(i) for i in obj]
+            return obj
+        
+        # Process all variables in the embed data
+        embed_data = replace_vars(embed_data)
+        
+        # Create the embed
+        embed = discord.Embed.from_dict(embed_data)
+        return embed
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
     async def raidprotect(self, ctx):
@@ -322,41 +382,6 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).alert_channel.set(channel.id)
         await ctx.send(f"Raid alerts will be sent to {channel.mention}")
 
-    async def create_custom_embed(self, embed_data: dict, member: discord.Member, guild: discord.Guild) -> discord.Embed:
-        """Create a custom embed from JSON data with variable replacement"""
-        # Create a copy of the embed data to modify
-        embed_data = json.loads(json.dumps(embed_data))
-        
-        # Create variable mapping
-        variables = {
-            "{member}": member.name,
-            "{member.name}": member.name,
-            "{member.mention}": member.mention,
-            "{member.avatar_url}": str(member.avatar.url if member.avatar else member.default_avatar.url),
-            "{server}": guild.name,
-            "{server.member_count}": str(len(guild.members))
-        }
-        
-        # Replace variables in strings
-        def replace_vars(obj):
-            if isinstance(obj, str):
-                result = obj
-                for var, value in variables.items():
-                    result = result.replace(var, value)
-                return result
-            elif isinstance(obj, dict):
-                return {k: replace_vars(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [replace_vars(i) for i in obj]
-            return obj
-        
-        # Process all variables in the embed data
-        embed_data = replace_vars(embed_data)
-        
-        # Create the embed
-        embed = discord.Embed.from_dict(embed_data)
-        return embed
-
     async def check_raid(self, member: discord.Member) -> bool:
         """Check if current join is part of a raid"""
         guild = member.guild
@@ -364,7 +389,6 @@ class Welcome(commands.Cog):
         if not await self.config.guild(guild).raid_protection():
             return False
 
-        # Initialize recent joins tracker for this guild if needed
         if guild.id not in self.recent_joins:
             self.recent_joins[guild.id] = deque(maxlen=50)
 
@@ -372,16 +396,14 @@ class Welcome(commands.Cog):
         join_window = await self.config.guild(guild).join_window()
         join_threshold = await self.config.guild(guild).join_threshold()
 
-        # Add the new join
         self.recent_joins[guild.id].append(current_time)
 
-        # Remove old joins outside the window
         while self.recent_joins[guild.id] and \
               (current_time - self.recent_joins[guild.id][0]).total_seconds() > join_window:
             self.recent_joins[guild.id].popleft()
 
-        # Check if we've hit the threshold
         return len(self.recent_joins[guild.id]) >= join_threshold
+
     async def handle_raid(self, guild: discord.Guild):
         """Handle an ongoing raid"""
         action = await self.config.guild(guild).action_on_raid()
@@ -405,7 +427,6 @@ class Welcome(commands.Cog):
         )
 
         if action == "lockdown":
-            # Enable server lockdown
             self.lockdown_status[guild.id] = True
             lockdown_duration = await self.config.guild(guild).lockdown_duration()
             
@@ -419,7 +440,6 @@ class Welcome(commands.Cog):
                 embed.add_field(name="Lockdown Duration", value=f"{lockdown_duration} seconds")
                 await self.log_event(guild, embed)
                 
-                # Schedule lockdown removal
                 await asyncio.sleep(lockdown_duration)
                 await guild.default_role.edit(permissions=discord.Permissions.general())
                 self.lockdown_status[guild.id] = False
@@ -427,7 +447,6 @@ class Welcome(commands.Cog):
                 if alert_channel:
                     await alert_channel.send("🔓 Lockdown lifted")
                 
-                # Log lockdown end
                 embed = discord.Embed(
                     title="🔓 Lockdown Lifted",
                     description="Server permissions restored to normal",
@@ -533,7 +552,6 @@ class Welcome(commands.Cog):
                     await channel.send(embed=embed)
                     return
                 except Exception:
-                    # Fall back to default embed if custom one fails
                     use_custom = False
 
         # Default embed
