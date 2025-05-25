@@ -74,6 +74,82 @@ class Welcome(commands.Cog):
                     await log_channel.send(embed=embed)
                 except discord.Forbidden:
                     pass
+
+    async def create_custom_embed(self, embed_data: dict, member: discord.Member, guild: discord.Guild) -> discord.Embed:
+        """Create a custom embed from JSON data with variable replacement"""
+        # Create a copy of the embed data to modify
+        embed_data = json.loads(json.dumps(embed_data))
+        
+        # Get member count and ordinal
+        member_count = len(guild.members)
+        ordinal_count = self.get_ordinal(member_count)
+        milestone_msg = self.get_milestone_message(member_count)
+        
+        # Create variable mapping
+        variables = {
+            # Member variables
+            "{member}": member.name,
+            "{member.name}": member.name,
+            "{member.mention}": member.mention,
+            "{member.avatar_url}": str(member.avatar.url if member.avatar else member.default_avatar.url),
+            "{member.id}": str(member.id),
+            "{member.created_at}": member.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "{member.joined_at}": member.joined_at.strftime("%Y-%m-%d %H:%M:%S") if member.joined_at else "Unknown",
+            
+            # Server variables
+            "{server}": guild.name,
+            "{server.member_count}": str(member_count),
+            "{server.id}": str(guild.id),
+            "{server.owner}": str(guild.owner),
+            "{server.created_at}": guild.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            
+            # Count variables
+            "{count}": str(member_count),
+            "{count.ordinal}": ordinal_count,
+            "{milestone}": milestone_msg,
+            "{is_milestone}": "true" if milestone_msg else "false",
+            
+            # Timestamp
+            "{timestamp}": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        
+        # Replace variables in strings
+        def replace_vars(obj):
+            if isinstance(obj, str):
+                result = obj
+                for var, value in variables.items():
+                    result = result.replace(var, value)
+                return result
+            elif isinstance(obj, dict):
+                return {k: replace_vars(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [replace_vars(i) for i in obj]
+            return obj
+
+        # Handle full Discord JSON format
+        if "embeds" in embed_data:
+            # Get the first embed from the embeds array
+            if embed_data["embeds"] and isinstance(embed_data["embeds"], list):
+                embed_data = embed_data["embeds"][0]
+        
+        # Process all variables in the embed data
+        embed_data = replace_vars(embed_data)
+        
+        # Remove unnecessary fields that Discord.py doesn't use
+        fields_to_remove = ["id", "type", "actions", "components", "flags"]
+        for field in fields_to_remove:
+            embed_data.pop(field, None)
+            
+        # Handle image attachments
+        if "image" in embed_data and "url" in embed_data["image"]:
+            if embed_data["image"]["url"].startswith("attachment://"):
+                # Remove image if it's an attachment
+                embed_data.pop("image", None)
+        
+        # Create the embed
+        embed = discord.Embed.from_dict(embed_data)
+        return embed
+
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
     async def welcomeset(self, ctx):
@@ -123,60 +199,34 @@ class Welcome(commands.Cog):
     async def set_welcome_embed_json(self, ctx, *, json_str: str = None):
         """Set a custom welcome embed using JSON
         
+        Supports full Discord JSON format including:
+        - Standard embed format
+        - Full message format with embeds array
+        
         Available variables: 
         - {member} - Member's name
-        - {member.name} - Member's name
         - {member.mention} - Member's mention
+        - {member.name} - Member's name
         - {member.avatar_url} - Member's avatar URL
-        - {server} - Server name
-        - {server.member_count} - Server member count
         - {count} - Current member count
         - {count.ordinal} - Ordinal member count (1st, 2nd, etc.)
         - {milestone} - Special milestone message
-        - {is_milestone} - "true" if milestone, "false" if not
-        
-        Example:
-        ```json
-        {
-            "title": "Welcome to {server}!",
-            "description": "Hey {member.mention}, you're our {count.ordinal} member! {milestone}",
-            "color": 3066993,
-            "thumbnail": {
-                "url": "{member.avatar_url}"
-            },
-            "fields": [
-                {
-                    "name": "Member Count",
-                    "value": "You are member #{count}!",
-                    "inline": true
-                }
-            ],
-            "footer": {
-                "text": "Welcome to {server}!"
-            },
-            "timestamp": true
-        }
-        ```
+        - {server} - Server name
         """
         if json_str is None:
             example = {
-                "title": "Welcome to {server}!",
-                "description": "Hey {member.mention}, you're our {count.ordinal} member! {milestone}",
-                "color": 3066993,
-                "thumbnail": {
-                    "url": "{member.avatar_url}"
-                },
-                "fields": [
-                    {
-                        "name": "Member Count",
-                        "value": "You are member #{count}!",
-                        "inline": True
-                    }
-                ],
-                "footer": {
-                    "text": "Welcome to {server}!"
-                },
-                "timestamp": True
+                "embeds": [{
+                    "title": "Welcome to the Server!",
+                    "description": "Welcome {member.mention}! You are our {count.ordinal} member!",
+                    "color": 4333465,
+                    "author": {
+                        "name": "Welcome"
+                    },
+                    "footer": {
+                        "text": "Join us!"
+                    },
+                    "timestamp": "2024-01-01T00:00:00.000Z"
+                }]
             }
             await ctx.send(f"Please provide JSON for the embed. Example:\n```json\n{json.dumps(example, indent=2)}\n```")
             return
@@ -184,11 +234,6 @@ class Welcome(commands.Cog):
         try:
             # Validate JSON format
             embed_data = json.loads(json_str)
-            
-            # Basic validation of required embed structure
-            if not isinstance(embed_data, dict):
-                await ctx.send("Error: JSON must be an object")
-                return
             
             # Test embed creation
             test_embed = await self.create_custom_embed(embed_data, ctx.author, ctx.guild)
@@ -244,63 +289,22 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).custom_welcome_embed.set(None)
         await ctx.send("Reset to default welcome embed")
 
-    async def create_custom_embed(self, embed_data: dict, member: discord.Member, guild: discord.Guild) -> discord.Embed:
-        """Create a custom embed from JSON data with variable replacement"""
-        # Create a copy of the embed data to modify
-        embed_data = json.loads(json.dumps(embed_data))
-        
-        # Get member count and ordinal
-        member_count = len(guild.members)
-        ordinal_count = self.get_ordinal(member_count)
-        milestone_msg = self.get_milestone_message(member_count)
-        
-        # Create variable mapping
-        variables = {
-            # Member variables
-            "{member}": member.name,
-            "{member.name}": member.name,
-            "{member.mention}": member.mention,
-            "{member.avatar_url}": str(member.avatar.url if member.avatar else member.default_avatar.url),
-            "{member.id}": str(member.id),
-            "{member.created_at}": member.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "{member.joined_at}": member.joined_at.strftime("%Y-%m-%d %H:%M:%S") if member.joined_at else "Unknown",
-            
-            # Server variables
-            "{server}": guild.name,
-            "{server.member_count}": str(member_count),
-            "{server.id}": str(guild.id),
-            "{server.owner}": str(guild.owner),
-            "{server.created_at}": guild.created_at.strftime("%Y-%m-%d %H:%M:%S"),
-            
-            # Count variables
-            "{count}": str(member_count),
-            "{count.ordinal}": ordinal_count,
-            "{milestone}": milestone_msg,
-            "{is_milestone}": "true" if milestone_msg else "false",
-            
-            # Timestamp
-            "{timestamp}": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        
-        # Replace variables in strings
-        def replace_vars(obj):
-            if isinstance(obj, str):
-                result = obj
-                for var, value in variables.items():
-                    result = result.replace(var, value)
-                return result
-            elif isinstance(obj, dict):
-                return {k: replace_vars(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [replace_vars(i) for i in obj]
-            return obj
-        
-        # Process all variables in the embed data
-        embed_data = replace_vars(embed_data)
-        
-        # Create the embed
-        embed = discord.Embed.from_dict(embed_data)
-        return embed
+    @welcomeset.command(name="toggle")
+    async def toggle_welcome(self, ctx):
+        """Toggle welcome messages on/off"""
+        current = await self.config.guild(ctx.guild).welcome_enabled()
+        await self.config.guild(ctx.guild).welcome_enabled.set(not current)
+        state = "enabled" if not current else "disabled"
+        await ctx.send(f"Welcome messages {state}")
+
+    @welcomeset.command(name="ping")
+    async def toggle_ping(self, ctx):
+        """Toggle user pinging on/off"""
+        current = await self.config.guild(ctx.guild).ping_user()
+        await self.config.guild(ctx.guild).ping_user.set(not current)
+        state = "enabled" if not current else "disabled"
+        await ctx.send(f"User pinging {state}")
+
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
     async def raidprotect(self, ctx):
@@ -327,12 +331,7 @@ class Welcome(commands.Cog):
     @raidprotect.command(name="settings")
     async def raid_settings(self, ctx, join_window: int = None, join_threshold: int = None, 
                           account_age: int = None):
-        """Configure raid protection settings
-        
-        join_window: Time window in seconds to monitor joins
-        join_threshold: Number of joins within window to trigger protection
-        account_age: Minimum account age in days"""
-        
+        """Configure raid protection settings"""
         if join_window:
             await self.config.guild(ctx.guild).join_window.set(join_window)
         if join_threshold:
