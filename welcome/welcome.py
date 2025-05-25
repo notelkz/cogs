@@ -4,6 +4,7 @@ from redbot.core.bot import Red
 from typing import Optional, List, Dict
 import datetime
 import asyncio
+import json
 from collections import deque
 
 class Welcome(commands.Cog):
@@ -33,6 +34,9 @@ class Welcome(commands.Cog):
             "protected_roles": [],
             "lockdown_duration": 300,  # 5 minutes
             "log_channel": None,  # For logging all events
+            # Custom Embed Settings
+            "custom_welcome_embed": None,
+            "use_custom_embed": False,
         }
         self.config.register_guild(**default_guild)
         
@@ -51,7 +55,6 @@ class Welcome(commands.Cog):
                     await log_channel.send(embed=embed)
                 except discord.Forbidden:
                     pass
-
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
     async def welcomeset(self, ctx):
@@ -112,35 +115,132 @@ class Welcome(commands.Cog):
         state = "enabled" if not current else "disabled"
         await ctx.send(f"User pinging {state}")
 
-    @welcomeset.command(name="test")
-    async def test_welcome(self, ctx):
-        """Test the welcome message"""
-        settings = await self.config.guild(ctx.guild).all()
-        if not settings["welcome_enabled"]:
-            return await ctx.send("Welcome messages are disabled.")
+    @welcomeset.command(name="embedjson")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def set_welcome_embed_json(self, ctx, *, json_str: str = None):
+        """Set a custom welcome embed using JSON
         
-        channel = ctx.guild.get_channel(settings["welcome_channel"])
-        if not channel:
-            return await ctx.send("Welcome channel not set or not found.")
-
-        embed = discord.Embed(
-            title="👋 New Member!",
-            description=settings["welcome_message"].format(
-                member=ctx.author.mention if settings["ping_user"] else ctx.author.name,
-                server=ctx.guild.name
-            ),
-            color=settings["embed_color"],
-            timestamp=datetime.datetime.utcnow()
-        )
+        Available variables: 
+        - {member} - Member's name
+        - {member.mention} - Member's mention
+        - {member.name} - Member's name
+        - {member.avatar_url} - Member's avatar URL
+        - {server} - Server name
+        - {server.member_count} - Server member count
         
-        embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
-        embed.set_footer(text=f"Member #{len(ctx.guild.members)} | TEST MESSAGE")
+        Example:
+        ```json
+        {
+            "title": "Welcome to {server}!",
+            "description": "Hey {member.mention}, welcome to our community!",
+            "color": 3066993,
+            "thumbnail": {
+                "url": "{member.avatar_url}"
+            },
+            "fields": [
+                {
+                    "name": "Member Count",
+                    "value": "You are member #{server.member_count}!",
+                    "inline": true
+                },
+                {
+                    "name": "Getting Started",
+                    "value": "Please read our rules in <#CHANNEL_ID>",
+                    "inline": true
+                }
+            ],
+            "footer": {
+                "text": "Welcome to {server}!"
+            },
+            "timestamp": true
+        }
+        ```
+        """
+        if json_str is None:
+            example = {
+                "title": "Welcome to {server}!",
+                "description": "Hey {member.mention}, welcome to our community!",
+                "color": 3066993,
+                "thumbnail": {
+                    "url": "{member.avatar_url}"
+                },
+                "fields": [
+                    {
+                        "name": "Member Count",
+                        "value": "You are member #{server.member_count}!",
+                        "inline": True
+                    }
+                ],
+                "footer": {
+                    "text": "Welcome to {server}!"
+                },
+                "timestamp": True
+            }
+            await ctx.send(f"Please provide JSON for the embed. Example:\n```json\n{json.dumps(example, indent=2)}\n```")
+            return
 
-        await channel.send(
-            content=ctx.author.mention if settings["ping_user"] else None,
-            embed=embed
-        )
+        try:
+            # Validate JSON format
+            embed_data = json.loads(json_str)
+            
+            # Basic validation of required embed structure
+            if not isinstance(embed_data, dict):
+                await ctx.send("Error: JSON must be an object")
+                return
+            
+            # Test embed creation
+            test_embed = await self.create_custom_embed(embed_data, ctx.author, ctx.guild)
+            
+            # Save the embed JSON
+            await self.config.guild(ctx.guild).custom_welcome_embed.set(embed_data)
+            await self.config.guild(ctx.guild).use_custom_embed.set(True)
+            
+            await ctx.send("Custom embed set! Here's how it looks:", embed=test_embed)
+            
+        except json.JSONDecodeError:
+            await ctx.send("Error: Invalid JSON format")
+        except Exception as e:
+            await ctx.send(f"Error: {str(e)}")
 
+    @welcomeset.command(name="previewembed")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def preview_welcome_embed(self, ctx):
+        """Preview the current welcome embed"""
+        use_custom = await self.config.guild(ctx.guild).use_custom_embed()
+        if use_custom:
+            embed_data = await self.config.guild(ctx.guild).custom_welcome_embed()
+            if embed_data:
+                embed = await self.create_custom_embed(embed_data, ctx.author, ctx.guild)
+                await ctx.send("Current welcome embed:", embed=embed)
+            else:
+                await ctx.send("No custom embed set")
+        else:
+            # Show default embed
+            message = await self.config.guild(ctx.guild).welcome_message()
+            color = await self.config.guild(ctx.guild).embed_color()
+            ping = await self.config.guild(ctx.guild).ping_user()
+            
+            embed = discord.Embed(
+                title="👋 New Member!",
+                description=message.format(
+                    member=ctx.author.mention if ping else ctx.author.name,
+                    server=ctx.guild.name
+                ),
+                color=color,
+                timestamp=datetime.datetime.utcnow()
+            )
+            embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+            embed.set_footer(text=f"Member #{len(ctx.guild.members)}")
+            
+            await ctx.send("Current welcome embed:", embed=embed)
+
+    @welcomeset.command(name="resetembed")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def reset_welcome_embed(self, ctx):
+        """Reset to default welcome embed"""
+        await self.config.guild(ctx.guild).use_custom_embed.set(False)
+        await self.config.guild(ctx.guild).custom_welcome_embed.set(None)
+        await ctx.send("Reset to default welcome embed")
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
     async def raidprotect(self, ctx):
@@ -155,7 +255,6 @@ class Welcome(commands.Cog):
         state = "enabled" if not current else "disabled"
         await ctx.send(f"Raid protection {state}")
 
-        # Log the change
         embed = discord.Embed(
             title="Raid Protection Status Changed",
             description=f"Raid protection has been {state}",
@@ -181,7 +280,6 @@ class Welcome(commands.Cog):
         if account_age:
             await self.config.guild(ctx.guild).minimum_account_age.set(account_age)
 
-        # Show current settings
         settings = {
             "Window": f"{await self.config.guild(ctx.guild).join_window()}s",
             "Threshold": await self.config.guild(ctx.guild).join_threshold(),
@@ -224,6 +322,41 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).alert_channel.set(channel.id)
         await ctx.send(f"Raid alerts will be sent to {channel.mention}")
 
+    async def create_custom_embed(self, embed_data: dict, member: discord.Member, guild: discord.Guild) -> discord.Embed:
+        """Create a custom embed from JSON data with variable replacement"""
+        # Create a copy of the embed data to modify
+        embed_data = json.loads(json.dumps(embed_data))
+        
+        # Create variable mapping
+        variables = {
+            "{member}": member.name,
+            "{member.name}": member.name,
+            "{member.mention}": member.mention,
+            "{member.avatar_url}": str(member.avatar.url if member.avatar else member.default_avatar.url),
+            "{server}": guild.name,
+            "{server.member_count}": str(len(guild.members))
+        }
+        
+        # Replace variables in strings
+        def replace_vars(obj):
+            if isinstance(obj, str):
+                result = obj
+                for var, value in variables.items():
+                    result = result.replace(var, value)
+                return result
+            elif isinstance(obj, dict):
+                return {k: replace_vars(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [replace_vars(i) for i in obj]
+            return obj
+        
+        # Process all variables in the embed data
+        embed_data = replace_vars(embed_data)
+        
+        # Create the embed
+        embed = discord.Embed.from_dict(embed_data)
+        return embed
+
     async def check_raid(self, member: discord.Member) -> bool:
         """Check if current join is part of a raid"""
         guild = member.guild
@@ -249,7 +382,6 @@ class Welcome(commands.Cog):
 
         # Check if we've hit the threshold
         return len(self.recent_joins[guild.id]) >= join_threshold
-
     async def handle_raid(self, guild: discord.Guild):
         """Handle an ongoing raid"""
         action = await self.config.guild(guild).action_on_raid()
@@ -391,6 +523,20 @@ class Welcome(commands.Cog):
         if not channel:
             return
 
+        # Check for custom embed
+        use_custom = await self.config.guild(guild).use_custom_embed()
+        if use_custom:
+            embed_data = await self.config.guild(guild).custom_welcome_embed()
+            if embed_data:
+                try:
+                    embed = await self.create_custom_embed(embed_data, member, guild)
+                    await channel.send(embed=embed)
+                    return
+                except Exception:
+                    # Fall back to default embed if custom one fails
+                    use_custom = False
+
+        # Default embed
         message = await self.config.guild(guild).welcome_message()
         color = await self.config.guild(guild).embed_color()
         ping = await self.config.guild(guild).ping_user()
