@@ -39,7 +39,59 @@ class Welcome(commands.Cog):
         # Lockdown status tracker
         self.lockdown_status: Dict[int, bool] = {}
 
-    # ... (previous commands remain the same) ...
+    @commands.group()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def welcomeset(self, ctx):
+        """Welcome message configuration"""
+        pass
+
+    @welcomeset.command(name="channel")
+    async def set_welcome_channel(self, ctx, channel: discord.TextChannel):
+        """Set the welcome channel"""
+        await self.config.guild(ctx.guild).welcome_channel.set(channel.id)
+        await self.config.guild(ctx.guild).welcome_enabled.set(True)
+        await ctx.send(f"Welcome channel set to {channel.mention}")
+
+    @welcomeset.command(name="goodbye")
+    async def set_goodbye_channel(self, ctx, channel: discord.TextChannel):
+        """Set the goodbye channel"""
+        await self.config.guild(ctx.guild).goodbye_channel.set(channel.id)
+        await self.config.guild(ctx.guild).goodbye_enabled.set(True)
+        await ctx.send(f"Goodbye channel set to {channel.mention}")
+
+    @welcomeset.command(name="message")
+    async def set_welcome_message(self, ctx, *, message: str):
+        """Set the welcome message"""
+        await self.config.guild(ctx.guild).welcome_message.set(message)
+        await ctx.send("Welcome message set!")
+
+    @welcomeset.command(name="goodbyemsg")
+    async def set_goodbye_message(self, ctx, *, message: str):
+        """Set the goodbye message"""
+        await self.config.guild(ctx.guild).goodbye_message.set(message)
+        await ctx.send("Goodbye message set!")
+
+    @welcomeset.command(name="color")
+    async def set_color(self, ctx, color: discord.Color):
+        """Set the embed color (hex format)"""
+        await self.config.guild(ctx.guild).embed_color.set(color.value)
+        await ctx.send(f"Embed color set to {color}")
+
+    @welcomeset.command(name="toggle")
+    async def toggle_welcome(self, ctx):
+        """Toggle welcome messages on/off"""
+        current = await self.config.guild(ctx.guild).welcome_enabled()
+        await self.config.guild(ctx.guild).welcome_enabled.set(not current)
+        state = "enabled" if not current else "disabled"
+        await ctx.send(f"Welcome messages {state}")
+
+    @welcomeset.command(name="ping")
+    async def toggle_ping(self, ctx):
+        """Toggle user pinging on/off"""
+        current = await self.config.guild(ctx.guild).ping_user()
+        await self.config.guild(ctx.guild).ping_user.set(not current)
+        state = "enabled" if not current else "disabled"
+        await ctx.send(f"User pinging {state}")
 
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
@@ -180,7 +232,7 @@ class Welcome(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
-        """Enhanced member join handler with raid protection"""
+        """Handle member joins with welcome messages and raid protection"""
         guild = member.guild
 
         # Check for raid protection
@@ -209,8 +261,97 @@ class Welcome(commands.Cog):
                 await self.handle_raid(guild)
                 return
 
-        # If we get here, proceed with normal welcome message
-        await super().on_member_join(member)  # Call original welcome message logic
+        # Process welcome message
+        if not await self.config.guild(guild).welcome_enabled():
+            return
 
-def setup(bot: Red):
-    bot.add_cog(Welcome(bot))
+        channel_id = await self.config.guild(guild).welcome_channel()
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        message = await self.config.guild(guild).welcome_message()
+        color = await self.config.guild(guild).embed_color()
+        ping = await self.config.guild(guild).ping_user()
+
+        embed = discord.Embed(
+            title="👋 New Member!",
+            description=message.format(
+                member=member.mention if ping else member.name,
+                server=guild.name
+            ),
+            color=color,
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        embed.set_footer(text=f"Member #{len(guild.members)}")
+
+        await channel.send(
+            content=member.mention if ping else None,
+            embed=embed
+        )
+
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        """Handle member leaves"""
+        guild = member.guild
+        if not await self.config.guild(guild).goodbye_enabled():
+            return
+
+        channel_id = await self.config.guild(guild).goodbye_channel()
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        message = await self.config.guild(guild).goodbye_message()
+        color = await self.config.guild(guild).embed_color()
+
+        embed = discord.Embed(
+            title="👋 Member Left",
+            description=message.format(
+                member=member.name,
+                server=guild.name
+            ),
+            color=color,
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await channel.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_member_ban(self, guild, member):
+        """Handle member bans"""
+        if not await self.config.guild(guild).goodbye_enabled():
+            return
+
+        channel_id = await self.config.guild(guild).goodbye_channel()
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        message = await self.config.guild(guild).ban_message()
+        color = await self.config.guild(guild).embed_color()
+
+        embed = discord.Embed(
+            title="🔨 Member Banned",
+            description=message.format(
+                member=member.name,
+                server=guild.name
+            ),
+            color=color,
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await channel.send(embed=embed)
