@@ -18,6 +18,7 @@ class Welcome(commands.Cog):
             "welcome_message": "Welcome {member} to {server}!",
             "goodbye_message": "Goodbye {member}! They left the server.",
             "ban_message": "{member} was banned! 🔨",
+            "kick_message": "{member} was kicked! 👢",
             "welcome_enabled": False,
             "goodbye_enabled": False,
             "embed_color": 0x2ECC71,
@@ -31,6 +32,7 @@ class Welcome(commands.Cog):
             "alert_channel": None,
             "protected_roles": [],
             "lockdown_duration": 300,  # 5 minutes
+            "log_channel": None,  # For logging all events
         }
         self.config.register_guild(**default_guild)
         
@@ -38,6 +40,17 @@ class Welcome(commands.Cog):
         self.recent_joins: Dict[int, deque] = {}
         # Lockdown status tracker
         self.lockdown_status: Dict[int, bool] = {}
+
+    async def log_event(self, guild: discord.Guild, embed: discord.Embed):
+        """Log events to the designated logging channel"""
+        log_channel_id = await self.config.guild(guild).log_channel()
+        if log_channel_id:
+            log_channel = guild.get_channel(log_channel_id)
+            if log_channel:
+                try:
+                    await log_channel.send(embed=embed)
+                except discord.Forbidden:
+                    pass
 
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
@@ -58,6 +71,12 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).goodbye_channel.set(channel.id)
         await self.config.guild(ctx.guild).goodbye_enabled.set(True)
         await ctx.send(f"Goodbye channel set to {channel.mention}")
+
+    @welcomeset.command(name="log")
+    async def set_log_channel(self, ctx, channel: discord.TextChannel):
+        """Set the logging channel for all events"""
+        await self.config.guild(ctx.guild).log_channel.set(channel.id)
+        await ctx.send(f"Log channel set to {channel.mention}")
 
     @welcomeset.command(name="message")
     async def set_welcome_message(self, ctx, *, message: str):
@@ -93,6 +112,35 @@ class Welcome(commands.Cog):
         state = "enabled" if not current else "disabled"
         await ctx.send(f"User pinging {state}")
 
+    @welcomeset.command(name="test")
+    async def test_welcome(self, ctx):
+        """Test the welcome message"""
+        settings = await self.config.guild(ctx.guild).all()
+        if not settings["welcome_enabled"]:
+            return await ctx.send("Welcome messages are disabled.")
+        
+        channel = ctx.guild.get_channel(settings["welcome_channel"])
+        if not channel:
+            return await ctx.send("Welcome channel not set or not found.")
+
+        embed = discord.Embed(
+            title="👋 New Member!",
+            description=settings["welcome_message"].format(
+                member=ctx.author.mention if settings["ping_user"] else ctx.author.name,
+                server=ctx.guild.name
+            ),
+            color=settings["embed_color"],
+            timestamp=datetime.datetime.utcnow()
+        )
+        
+        embed.set_thumbnail(url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+        embed.set_footer(text=f"Member #{len(ctx.guild.members)} | TEST MESSAGE")
+
+        await channel.send(
+            content=ctx.author.mention if settings["ping_user"] else None,
+            embed=embed
+        )
+
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
     async def raidprotect(self, ctx):
@@ -106,6 +154,16 @@ class Welcome(commands.Cog):
         await self.config.guild(ctx.guild).raid_protection.set(not current)
         state = "enabled" if not current else "disabled"
         await ctx.send(f"Raid protection {state}")
+
+        # Log the change
+        embed = discord.Embed(
+            title="Raid Protection Status Changed",
+            description=f"Raid protection has been {state}",
+            color=await self.config.guild(ctx.guild).embed_color(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        embed.add_field(name="Changed By", value=ctx.author.mention)
+        await self.log_event(ctx.guild, embed)
 
     @raidprotect.command(name="settings")
     async def raid_settings(self, ctx, join_window: int = None, join_threshold: int = None, 
@@ -130,10 +188,16 @@ class Welcome(commands.Cog):
             "Min Account Age": f"{await self.config.guild(ctx.guild).minimum_account_age()} days"
         }
         
-        embed = discord.Embed(title="Raid Protection Settings", color=await self.config.guild(ctx.guild).embed_color())
+        embed = discord.Embed(
+            title="Raid Protection Settings",
+            color=await self.config.guild(ctx.guild).embed_color(),
+            timestamp=datetime.datetime.utcnow()
+        )
         for key, value in settings.items():
             embed.add_field(name=key, value=value)
+        
         await ctx.send(embed=embed)
+        await self.log_event(ctx.guild, embed)
 
     @raidprotect.command(name="action")
     async def set_raid_action(self, ctx, action: str):
@@ -144,6 +208,15 @@ class Welcome(commands.Cog):
         
         await self.config.guild(ctx.guild).action_on_raid.set(action.lower())
         await ctx.send(f"Raid action set to: {action}")
+
+        embed = discord.Embed(
+            title="Raid Action Changed",
+            description=f"Raid action has been set to: {action}",
+            color=await self.config.guild(ctx.guild).embed_color(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        embed.add_field(name="Changed By", value=ctx.author.mention)
+        await self.log_event(ctx.guild, embed)
 
     @raidprotect.command(name="alertchannel")
     async def set_alert_channel(self, ctx, channel: discord.TextChannel):
@@ -192,18 +265,27 @@ class Welcome(commands.Cog):
                          (datetime.datetime.utcnow() - member.joined_at).total_seconds() < 
                          await self.config.guild(guild).join_window()]
 
+        embed = discord.Embed(
+            title="🚨 Raid Detected",
+            description=f"Action taken: {action}\nAffected members: {len(recent_members)}",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.utcnow()
+        )
+
         if action == "lockdown":
             # Enable server lockdown
             self.lockdown_status[guild.id] = True
             lockdown_duration = await self.config.guild(guild).lockdown_duration()
             
-            # Disable join permissions
             try:
                 await guild.default_role.edit(permissions=discord.Permissions.none())
                 if alert_channel_id:
                     alert_channel = guild.get_channel(alert_channel_id)
                     if alert_channel:
                         await alert_channel.send(f"🔒 Server locked down for {lockdown_duration} seconds")
+                
+                embed.add_field(name="Lockdown Duration", value=f"{lockdown_duration} seconds")
+                await self.log_event(guild, embed)
                 
                 # Schedule lockdown removal
                 await asyncio.sleep(lockdown_duration)
@@ -212,23 +294,43 @@ class Welcome(commands.Cog):
                 
                 if alert_channel:
                     await alert_channel.send("🔓 Lockdown lifted")
+                
+                # Log lockdown end
+                embed = discord.Embed(
+                    title="🔓 Lockdown Lifted",
+                    description="Server permissions restored to normal",
+                    color=discord.Color.green(),
+                    timestamp=datetime.datetime.utcnow()
+                )
+                await self.log_event(guild, embed)
+                
             except discord.Forbidden:
                 if alert_channel:
                     await alert_channel.send("⚠️ Failed to lockdown server - insufficient permissions")
 
         elif action == "kick":
+            kicked_members = []
             for member in recent_members:
                 try:
                     await member.kick(reason="Raid protection")
+                    kicked_members.append(str(member))
                 except discord.Forbidden:
                     continue
+            
+            embed.add_field(name="Kicked Members", value="\n".join(kicked_members) if kicked_members else "None")
+            await self.log_event(guild, embed)
 
         elif action == "ban":
+            banned_members = []
             for member in recent_members:
                 try:
                     await member.ban(reason="Raid protection", delete_message_days=1)
+                    banned_members.append(str(member))
                 except discord.Forbidden:
                     continue
+            
+            embed.add_field(name="Banned Members", value="\n".join(banned_members) if banned_members else "None")
+            await self.log_event(guild, embed)
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
@@ -244,6 +346,15 @@ class Welcome(commands.Cog):
             if account_age < min_age:
                 try:
                     await member.kick(reason=f"Account too new ({account_age} days old)")
+                    embed = discord.Embed(
+                        title="Member Kicked - Account Too New",
+                        description=f"{member.mention} was kicked for having a new account",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.datetime.utcnow()
+                    )
+                    embed.add_field(name="Account Age", value=f"{account_age} days")
+                    embed.add_field(name="Minimum Required", value=f"{min_age} days")
+                    await self.log_event(guild, embed)
                     return
                 except discord.Forbidden:
                     pass
@@ -252,6 +363,13 @@ class Welcome(commands.Cog):
             if self.lockdown_status.get(guild.id, False):
                 try:
                     await member.kick(reason="Server is in lockdown mode")
+                    embed = discord.Embed(
+                        title="Member Kicked - Server Lockdown",
+                        description=f"{member.mention} was kicked due to server lockdown",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.datetime.utcnow()
+                    )
+                    await self.log_event(guild, embed)
                     return
                 except discord.Forbidden:
                     pass
@@ -294,6 +412,17 @@ class Welcome(commands.Cog):
             content=member.mention if ping else None,
             embed=embed
         )
+        
+        # Log the join
+        log_embed = discord.Embed(
+            title="Member Joined",
+            description=f"{member.mention} joined the server",
+            color=color,
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.add_field(name="Account Created", value=member.created_at.strftime("%Y-%m-%d %H:%M:%S"))
+        log_embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await self.log_event(guild, log_embed)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
@@ -325,6 +454,17 @@ class Welcome(commands.Cog):
         
         embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
         await channel.send(embed=embed)
+        
+        # Log the leave
+        log_embed = discord.Embed(
+            title="Member Left",
+            description=f"{member.mention} left the server",
+            color=color,
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.add_field(name="Joined At", value=member.joined_at.strftime("%Y-%m-%d %H:%M:%S") if member.joined_at else "Unknown")
+        log_embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await self.log_event(guild, log_embed)
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild, member):
@@ -355,3 +495,13 @@ class Welcome(commands.Cog):
         
         embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
         await channel.send(embed=embed)
+        
+        # Log the ban
+        log_embed = discord.Embed(
+            title="Member Banned",
+            description=f"{member.mention} was banned from the server",
+            color=discord.Color.red(),
+            timestamp=datetime.datetime.utcnow()
+        )
+        log_embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await self.log_event(guild, log_embed)
