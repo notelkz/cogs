@@ -18,7 +18,8 @@ class TwitchAnnouncer(commands.Cog):
             "client_id": None,
             "client_secret": None,
             "access_token": None,
-            "token_expires": None
+            "token_expires": None,
+            "check_frequency": 300  # Default 5 minutes
         }
         self.config.register_guild(**default_guild)
         self.check_streams_task = self.bot.loop.create_task(self.check_streams_loop())
@@ -72,11 +73,11 @@ class TwitchAnnouncer(commands.Cog):
             try:
                 for guild in self.bot.guilds:
                     await self.check_guild_streams(guild)
-                await asyncio.sleep(60)  # Check every 1 minute
+                    check_frequency = await self.config.guild(guild).check_frequency()
+                    await asyncio.sleep(check_frequency)
             except Exception as e:
                 print(f"Error in stream check loop: {e}")
                 await asyncio.sleep(60)
-
     async def check_guild_streams(self, guild):
         """Check streams for a specific guild."""
         streamers = await self.config.guild(guild).streamers()
@@ -144,9 +145,41 @@ class TwitchAnnouncer(commands.Cog):
         )
 
         if stream_data.get("thumbnail_url"):
-            thumbnail = stream_data["thumbnail_url"]
-            thumbnail = thumbnail.replace("{width}", "1280").replace("{height}", "720")
-            embed.set_image(url=thumbnail)
+            try:
+                thumbnail = stream_data["thumbnail_url"]
+                timestamp = int(datetime.now().timestamp())
+                
+                # Try different resolutions in case one works better
+                resolutions = [
+                    ("1280", "720"),
+                    ("640", "360"),
+                    ("480", "270")
+                ]
+                
+                for width, height in resolutions:
+                    try:
+                        current_thumbnail = thumbnail.replace("{width}", width).replace("{height}", height)
+                        current_thumbnail = f"{current_thumbnail}?t={timestamp}"
+                        
+                        # Verify the thumbnail URL is accessible
+                        async with aiohttp.ClientSession() as session:
+                            async with session.head(current_thumbnail) as resp:
+                                if resp.status == 200:
+                                    embed.set_image(url=current_thumbnail)
+                                    break
+                    except:
+                        continue
+                
+                # If no thumbnail was set, try the channel preview
+                if not embed.image:
+                    preview_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name}-1280x720.jpg"
+                    embed.set_image(url=f"{preview_url}?t={timestamp}")
+                    
+            except Exception as e:
+                print(f"Error setting stream thumbnail: {e}")
+                # If all else fails, try the direct preview URL
+                preview_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name}-1280x720.jpg"
+                embed.set_image(url=f"{preview_url}?t={timestamp}")
 
         view = StreamView(twitch_name)
         
@@ -154,7 +187,6 @@ class TwitchAnnouncer(commands.Cog):
             await channel.send(role_mentions, embed=embed, view=view)
         else:
             await channel.send(embed=embed, view=view)
-
     @commands.group(aliases=["tann"])
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
@@ -207,6 +239,65 @@ class TwitchAnnouncer(commands.Cog):
                 msg += f"- {twitch_name}\n"
         
         await ctx.send(msg)
+
+    @twitchannouncer.command(name="setfrequency")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_check_frequency(self, ctx, seconds: int):
+        """
+        Set how frequently to check for live streams (in seconds).
+        
+        Minimum: 30 seconds
+        Recommended: 60-300 seconds
+        
+        Example:
+        [p]twitchannouncer setfrequency 60
+        """
+        if seconds < 30:
+            await ctx.send("❌ Check frequency cannot be less than 30 seconds to avoid API rate limits.")
+            return
+            
+        streamer_count = len(await self.config.guild(ctx.guild).streamers())
+        requests_per_minute = (60 / seconds) * streamer_count
+        
+        # Warn if the frequency might cause rate limit issues
+        if requests_per_minute > 50:  # Conservative warning threshold
+            await ctx.send(f"⚠️ Warning: With {streamer_count} streamers, checking every {seconds} seconds "
+                          f"will make approximately {requests_per_minute:.1f} requests per minute to the Twitch API. "
+                          "This might cause rate limit issues.")
+        
+        await self.config.guild(ctx.guild).check_frequency.set(seconds)
+        await ctx.send(f"✅ Stream check frequency set to {seconds} seconds.")
+
+    @twitchannouncer.command(name="showfrequency")
+    @commands.guild_only()
+    async def show_check_frequency(self, ctx):
+        """Show the current check frequency for live streams."""
+        frequency = await self.config.guild(ctx.guild).check_frequency()
+        streamer_count = len(await self.config.guild(ctx.guild).streamers())
+        requests_per_minute = (60 / frequency) * streamer_count
+        
+        embed = discord.Embed(
+            title="Twitch Announcer Settings",
+            color=discord.Color.purple()
+        )
+        embed.add_field(
+            name="Check Frequency",
+            value=f"{frequency} seconds",
+            inline=True
+        )
+        embed.add_field(
+            name="Tracked Streamers",
+            value=str(streamer_count),
+            inline=True
+        )
+        embed.add_field(
+            name="Requests per Minute",
+            value=f"{requests_per_minute:.1f}",
+            inline=True
+        )
+        
+        await ctx.send(embed=embed)
 
     @twitchannouncer.command(name="addrole")
     async def add_ping_role(self, ctx, role: discord.Role):
