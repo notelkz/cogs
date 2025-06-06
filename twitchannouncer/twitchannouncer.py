@@ -72,10 +72,10 @@ class TwitchAnnouncer(commands.Cog):
             try:
                 for guild in self.bot.guilds:
                     await self.check_guild_streams(guild)
-                await asyncio.sleep(300)  # Check every 5 minutes
+                await asyncio.sleep(60)  # Check every 1 minute
             except Exception as e:
                 print(f"Error in stream check loop: {e}")
-                await asyncio.sleep(300)
+                await asyncio.sleep(60)
 
     async def check_guild_streams(self, guild):
         """Check streams for a specific guild."""
