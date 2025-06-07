@@ -259,9 +259,9 @@ class TwitchSchedule(commands.Cog):
             img = Image.open(self.template_path)
             draw = ImageDraw.Draw(img)
 
-            # Load fonts - adjusted for 1920x1080 and bold
-            date_font = ImageFont.truetype(self.font_path, 48, index=0)  # For "Week of"
-            schedule_font = ImageFont.truetype(self.font_path, 42, index=0)  # Slightly larger and bold
+            # Load fonts - adjusted for 1920x1080
+            date_font = ImageFont.truetype(self.font_path, 48)  # For "Week of"
+            schedule_font = ImageFont.truetype(self.font_path, 42)  # For schedule items
 
             # Add next week's date (top right)
             next_sunday = self.get_next_sunday()
@@ -269,13 +269,12 @@ class TwitchSchedule(commands.Cog):
             draw.text((1600, 20), date_text, font=date_font, fill=(255, 255, 255))
 
             # Schedule positioning for 1920x1080
-            day_x = 100       # X position for day/time
-            game_x = 100      # X position for game title
-            initial_y = 250   # Starting Y position for first day
-            row_height = 130  # Space between each day's entries
-            
-            # Offset for day text to sit just above the purple bar
-            day_offset = -10  # Adjust this to move day text up/down relative to the bar
+            day_x = 150        # X position for day/time
+            game_x = 150       # X position for game title
+            initial_y = 220    # Starting Y position for first day
+            row_height = 165   # Space between each row's start
+            day_offset = -40   # How far above the bar the day text should be
+            bar_height = 80    # Height of the semi-transparent bar
 
             # Add schedule items
             for i, segment in enumerate(schedule):
@@ -283,8 +282,8 @@ class TwitchSchedule(commands.Cog):
                     break
 
                 bar_y = initial_y + (i * row_height)  # Position of the purple bar
-                day_y = bar_y + day_offset           # Position of the day text
-                game_y = bar_y + 15                  # Position of the game text inside the bar
+                day_y = bar_y + day_offset           # Position day text above bar
+                game_y = bar_y + (bar_height // 2) - 20  # Center game text in bar
                 
                 # Format the day and time
                 start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
@@ -294,7 +293,7 @@ class TwitchSchedule(commands.Cog):
                 # Draw day and time (above the purple bar)
                 draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
                 
-                # Draw game title (inside the purple bar)
+                # Draw game title (centered in the purple bar)
                 draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
 
             # Save to buffer
@@ -307,8 +306,7 @@ class TwitchSchedule(commands.Cog):
             print(f"Error generating schedule image: {e}")
             traceback.print_exc()
             return None
-
-
+    
     async def update_schedule_image(self, channel: discord.TextChannel, schedule: list):
         """Update or create the pinned schedule image."""
         try:
