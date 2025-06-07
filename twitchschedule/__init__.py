@@ -1,6 +1,5 @@
-from redbot.core.bot import Red
+from redbot.core import commands
 from .twitchschedule import TwitchSchedule
 
-async def setup(bot: Red):
-    cog = TwitchSchedule(bot)
-    await bot.add_cog(cog)
+async def setup(bot):
+    await bot.add_cog(TwitchSchedule(bot))

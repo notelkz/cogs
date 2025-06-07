@@ -1,9 +1,14 @@
+import discord
+from redbot.core import commands, Config
+from redbot.core.bot import Red
+from typing import Optional
 import aiohttp
-import io
-from PIL import Image, ImageDraw, ImageFont
-from datetime import datetime, timedelta
-import os
+import datetime
 import asyncio
+import traceback
+from PIL import Image, ImageDraw, ImageFont
+import io
+import os
 
 class TwitchSchedule(commands.Cog):
     def __init__(self, bot: Red):
