@@ -35,7 +35,7 @@ class TwitchSchedule(commands.Cog):
         """Get OAuth token from Twitch"""
         credentials = await self.get_credentials()
         if not credentials:
-            print("No credentials found")
+            print("[TwitchSchedule] No credentials found")
             return None
             
         client_id, client_secret = credentials
@@ -46,21 +46,37 @@ class TwitchSchedule(commands.Cog):
                 "client_secret": client_secret,
                 "grant_type": "client_credentials"
             }
-            async with session.post(url, params=params) as resp:
-                data = await resp.json()
-                return data.get("access_token")
+            try:
+                async with session.post(url, params=params) as resp:
+                    print(f"[TwitchSchedule] Token request status: {resp.status}")
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        print(f"[TwitchSchedule] Token error response: {error_text}")
+                        return None
+                    data = await resp.json()
+                    if "access_token" not in data:
+                        print(f"[TwitchSchedule] No access token in response: {data}")
+                        return None
+                    print("[TwitchSchedule] Successfully obtained access token")
+                    return data.get("access_token")
+            except Exception as e:
+                print(f"[TwitchSchedule] Error getting token: {str(e)}")
+                return None
 
     async def get_schedule(self, username: str):
         """Fetch schedule from Twitch API"""
+        print(f"[TwitchSchedule] Attempting to fetch schedule for {username}")
+        
         credentials = await self.get_credentials()
         if not credentials:
-            print("No credentials found")
+            print("[TwitchSchedule] No credentials found")
             return None
 
         if not self.access_token:
+            print("[TwitchSchedule] No access token, attempting to get one")
             self.access_token = await self.get_twitch_token()
             if not self.access_token:
-                print("Failed to get access token")
+                print("[TwitchSchedule] Failed to get access token")
                 return None
 
         client_id, _ = credentials
@@ -69,31 +85,45 @@ class TwitchSchedule(commands.Cog):
             "Authorization": f"Bearer {self.access_token}"
         }
 
+        print(f"[TwitchSchedule] Headers being used: Client-ID: {client_id[:6]}... Bearer: {self.access_token[:6]}...")
+
         async with aiohttp.ClientSession() as session:
             url = f"https://api.twitch.tv/helix/schedule?broadcaster_login={username}"
+            print(f"[TwitchSchedule] Requesting URL: {url}")
             try:
                 async with session.get(url, headers=headers) as resp:
-                    print(f"Twitch API Response Status: {resp.status}")
-                    if resp.status == 401:  # Token expired
-                        print("Token expired, refreshing...")
+                    print(f"[TwitchSchedule] Response Status: {resp.status}")
+                    response_text = await resp.text()
+                    print(f"[TwitchSchedule] Response Text: {response_text}")
+                    
+                    if resp.status == 401:
+                        print("[TwitchSchedule] Token expired, refreshing...")
                         self.access_token = await self.get_twitch_token()
                         return await self.get_schedule(username)
+                    elif resp.status == 404:
+                        print(f"[TwitchSchedule] Schedule not found for user {username}")
+                        return None
                     elif resp.status != 200:
-                        response_text = await resp.text()
-                        print(f"Twitch API Error: {response_text}")
+                        print(f"[TwitchSchedule] Error response: {response_text}")
                         return None
                     
-                    data = await resp.json()
-                    print(f"Twitch API Response: {data}")
-                    if "data" not in data:
-                        print("No data in response")
+                    try:
+                        data = await resp.json()
+                        print(f"[TwitchSchedule] Parsed JSON response: {data}")
+                        
+                        if "data" not in data:
+                            print("[TwitchSchedule] No data field in response")
+                            return None
+                            
+                        segments = data.get("data", {}).get("segments", [])
+                        print(f"[TwitchSchedule] Found {len(segments)} schedule segments")
+                        return segments
+                    except Exception as e:
+                        print(f"[TwitchSchedule] Error parsing JSON: {str(e)}")
                         return None
-                    segments = data["data"].get("segments", [])
-                    if not segments:
-                        print("No schedule segments found")
-                    return segments
+                        
             except Exception as e:
-                print(f"Error fetching schedule: {str(e)}")
+                print(f"[TwitchSchedule] Network error: {str(e)}")
                 return None
 
     async def schedule_update_loop(self):
@@ -113,11 +143,11 @@ class TwitchSchedule(commands.Cog):
                             if schedule:
                                 await self.post_schedule(channel, schedule)
                             else:
-                                print(f"Could not fetch schedule for {twitch_username}")
+                                print(f"[TwitchSchedule] Could not fetch schedule for {twitch_username}")
 
                 await asyncio.sleep(update_interval)
             except Exception as e:
-                print(f"Error in schedule update loop: {e}")
+                print(f"[TwitchSchedule] Error in schedule update loop: {e}")
                 await asyncio.sleep(60)
 
     async def post_schedule(self, channel: discord.TextChannel, schedule: list):
@@ -131,6 +161,7 @@ class TwitchSchedule(commands.Cog):
             timestamp=datetime.datetime.utcnow()
         )
 
+        future_streams = False
         for segment in schedule:
             start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
             title = segment["title"]
@@ -138,13 +169,14 @@ class TwitchSchedule(commands.Cog):
 
             # Only show future streams
             if start_time > datetime.datetime.utcnow():
+                future_streams = True
                 embed.add_field(
                     name=f"{start_time.strftime('%Y-%m-%d %H:%M UTC')}",
                     value=f"**{title}**\nCategory: {category}",
                     inline=False
                 )
 
-        if len(embed.fields) == 0:
+        if not future_streams:
             embed.add_field(
                 name="No Upcoming Streams",
                 value="Check back later for new streams!",
@@ -164,26 +196,23 @@ class TwitchSchedule(commands.Cog):
     @commands.is_owner()
     async def settwitchcreds(self, ctx, client_id: str, client_secret: str):
         """Set Twitch API credentials. Only bot owner can use this."""
-        # This message will self-destruct after 5 seconds
         await ctx.message.delete(delay=5)
         
         await self.bot.set_shared_api_tokens("twitch", 
             client_id=client_id,
             client_secret=client_secret
         )
-        # This response will self-destruct after 5 seconds
         await ctx.send("Twitch API credentials have been set!", delete_after=5)
 
     @commands.command()
     @commands.is_owner()
     async def checktwitchcreds(self, ctx):
-        """Check if Twitch credentials are properly set"""
-        # Delete the command message for security
+        """Check if Twitch credentials are properly set and working"""
         await ctx.message.delete(delay=5)
         
         credentials = await self.get_credentials()
         if not credentials:
-            await ctx.send("No Twitch credentials found!", delete_after=5)
+            await ctx.send("No Twitch credentials found! Use `[p]settwitchcreds` to set them.", delete_after=10)
             return
             
         client_id, client_secret = credentials
@@ -193,13 +222,30 @@ class TwitchSchedule(commands.Cog):
         # Test token generation
         token = await self.get_twitch_token()
         
-        embed = discord.Embed(title="Twitch Credentials Status", color=discord.Color.blue())
+        embed = discord.Embed(
+            title="Twitch Credentials Status",
+            color=discord.Color.blue() if token else discord.Color.red()
+        )
         embed.add_field(name="Client ID", value=f"Set: {masked_id}", inline=False)
         embed.add_field(name="Client Secret", value=f"Set: {masked_secret}", inline=False)
-        embed.add_field(name="Token Generation", value="Success" if token else "Failed", inline=False)
+        embed.add_field(name="Token Generation", value="✅ Success" if token else "❌ Failed", inline=False)
         
-        # Send and delete after 10 seconds
-        await ctx.send(embed=embed, delete_after=10)
+        if token:
+            # Test API access
+            test_url = "https://api.twitch.tv/helix/users"
+            headers = {
+                "Client-ID": client_id,
+                "Authorization": f"Bearer {token}"
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(test_url, headers=headers) as resp:
+                    embed.add_field(
+                        name="API Test",
+                        value=f"✅ Working (Status: {resp.status})" if resp.status == 200 else f"❌ Failed (Status: {resp.status})",
+                        inline=False
+                    )
+        
+        await ctx.send(embed=embed, delete_after=15)
 
     @commands.group(aliases=["tsched"])
     @commands.admin_or_permissions(manage_guild=True)
@@ -266,6 +312,8 @@ class TwitchSchedule(commands.Cog):
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
 
+        print(f"[TwitchSchedule] Force update requested for {twitch_username}")
+
         if not channel_id or not twitch_username:
             await ctx.send("Please set both channel and username first!")
             return
@@ -275,21 +323,29 @@ class TwitchSchedule(commands.Cog):
             await ctx.send("Cannot find the configured channel!")
             return
 
-        # Add a check for credentials
         credentials = await self.get_credentials()
         if not credentials:
             await ctx.send("Twitch API credentials are not set! Please use `[p]settwitchcreds` to set them.")
             return
 
-        # Add debug message
-        await ctx.send(f"Attempting to fetch schedule for {twitch_username}...")
+        status_message = await ctx.send(f"Attempting to fetch schedule for {twitch_username}...")
         
         schedule = await self.get_schedule(twitch_username)
         if schedule:
             await self.post_schedule(channel, schedule)
-            await ctx.send("Schedule has been updated!")
+            await status_message.edit(content="Schedule has been updated!")
         else:
-            await ctx.send("Could not fetch schedule. Please check the username and credentials. Check bot logs for more details.")
+            error_msg = (
+                "Could not fetch schedule. Common issues:\n"
+                "1. Incorrect Twitch username\n"
+                "2. The streamer doesn't have any scheduled streams\n"
+                "3. API credentials might be invalid\n\n"
+                f"Current settings:\n"
+                f"Username: {twitch_username}\n"
+                f"Channel: {channel.mention}\n\n"
+                "Use `[p]checktwitchcreds` to verify API credentials."
+            )
+            await status_message.edit(content=error_msg)
 
 def setup(bot: Red):
     bot.add_cog(TwitchSchedule(bot))
