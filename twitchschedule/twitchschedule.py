@@ -231,21 +231,21 @@ class TwitchSchedule(commands.Cog):
                 print(f"Error fetching boxart: {e}")
         return None
 
-async def ensure_resources(self):
-    """Ensure template and font files are available."""
-    font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
-    template_url = "https://zerolivesleft.net/notelkz/schedule.png"
-    
-    # Force redownload by removing existing files
-    if os.path.exists(self.font_path):
-        os.remove(self.font_path)
-    if os.path.exists(self.template_path):
-        os.remove(self.template_path)
-    
-    font_ok = await self.download_file(font_url, self.font_path)
-    template_ok = await self.download_file(template_url, self.template_path)
-    
-    return font_ok and template_ok
+    async def ensure_resources(self):
+        """Ensure template and font files are available."""
+        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
+        template_url = "https://zerolivesleft.net/notelkz/schedule.png"
+        
+        # Force redownload by removing existing files
+        if os.path.exists(self.font_path):
+            os.remove(self.font_path)
+        if os.path.exists(self.template_path):
+            os.remove(self.template_path)
+        
+        font_ok = await self.download_file(font_url, self.font_path)
+        template_ok = await self.download_file(template_url, self.template_path)
+        
+        return font_ok and template_ok
 
     async def generate_schedule_image(self, schedule: list) -> Optional[io.BytesIO]:
         """Generate schedule image using template."""
