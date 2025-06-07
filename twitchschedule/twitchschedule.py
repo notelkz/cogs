@@ -436,8 +436,8 @@ class TwitchSchedule(commands.Cog):
 
         await ctx.send(embed=embed)
 
-        @twitchschedule.command(name="settings")
-        async def settings(self, ctx):
+    @twitchschedule.command(name="settings")
+    async def settings(self, ctx):
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
         update_interval = await self.config.guild(ctx.guild).update_interval()
