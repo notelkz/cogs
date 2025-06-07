@@ -199,13 +199,16 @@ class TwitchSchedule(commands.Cog):
             title = segment["title"]
             category = segment.get("category", {}).get("name", "No Category")
 
-            if start_time > datetime.datetime.utcnow():
+            # Use offset-aware UTC datetime for comparison
+            if start_time > datetime.datetime.now(datetime.timezone.utc):
                 future_streams = True
                 embed.add_field(
                     name=f"{start_time.strftime('%Y-%m-%d %H:%M UTC')}",
                     value=f"**{title}**\nCategory: {category}",
                     inline=False
                 )
+
+
 
         if not future_streams:
             embed.add_field(
