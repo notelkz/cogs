@@ -271,10 +271,10 @@ class TwitchSchedule(commands.Cog):
             # Schedule positioning for 1920x1080
             day_x = 125    # X position for day/time
             game_x = 125   # X position for game title
-            initial_y = 350    # Starting Y position for first day
-            row_height = 100   # Space between each row's start
+            initial_y = 280    # Starting Y position for first day
+            row_height = 160   # Space between each row's start
             day_offset = -45   # How far above the bar the day text should be
-            bar_height = 80    # Height of the semi-transparent bar
+            bar_height = 70    # Height of the semi-transparent bar
 
             # Add schedule items
             for i, segment in enumerate(schedule):
