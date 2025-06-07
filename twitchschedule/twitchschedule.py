@@ -231,6 +231,22 @@ class TwitchSchedule(commands.Cog):
                 print(f"Error fetching boxart: {e}")
         return None
 
+    async def ensure_resources(self):
+        """Ensure template and font files are available."""
+        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
+        template_url = "https://zerolivesleft.net/notelkz/schedule.png"
+        
+        # Force redownload by removing existing files
+        if os.path.exists(self.font_path):
+            os.remove(self.font_path)
+        if os.path.exists(self.template_path):
+            os.remove(self.template_path)
+        
+        font_ok = await self.download_file(font_url, self.font_path)
+        template_ok = await self.download_file(template_url, self.template_path)
+        
+        return font_ok and template_ok
+
     async def generate_schedule_image(self, schedule: list) -> Optional[io.BytesIO]:
         """Generate schedule image using template."""
         try:
@@ -279,7 +295,18 @@ class TwitchSchedule(commands.Cog):
                 draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
                 
                 # Draw game title (inside the purple bar)
-                draw.text((game_x, game_y), title, font=
+                draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
+
+            # Save to buffer
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            buf.seek(0)
+            return buf
+
+        except Exception as e:
+            print(f"Error generating schedule image: {e}")
+            traceback.print_exc()
+            return None
 
 
     async def update_schedule_image(self, channel: discord.TextChannel, schedule: list):
