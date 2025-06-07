@@ -504,7 +504,9 @@ class TwitchSchedule(commands.Cog):
         print("=== END CREDENTIALS CHECK ===\n")
         await ctx.send(embed=embed, delete_after=15)
 
-    @commands.group(self, ctx):
+    @commands.group(aliases=["tsched"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def twitchschedule(self, ctx):
         """Manage Twitch schedule settings."""
         if ctx.invoked_subcommand is None:
             await ctx.send_help()
