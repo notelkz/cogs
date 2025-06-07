@@ -474,3 +474,4 @@ class TwitchSchedule(commands.Cog):
 
 def setup(bot: Red):
     bot.add_cog(TwitchSchedule(bot))
+
