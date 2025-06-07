@@ -231,77 +231,62 @@ class TwitchSchedule(commands.Cog):
                 print(f"Error fetching boxart: {e}")
         return None
 
-    async def ensure_resources(self):
-        """Ensure template and font files are available."""
-        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
-        template_url = "https://zerolivesleft.net/notelkz/schedule.png"
-        
-        # Force redownload by removing existing files
-        if os.path.exists(self.font_path):
-            os.remove(self.font_path)
-        if os.path.exists(self.template_path):
-            os.remove(self.template_path)
-        
-        font_ok = await self.download_file(font_url, self.font_path)
-        template_ok = await self.download_file(template_url, self.template_path)
-        
-        return font_ok and template_ok
-
     async def generate_schedule_image(self, schedule: list) -> Optional[io.BytesIO]:
-        """Generate schedule image using template."""
-        try:
-            # Ensure we have the required files
-            if not await self.ensure_resources():
-                print("Failed to download required resources")
-                return None
-
-            # Open template image
-            img = Image.open(self.template_path)
-            draw = ImageDraw.Draw(img)
-
-            # Load fonts - adjusted for 1920x1080
-            date_font = ImageFont.truetype(self.font_path, 48)  # Larger font for date
-            schedule_font = ImageFont.truetype(self.font_path, 36)  # Larger font for schedule
-
-            # Add next week's date (top right)
-            next_sunday = self.get_next_sunday()
-            date_text = next_sunday.strftime("Week of %B %d")
-            draw.text((1500, 40), date_text, font=date_font, fill=(255, 255, 255))
-
-            # Schedule positioning for 1920x1080
-            day_x = 200       # X position for day/time
-            title_x = 200     # X position for game title
-            initial_y = 300   # Starting Y position
-            row_height = 150  # Space between each day's entries
-
-            # Add schedule items
-            for i, segment in enumerate(schedule):
-                if i >= 5:  # Only show up to 5 days
-                    break
-
-                y_position = initial_y + (i * row_height)
-                
-                # Format the day and time
-                start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
-                day_time = start_time.strftime("%A // %I:%M%p").upper()
-                title = segment["title"]
-
-                # Draw day and time (replaces {{DAY X}})
-                draw.text((day_x, y_position), day_time, font=schedule_font, fill=(255, 255, 255))
-                
-                # Draw game title (replaces {{GAME X}})
-                draw.text((title_x, y_position + 45), title, font=schedule_font, fill=(255, 255, 255))
-
-            # Save to buffer
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            buf.seek(0)
-            return buf
-
-        except Exception as e:
-            print(f"Error generating schedule image: {e}")
-            traceback.print_exc()  # This will print the full error trace
+    """Generate schedule image using template."""
+    try:
+        # Ensure we have the required files
+        if not await self.ensure_resources():
+            print("Failed to download required resources")
             return None
+
+        # Open template image
+        img = Image.open(self.template_path)
+        draw = ImageDraw.Draw(img)
+
+        # Load fonts - adjusted for 1920x1080
+        date_font = ImageFont.truetype(self.font_path, 48)  # For "Week of"
+        schedule_font = ImageFont.truetype(self.font_path, 36)  # For schedule items
+
+        # Add next week's date (top right)
+        next_sunday = self.get_next_sunday()
+        date_text = next_sunday.strftime("Week of %B %d")
+        draw.text((1600, 20), date_text, font=date_font, fill=(255, 255, 255))
+
+        # Schedule positioning for 1920x1080
+        day_x = 100       # X position for day/time
+        title_x = 100     # X position for game title
+        initial_y = 250   # Starting Y position (first purple bar)
+        row_height = 130  # Space between each day's entries
+
+        # Add schedule items
+        for i, segment in enumerate(schedule):
+            if i >= 5:  # Only show up to 5 days
+                break
+
+            y_position = initial_y + (i * row_height)
+            
+            # Format the day and time
+            start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
+            day_time = start_time.strftime("%A // %I:%M%p").upper()
+            title = segment["title"]
+
+            # Draw day and time (on the purple bar)
+            draw.text((day_x, y_position), day_time, font=schedule_font, fill=(255, 255, 255))
+            
+            # Draw game title (below the day/time)
+            draw.text((title_x, y_position + 50), title, font=schedule_font, fill=(255, 255, 255))
+
+        # Save to buffer
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+    except Exception as e:
+        print(f"Error generating schedule image: {e}")
+        traceback.print_exc()
+        return None
+
 
     async def update_schedule_image(self, channel: discord.TextChannel, schedule: list):
         """Update or create the pinned schedule image."""
