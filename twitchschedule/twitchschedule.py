@@ -33,6 +33,13 @@ class TwitchSchedule(commands.Cog):
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
+    async def get_credentials(self) -> Optional[tuple[str, str]]:
+        """Get stored Twitch credentials"""
+        tokens = await self.bot.get_shared_api_tokens("twitch")
+        if tokens.get("client_id") and tokens.get("client_secret"):
+            return tokens["client_id"], tokens["client_secret"]
+        return None
+
     async def get_schedule(self, username: str):
         """Fetch schedule from Twitch API"""
         print("\n=== FETCHING TWITCH SCHEDULE ===")
