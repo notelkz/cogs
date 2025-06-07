@@ -111,6 +111,7 @@ class TwitchSchedule(commands.Cog):
                         return None
 
                     broadcaster_id = user_data["data"][0]["id"]
+                    broadcaster_name = user_data["data"][0]["login"]
                     print(f"Found broadcaster ID: {broadcaster_id}")
 
             except Exception as e:
@@ -146,6 +147,10 @@ class TwitchSchedule(commands.Cog):
                         segments = data.get("data", {}).get("segments", [])
                         print(f"Found {len(segments)} schedule segments")
 
+                        # Attach broadcaster_name to each segment for later use
+                        for seg in segments:
+                            seg["broadcaster_name"] = broadcaster_name
+
                         if not segments:
                             print("✓ No scheduled streams found")
                             return []
@@ -172,7 +177,7 @@ class TwitchSchedule(commands.Cog):
                     return None
                 data = await resp.json()
                 if data.get("data"):
-                    return data["data"][0]["box_art_url"].replace("{width}", "144").replace("{height}", "192")
+                    return data["data"][0]["box_art_url"].replace("{width}", "288").replace("{height}", "384")
         return None
 
     async def schedule_update_loop(self):
@@ -200,15 +205,13 @@ class TwitchSchedule(commands.Cog):
                 await asyncio.sleep(60)
 
     async def post_schedule(self, channel: discord.TextChannel, schedule: list):
-        embed = discord.Embed(
-            title="📺 Upcoming Streams",
-            color=discord.Color.purple(),
-            timestamp=datetime.datetime.now(datetime.timezone.utc)
-        )
+        # Delete previous schedule embeds by this bot
+        async for message in channel.history(limit=20):
+            if message.author == self.bot.user and message.embeds:
+                await message.delete()
 
-        future_streams = False
-        headers = None
         credentials = await self.get_credentials()
+        headers = None
         if credentials and self.access_token:
             client_id, _ = credentials
             headers = {
@@ -216,9 +219,12 @@ class TwitchSchedule(commands.Cog):
                 "Authorization": f"Bearer {self.access_token}"
             }
 
-        thumbnail_set = False
+        future_streams = 0
         for segment in schedule:
             start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
+            if start_time <= datetime.datetime.now(datetime.timezone.utc):
+                continue  # Skip past streams
+
             title = segment["title"]
             category = segment.get("category", {})
             game_name = category.get("name", "No Category")
@@ -226,38 +232,55 @@ class TwitchSchedule(commands.Cog):
             unix_ts = int(start_time.timestamp())
             time_str = f"<t:{unix_ts}:F>"
 
+            # Duration
+            end_time = segment.get("end_time")
+            if end_time:
+                end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                duration = end_dt - start_time
+                hours, remainder = divmod(duration.seconds, 3600)
+                minutes = remainder // 60
+                duration_str = f"{hours}h {minutes}m"
+            else:
+                duration_str = "Unknown"
+
+            # Recurrence
+            recurrence = segment.get("recurrence")
+            recurrence_str = recurrence if recurrence else "No"
+
             boxart_url = await self.get_game_boxart(game_id, headers) if headers and game_id else None
 
-            if start_time > datetime.datetime.now(datetime.timezone.utc):
-                future_streams = True
-                desc = f"**{title}**\n"
-                desc += f"🕒 {time_str}\n"
-                desc += f"🎮 {game_name}\n"
-                if boxart_url:
-                    desc += f"[‎]({boxart_url})"  # Invisible char to force image preview (not always works)
-                embed.add_field(
-                    name="\u200b",
-                    value=desc,
-                    inline=False
-                )
-                if boxart_url and not thumbnail_set:
-                    embed.set_thumbnail(url=boxart_url)
-                    thumbnail_set = True
+            # Twitch channel link
+            twitch_username = segment.get("broadcaster_name")
+            if not twitch_username:
+                twitch_username = await self.config.guild(channel.guild).twitch_username()
+            twitch_url = f"https://twitch.tv/{twitch_username}"
 
-        if not future_streams:
-            embed.add_field(
-                name="No Upcoming Streams",
-                value="Check back later for new streams!",
-                inline=False
+            embed = discord.Embed(
+                title=f"{title}",
+                url=twitch_url,
+                description=f"**[Watch Live Here]({twitch_url})**",
+                color=discord.Color.purple(),
+                timestamp=start_time
             )
+            embed.add_field(name="🕒 Start Time", value=time_str, inline=True)
+            embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
+            embed.add_field(name="🎮 Game", value=game_name, inline=True)
+            embed.add_field(name="🔁 Recurring?", value=recurrence_str, inline=True)
+            if boxart_url:
+                embed.set_thumbnail(url=boxart_url)
+                embed.set_image(url=boxart_url)
+            embed.set_footer(text=f"Scheduled Stream • {twitch_username}")
 
-        embed.set_footer(text="Last Updated")
+            await channel.send(embed=embed)
+            future_streams += 1
 
-        async for message in channel.history(limit=10):
-            if message.author == self.bot.user and message.embeds:
-                await message.delete()
-
-        await channel.send(embed=embed)
+        if future_streams == 0:
+            embed = discord.Embed(
+                title="No Upcoming Streams",
+                description="Check back later for new streams!",
+                color=discord.Color.purple()
+            )
+            await channel.send(embed=embed)
 
     @commands.command()
     async def testsend(self, ctx):
@@ -355,21 +378,25 @@ class TwitchSchedule(commands.Cog):
     @commands.group(aliases=["tsched"])
     @commands.admin_or_permissions(manage_guild=True)
     async def twitchschedule(self, ctx):
+        """Twitch schedule configuration commands."""
         if ctx.invoked_subcommand is None:
             await ctx.send_help()
 
     @twitchschedule.command(name="setchannel")
     async def setchannel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for schedule updates."""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
         await ctx.send(f"Schedule updates will be posted in {channel.mention}")
 
     @twitchschedule.command(name="setuser")
     async def setuser(self, ctx, username: str):
+        """Set the Twitch username to track."""
         await self.config.guild(ctx.guild).twitch_username.set(username.lower())
         await ctx.send(f"Now tracking schedule for {username}")
 
     @twitchschedule.command(name="setinterval")
     async def setinterval(self, ctx, hours: int):
+        """Set how often to update the schedule (in hours)."""
         if hours < 1:
             await ctx.send("Interval must be at least 1 hour")
             return
@@ -378,6 +405,7 @@ class TwitchSchedule(commands.Cog):
 
     @twitchschedule.command(name="settings")
     async def settings(self, ctx):
+        """Show current Twitch schedule settings."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
         update_interval = await self.config.guild(ctx.guild).update_interval()
@@ -408,6 +436,7 @@ class TwitchSchedule(commands.Cog):
 
     @twitchschedule.command(name="forceupdate")
     async def forceupdate(self, ctx):
+        """Force an immediate schedule update."""
         try:
             print("\n=== FORCE UPDATE REQUESTED ===")
             channel_id = await self.config.guild(ctx.guild).channel_id()
