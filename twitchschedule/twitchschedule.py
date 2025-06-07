@@ -406,6 +406,36 @@ class TwitchSchedule(commands.Cog):
 
         await ctx.send(embed=embed)
 
+        @twitchschedule.command(name="settings")
+    async def settings(self, ctx):
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        update_interval = await self.config.guild(ctx.guild).update_interval()
+
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+
+        embed = discord.Embed(
+            title="Twitch Schedule Settings",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="Channel",
+            value=channel.mention if channel else "Not set",
+            inline=False
+        )
+        embed.add_field(
+            name="Twitch Username",
+            value=twitch_username or "Not set",
+            inline=False
+        )
+        embed.add_field(
+            name="Update Interval",
+            value=f"{update_interval // 3600} hours" if update_interval else "Not set",
+            inline=False
+        )
+
+        await ctx.send(embed=embed)
+
     @twitchschedule.command(name="forceupdate")
     async def forceupdate(self, ctx):
         try:
@@ -474,4 +504,5 @@ class TwitchSchedule(commands.Cog):
 
 def setup(bot: Red):
     bot.add_cog(TwitchSchedule(bot))
+
 
