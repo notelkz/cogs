@@ -243,33 +243,38 @@ class TwitchSchedule(commands.Cog):
             img = Image.open(self.template_path)
             draw = ImageDraw.Draw(img)
 
-            # Load font
+            # Load fonts
             date_font = ImageFont.truetype(self.font_path, 32)
             schedule_font = ImageFont.truetype(self.font_path, 24)
 
-            # Add next week's date
+            # Add next week's date (top right)
             next_sunday = self.get_next_sunday()
             date_text = next_sunday.strftime("Week of %B %d")
-            # Position in top right (adjust coordinates as needed)
             draw.text((500, 20), date_text, font=date_font, fill=(255, 255, 255))
 
-            # Add schedule items
-            y_start = 150  # Starting Y position for schedule items
-            y_spacing = 50  # Space between items
+            # Schedule positioning
+            day_x = 50  # X position for day/time
+            title_x = 50  # X position for game title
+            initial_y = 150  # Starting Y position
+            row_height = 100  # Space between each day's entries
 
-            for segment in schedule:
+            # Add schedule items
+            for i, segment in enumerate(schedule):
+                if i >= 5:  # Only show up to 5 days
+                    break
+
+                y_position = initial_y + (i * row_height)
+                
+                # Format the day and time
                 start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
-                title = segment["title"]
-                game = segment.get("category", {}).get("name", "")
-                
-                # Format: "DAY // TIME"
                 day_time = start_time.strftime("%A // %I:%M%p").upper()
+                title = segment["title"]
+
+                # Draw day and time (replaces {{DAY X}})
+                draw.text((day_x, y_position), day_time, font=schedule_font, fill=(255, 255, 255))
                 
-                # Draw the schedule line
-                draw.text((50, y_start), day_time, font=schedule_font, fill=(255, 255, 255))
-                draw.text((50, y_start + 25), f"{title}", font=schedule_font, fill=(255, 255, 255))
-                
-                y_start += y_spacing
+                # Draw game title (replaces {{GAME X}})
+                draw.text((title_x, y_position + 35), title, font=schedule_font, fill=(255, 255, 255))
 
             # Save to buffer
             buf = io.BytesIO()
@@ -280,6 +285,7 @@ class TwitchSchedule(commands.Cog):
         except Exception as e:
             print(f"Error generating schedule image: {e}")
             return None
+
     async def update_schedule_image(self, channel: discord.TextChannel, schedule: list):
         """Update or create the pinned schedule image."""
         try:
