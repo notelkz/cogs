@@ -7,6 +7,8 @@ import datetime
 import asyncio
 
 class TwitchSchedule(commands.Cog):
+    """Sync Twitch streaming schedule to Discord"""
+    
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
@@ -33,6 +35,7 @@ class TwitchSchedule(commands.Cog):
         """Get OAuth token from Twitch"""
         credentials = await self.get_credentials()
         if not credentials:
+            print("No credentials found")
             return None
             
         client_id, client_secret = credentials
@@ -51,10 +54,14 @@ class TwitchSchedule(commands.Cog):
         """Fetch schedule from Twitch API"""
         credentials = await self.get_credentials()
         if not credentials:
+            print("No credentials found")
             return None
 
         if not self.access_token:
             self.access_token = await self.get_twitch_token()
+            if not self.access_token:
+                print("Failed to get access token")
+                return None
 
         client_id, _ = credentials
         headers = {
@@ -64,12 +71,24 @@ class TwitchSchedule(commands.Cog):
 
         async with aiohttp.ClientSession() as session:
             url = f"https://api.twitch.tv/helix/schedule?broadcaster_login={username}"
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 401:  # Token expired
-                    self.access_token = await self.get_twitch_token()
-                    return await self.get_schedule(username)
-                data = await resp.json()
-                return data.get("data", {}).get("segments", [])
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    print(f"Twitch API Response Status: {resp.status}")
+                    if resp.status == 401:  # Token expired
+                        print("Token expired, refreshing...")
+                        self.access_token = await self.get_twitch_token()
+                        return await self.get_schedule(username)
+                    elif resp.status != 200:
+                        response_text = await resp.text()
+                        print(f"Twitch API Error: {response_text}")
+                        return None
+                    
+                    data = await resp.json()
+                    print(f"Twitch API Response: {data}")
+                    return data.get("data", {}).get("segments", [])
+            except Exception as e:
+                print(f"Error fetching schedule: {str(e)}")
+                return None
 
     async def schedule_update_loop(self):
         """Loop to periodically update the schedule"""
@@ -140,7 +159,34 @@ class TwitchSchedule(commands.Cog):
         # This response will self-destruct after 5 seconds
         await ctx.send("Twitch API credentials have been set!", delete_after=5)
 
-    @commands.group()
+    @commands.command()
+    @commands.is_owner()
+    async def checktwitchcreds(self, ctx):
+        """Check if Twitch credentials are properly set"""
+        # Delete the command message for security
+        await ctx.message.delete(delay=5)
+        
+        credentials = await self.get_credentials()
+        if not credentials:
+            await ctx.send("No Twitch credentials found!", delete_after=5)
+            return
+            
+        client_id, client_secret = credentials
+        masked_id = client_id[:6] + "*" * (len(client_id) - 6)
+        masked_secret = client_secret[:6] + "*" * (len(client_secret) - 6)
+        
+        # Test token generation
+        token = await self.get_twitch_token()
+        
+        embed = discord.Embed(title="Twitch Credentials Status", color=discord.Color.blue())
+        embed.add_field(name="Client ID", value=f"Set: {masked_id}", inline=False)
+        embed.add_field(name="Client Secret", value=f"Set: {masked_secret}", inline=False)
+        embed.add_field(name="Token Generation", value="Success" if token else "Failed", inline=False)
+        
+        # Send and delete after 10 seconds
+        await ctx.send(embed=embed, delete_after=10)
+
+    @commands.group(aliases=["tsched"])
     @commands.admin_or_permissions(manage_guild=True)
     async def twitchschedule(self, ctx):
         """Manage Twitch schedule settings"""
@@ -214,12 +260,21 @@ class TwitchSchedule(commands.Cog):
             await ctx.send("Cannot find the configured channel!")
             return
 
+        # Add a check for credentials
+        credentials = await self.get_credentials()
+        if not credentials:
+            await ctx.send("Twitch API credentials are not set! Please use `[p]settwitchcreds` to set them.")
+            return
+
+        # Add debug message
+        await ctx.send(f"Attempting to fetch schedule for {twitch_username}...")
+        
         schedule = await self.get_schedule(twitch_username)
         if schedule:
             await self.post_schedule(channel, schedule)
             await ctx.send("Schedule has been updated!")
         else:
-            await ctx.send("Could not fetch schedule. Please check the username and credentials.")
+            await ctx.send("Could not fetch schedule. Please check the username and credentials. Check bot logs for more details.")
 
 def setup(bot: Red):
     bot.add_cog(TwitchSchedule(bot))
