@@ -1,14 +1,11 @@
 {
     "author": ["YourName"],
-    "install_msg": "Thanks for installing TwitchSchedule! To get started, set your Twitch API credentials using `[p]settwitchcreds` in DM, then configure your schedule using `[p]twitchschedule`.",
+    "install_msg": "Thanks for installing TwitchSchedule!",
     "name": "TwitchSchedule",
     "disabled": false,
     "short": "Sync Twitch streaming schedule to Discord",
     "description": "Automatically syncs your Twitch streaming schedule to a Discord channel",
     "tags": ["twitch", "schedule", "streaming"],
-    "required_cogs": {},
-    "requirements": [],
-    "type": "COG",
-    "end_user_data_statement": "This cog stores channel IDs and Twitch usernames for schedule synchronization. No personal data is stored.",
+    "requirements": ["Pillow"],
     "min_bot_version": "3.5.0"
 }
