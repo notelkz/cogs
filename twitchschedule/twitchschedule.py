@@ -85,7 +85,13 @@ class TwitchSchedule(commands.Cog):
                     
                     data = await resp.json()
                     print(f"Twitch API Response: {data}")
-                    return data.get("data", {}).get("segments", [])
+                    if "data" not in data:
+                        print("No data in response")
+                        return None
+                    segments = data["data"].get("segments", [])
+                    if not segments:
+                        print("No schedule segments found")
+                    return segments
             except Exception as e:
                 print(f"Error fetching schedule: {str(e)}")
                 return None
@@ -130,9 +136,18 @@ class TwitchSchedule(commands.Cog):
             title = segment["title"]
             category = segment.get("category", {}).get("name", "No Category")
 
+            # Only show future streams
+            if start_time > datetime.datetime.utcnow():
+                embed.add_field(
+                    name=f"{start_time.strftime('%Y-%m-%d %H:%M UTC')}",
+                    value=f"**{title}**\nCategory: {category}",
+                    inline=False
+                )
+
+        if len(embed.fields) == 0:
             embed.add_field(
-                name=f"{start_time.strftime('%Y-%m-%d %H:%M UTC')}",
-                value=f"**{title}**\nCategory: {category}",
+                name="No Upcoming Streams",
+                value="Check back later for new streams!",
                 inline=False
             )
 
@@ -193,19 +208,19 @@ class TwitchSchedule(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help()
 
-    @twitchschedule.command()
+    @twitchschedule.command(name="setchannel")
     async def setchannel(self, ctx, channel: discord.TextChannel):
         """Set the channel for schedule updates"""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
         await ctx.send(f"Schedule updates will be posted in {channel.mention}")
 
-    @twitchschedule.command()
+    @twitchschedule.command(name="setuser")
     async def setuser(self, ctx, username: str):
         """Set the Twitch username to track"""
         await self.config.guild(ctx.guild).twitch_username.set(username.lower())
         await ctx.send(f"Now tracking schedule for {username}")
 
-    @twitchschedule.command()
+    @twitchschedule.command(name="setinterval")
     async def setinterval(self, ctx, hours: int):
         """Set how often to check for schedule updates (in hours)"""
         if hours < 1:
@@ -214,7 +229,7 @@ class TwitchSchedule(commands.Cog):
         await self.config.guild(ctx.guild).update_interval.set(hours * 3600)
         await ctx.send(f"Schedule will update every {hours} hours")
 
-    @twitchschedule.command()
+    @twitchschedule.command(name="settings")
     async def settings(self, ctx):
         """Show current settings"""
         channel_id = await self.config.guild(ctx.guild).channel_id()
@@ -245,7 +260,7 @@ class TwitchSchedule(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    @twitchschedule.command()
+    @twitchschedule.command(name="forceupdate")
     async def forceupdate(self, ctx):
         """Force an immediate schedule update"""
         channel_id = await self.config.guild(ctx.guild).channel_id()
