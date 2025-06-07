@@ -162,6 +162,19 @@ class TwitchSchedule(commands.Cog):
             finally:
                 print("=== END FETCH ===\n")
 
+    async def get_game_boxart(self, game_id: str, headers: dict) -> Optional[str]:
+        if not game_id:
+            return None
+        url = f"https://api.twitch.tv/helix/games?id={game_id}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                if data.get("data"):
+                    return data["data"][0]["box_art_url"].replace("{width}", "144").replace("{height}", "192")
+        return None
+
     async def schedule_update_loop(self):
         await self.bot.wait_until_ready()
         while True:
@@ -190,25 +203,46 @@ class TwitchSchedule(commands.Cog):
         embed = discord.Embed(
             title="📺 Upcoming Streams",
             color=discord.Color.purple(),
-            timestamp=datetime.datetime.utcnow()
+            timestamp=datetime.datetime.now(datetime.timezone.utc)
         )
 
         future_streams = False
+        headers = None
+        credentials = await self.get_credentials()
+        if credentials and self.access_token:
+            client_id, _ = credentials
+            headers = {
+                "Client-ID": client_id,
+                "Authorization": f"Bearer {self.access_token}"
+            }
+
+        thumbnail_set = False
         for segment in schedule:
             start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
             title = segment["title"]
-            category = segment.get("category", {}).get("name", "No Category")
+            category = segment.get("category", {})
+            game_name = category.get("name", "No Category")
+            game_id = category.get("id")
+            unix_ts = int(start_time.timestamp())
+            time_str = f"<t:{unix_ts}:F>"
 
-            # Use offset-aware UTC datetime for comparison
+            boxart_url = await self.get_game_boxart(game_id, headers) if headers and game_id else None
+
             if start_time > datetime.datetime.now(datetime.timezone.utc):
                 future_streams = True
+                desc = f"**{title}**\n"
+                desc += f"🕒 {time_str}\n"
+                desc += f"🎮 {game_name}\n"
+                if boxart_url:
+                    desc += f"[‎]({boxart_url})"  # Invisible char to force image preview (not always works)
                 embed.add_field(
-                    name=f"{start_time.strftime('%Y-%m-%d %H:%M UTC')}",
-                    value=f"**{title}**\nCategory: {category}",
+                    name="\u200b",
+                    value=desc,
                     inline=False
                 )
-
-
+                if boxart_url and not thumbnail_set:
+                    embed.set_thumbnail(url=boxart_url)
+                    thumbnail_set = True
 
         if not future_streams:
             embed.add_field(
@@ -343,7 +377,7 @@ class TwitchSchedule(commands.Cog):
         await ctx.send(f"Schedule will update every {hours} hours")
 
     @twitchschedule.command(name="settings")
-    async def settings(self, ctx):
+        async def settings(self, ctx):
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
         update_interval = await self.config.guild(ctx.guild).update_interval()
@@ -369,6 +403,7 @@ class TwitchSchedule(commands.Cog):
             value=f"{update_interval // 3600} hours" if update_interval else "Not set",
             inline=False
         )
+
         await ctx.send(embed=embed)
 
     @twitchschedule.command(name="forceupdate")
