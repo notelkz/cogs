@@ -265,10 +265,8 @@ class TwitchSchedule(commands.Cog):
             embed.add_field(name="🕒 Start Time", value=time_str, inline=True)
             embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
             embed.add_field(name="🎮 Game", value=game_name, inline=True)
-            embed.add_field(name="🔁 Recurring?", value=recurrence_str, inline=True)
             if boxart_url:
                 embed.set_thumbnail(url=boxart_url)
-                embed.set_image(url=boxart_url)
             embed.set_footer(text=f"Scheduled Stream • {twitch_username}")
 
             await channel.send(embed=embed)
