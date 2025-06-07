@@ -33,7 +33,7 @@ class TwitchSchedule(commands.Cog):
         except Exception:
             pass
 
-    async def get_credentials(self) -> Optional[tuple[str, str]]:
+    async def get_credentials(self):
         client_id = await self.bot.get_shared_api_tokens("twitch")
         if client_id.get("client_id") and client_id.get("client_secret"):
             return client_id["client_id"], client_id["client_secret"]
@@ -162,7 +162,7 @@ class TwitchSchedule(commands.Cog):
             finally:
                 print("=== END FETCH ===\n")
 
-    async def get_game_boxart(self, game_id: str, headers: dict) -> Optional[str]:
+    async def get_game_boxart(self, game_id: str, headers: dict):
         if not game_id:
             return None
         url = f"https://api.twitch.tv/helix/games?id={game_id}"
@@ -375,66 +375,6 @@ class TwitchSchedule(commands.Cog):
             return
         await self.config.guild(ctx.guild).update_interval.set(hours * 3600)
         await ctx.send(f"Schedule will update every {hours} hours")
-
-    @twitchschedule.command(name="settings")
-        async def settings(self, ctx):
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        update_interval = await self.config.guild(ctx.guild).update_interval()
-
-        channel = ctx.guild.get_channel(channel_id) if channel_id else None
-
-        embed = discord.Embed(
-            title="Twitch Schedule Settings",
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="Channel",
-            value=channel.mention if channel else "Not set",
-            inline=False
-        )
-        embed.add_field(
-            name="Twitch Username",
-            value=twitch_username or "Not set",
-            inline=False
-        )
-        embed.add_field(
-            name="Update Interval",
-            value=f"{update_interval // 3600} hours" if update_interval else "Not set",
-            inline=False
-        )
-
-        await ctx.send(embed=embed)
-
-        @twitchschedule.command(name="settings")
-    async def settings(self, ctx):
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        update_interval = await self.config.guild(ctx.guild).update_interval()
-
-        channel = ctx.guild.get_channel(channel_id) if channel_id else None
-
-        embed = discord.Embed(
-            title="Twitch Schedule Settings",
-            color=discord.Color.blue()
-        )
-        embed.add_field(
-            name="Channel",
-            value=channel.mention if channel else "Not set",
-            inline=False
-        )
-        embed.add_field(
-            name="Twitch Username",
-            value=twitch_username or "Not set",
-            inline=False
-        )
-        embed.add_field(
-            name="Update Interval",
-            value=f"{update_interval // 3600} hours" if update_interval else "Not set",
-            inline=False
-        )
-
-        await ctx.send(embed=embed)
 
     @twitchschedule.command(name="settings")
     async def settings(self, ctx):
