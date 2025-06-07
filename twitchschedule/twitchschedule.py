@@ -34,7 +34,6 @@ class TwitchSchedule(commands.Cog):
             pass
 
     async def get_credentials(self) -> Optional[tuple[str, str]]:
-        """Get stored Twitch credentials"""
         client_id = await self.bot.get_shared_api_tokens("twitch")
         if client_id.get("client_id") and client_id.get("client_secret"):
             return client_id["client_id"], client_id["client_secret"]
@@ -367,7 +366,6 @@ class TwitchSchedule(commands.Cog):
             value=f"{update_interval // 3600} hours" if update_interval else "Not set",
             inline=False
         )
-
         await ctx.send(embed=embed)
 
     @twitchschedule.command(name="forceupdate")
@@ -387,7 +385,7 @@ class TwitchSchedule(commands.Cog):
 
             channel = ctx.guild.get_channel(channel_id)
             if not channel:
-                                await ctx.send("Cannot find the configured channel!")
+                await ctx.send("Cannot find the configured channel!")
                 print("❌ Channel not found")
                 return
 
@@ -438,8 +436,3 @@ class TwitchSchedule(commands.Cog):
 
 def setup(bot: Red):
     bot.add_cog(TwitchSchedule(bot))
-
-    @bot.event
-    async def on_command_error(ctx, error):
-        tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
-        print(f"GLOBAL ERROR: {repr(error)}\n{tb}")
