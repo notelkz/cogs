@@ -243,9 +243,9 @@ class TwitchSchedule(commands.Cog):
         img = Image.open(self.template_path)
         draw = ImageDraw.Draw(img)
 
-        # Load fonts - adjusted for 1920x1080
-        date_font = ImageFont.truetype(self.font_path, 48)  # For "Week of"
-        schedule_font = ImageFont.truetype(self.font_path, 36)  # For schedule items
+        # Load fonts - adjusted for 1920x1080 and bold
+        date_font = ImageFont.truetype(self.font_path, 48, index=0)  # For "Week of"
+        schedule_font = ImageFont.truetype(self.font_path, 42, index=0)  # Slightly larger and bold
 
         # Add next week's date (top right)
         next_sunday = self.get_next_sunday()
@@ -254,39 +254,32 @@ class TwitchSchedule(commands.Cog):
 
         # Schedule positioning for 1920x1080
         day_x = 100       # X position for day/time
-        title_x = 100     # X position for game title
-        initial_y = 250   # Starting Y position (first purple bar)
+        game_x = 100      # X position for game title
+        initial_y = 250   # Starting Y position for first day
         row_height = 130  # Space between each day's entries
+        
+        # Offset for day text to sit just above the purple bar
+        day_offset = -10  # Adjust this to move day text up/down relative to the bar
 
         # Add schedule items
         for i, segment in enumerate(schedule):
             if i >= 5:  # Only show up to 5 days
                 break
 
-            y_position = initial_y + (i * row_height)
+            bar_y = initial_y + (i * row_height)  # Position of the purple bar
+            day_y = bar_y + day_offset           # Position of the day text
+            game_y = bar_y + 15                  # Position of the game text inside the bar
             
             # Format the day and time
             start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
             day_time = start_time.strftime("%A // %I:%M%p").upper()
             title = segment["title"]
 
-            # Draw day and time (on the purple bar)
-            draw.text((day_x, y_position), day_time, font=schedule_font, fill=(255, 255, 255))
+            # Draw day and time (above the purple bar)
+            draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
             
-            # Draw game title (below the day/time)
-            draw.text((title_x, y_position + 50), title, font=schedule_font, fill=(255, 255, 255))
-
-        # Save to buffer
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return buf
-
-    except Exception as e:
-        print(f"Error generating schedule image: {e}")
-        traceback.print_exc()
-        return None
-
+            # Draw game title (inside the purple bar)
+            draw.text((game_x, game_y), title, font=
 
     async def update_schedule_image(self, channel: discord.TextChannel, schedule: list):
         """Update or create the pinned schedule image."""
