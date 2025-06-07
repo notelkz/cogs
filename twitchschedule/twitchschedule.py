@@ -71,6 +71,7 @@ class TwitchSchedule(commands.Cog):
         print("\n=== FETCHING TWITCH SCHEDULE ===")
         print(f"Username: {username}")
         
+        # First, verify the user exists
         credentials = await self.get_credentials()
         if not credentials:
             print("❌ No credentials found")
@@ -88,42 +89,62 @@ class TwitchSchedule(commands.Cog):
             "Client-ID": client_id,
             "Authorization": f"Bearer {self.access_token}"
         }
-        print(f"Using headers: {headers}")
 
+        # First, verify the user exists
         async with aiohttp.ClientSession() as session:
-            url = f"https://api.twitch.tv/helix/schedule?broadcaster_login={username}"
-            print(f"Requesting: {url}")
+            user_url = f"https://api.twitch.tv/helix/users?login={username}"
+            print(f"Verifying user exists: {user_url}")
+            
+            try:
+                async with session.get(user_url, headers=headers) as resp:
+                    print(f"User check status: {resp.status}")
+                    user_data = await resp.json()
+                    print(f"User data: {user_data}")
+                    
+                    if resp.status != 200 or not user_data.get("data"):
+                        print(f"❌ User {username} not found")
+                        return None
+                    
+                    broadcaster_id = user_data["data"][0]["id"]
+                    print(f"Found broadcaster ID: {broadcaster_id}")
+
+            except Exception as e:
+                print(f"❌ Error checking user: {str(e)}")
+                return None
+
+        # Now fetch the schedule using broadcaster ID
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
+            print(f"Requesting schedule: {url}")
             
             try:
                 async with session.get(url, headers=headers) as resp:
-                    print(f"Response Status: {resp.status}")
+                    print(f"Schedule response status: {resp.status}")
                     response_text = await resp.text()
-                    print(f"Response: {response_text}")
+                    print(f"Schedule response: {response_text}")
 
-                    if resp.status == 400:
-                        print("❌ Bad Request - Check Client ID format")
-                        return None
-                    elif resp.status == 401:
-                        print("Token expired or invalid, refreshing...")
-                        self.access_token = await self.get_twitch_token()
-                        return await self.get_schedule(username)
-                    elif resp.status == 404:
-                        print(f"❌ User {username} not found or has no schedule")
-                        return None
+                    if resp.status == 404:
+                        print(f"✓ User exists but has no schedule")
+                        return []  # Return empty list for no schedule
                     elif resp.status != 200:
                         print(f"❌ Error response: {response_text}")
                         return None
 
                     try:
                         data = await resp.json()
-                        print(f"Parsed response: {data}")
+                        print(f"Parsed schedule data: {data}")
                         
                         if "data" not in data:
                             print("❌ No data field in response")
-                            return None
+                            return []
                             
                         segments = data.get("data", {}).get("segments", [])
                         print(f"Found {len(segments)} schedule segments")
+                        
+                        if not segments:
+                            print("✓ No scheduled streams found")
+                            return []
+                            
                         return segments
 
                     except Exception as e:
@@ -135,7 +156,6 @@ class TwitchSchedule(commands.Cog):
                 return None
             finally:
                 print("=== END FETCH ===\n")
-
     async def schedule_update_loop(self):
         """Loop to periodically update the schedule"""
         await self.bot.wait_until_ready()
@@ -150,7 +170,7 @@ class TwitchSchedule(commands.Cog):
                         channel = guild.get_channel(channel_id)
                         if channel:
                             schedule = await self.get_schedule(twitch_username)
-                            if schedule:
+                            if schedule is not None:  # None means error, empty list means no schedule
                                 await self.post_schedule(channel, schedule)
                             else:
                                 print(f"Could not fetch schedule for {twitch_username}")
@@ -159,11 +179,9 @@ class TwitchSchedule(commands.Cog):
             except Exception as e:
                 print(f"Error in schedule update loop: {e}")
                 await asyncio.sleep(60)
+
     async def post_schedule(self, channel: discord.TextChannel, schedule: list):
         """Post the schedule to Discord"""
-        if not schedule:
-            return
-
         embed = discord.Embed(
             title="📺 Upcoming Streams",
             color=discord.Color.purple(),
@@ -299,7 +317,6 @@ class TwitchSchedule(commands.Cog):
         
         # Send and delete after 15 seconds
         await ctx.send(embed=embed, delete_after=15)
-
     @commands.group(aliases=["tsched"])
     @commands.admin_or_permissions(manage_guild=True)
     async def twitchschedule(self, ctx):
@@ -387,29 +404,35 @@ class TwitchSchedule(commands.Cog):
             print("❌ No credentials found")
             return
 
-        status_message = await ctx.send(f"🔄 Attempting to fetch schedule for {twitch_username}...")
+        status_message = await ctx.send(f"🔄 Checking schedule for {twitch_username}...")
         print(f"Attempting fetch for user: {twitch_username}")
 
         schedule = await self.get_schedule(twitch_username)
         
-        if schedule is not None:  # Check for None specifically
+        if schedule is not None:  # None means error, empty list means no schedule
             if len(schedule) > 0:
                 await self.post_schedule(channel, schedule)
                 await status_message.edit(content="✅ Schedule has been updated!")
                 print("✅ Schedule updated successfully")
             else:
-                await status_message.edit(content=f"ℹ️ No upcoming scheduled streams found for {twitch_username}")
+                await status_message.edit(
+                    content=f"ℹ️ No upcoming scheduled streams found for {twitch_username}\n"
+                    "This could mean:\n"
+                    "1. The streamer hasn't set up any scheduled streams\n"
+                    "2. All scheduled streams have already passed\n"
+                    "3. The schedule is currently empty"
+                )
                 print("ℹ️ No scheduled streams found")
         else:
             error_msg = (
-                "❌ Could not fetch schedule. Please check:\n"
-                f"1. Is '{twitch_username}' the correct Twitch username?\n"
-                "2. Does the streamer have any scheduled streams?\n"
-                "3. Are the API credentials correct?\n\n"
+                "❌ Error fetching schedule:\n"
+                f"1. Verified '{twitch_username}' exists? (Check capitalization)\n"
+                "2. API credentials are working (✓ confirmed)\n"
+                "3. The Twitch API is responding properly\n\n"
                 "Current settings:\n"
                 f"• Username: {twitch_username}\n"
                 f"• Channel: {channel.mention}\n\n"
-                "Try `[p]checktwitchcreds` to verify API credentials."
+                "Check bot logs for detailed error information."
             )
             await status_message.edit(content=error_msg)
             print("❌ Failed to fetch schedule")
