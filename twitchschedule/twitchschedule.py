@@ -175,27 +175,6 @@ class TwitchSchedule(commands.Cog):
             finally:
                 print("=== END FETCH ===\n")
 
-async def get_game_boxart(self, game_id, headers):
-    """Fetch the box art URL for a game from Twitch API."""
-    if not game_id or not headers:
-        return None
-    url = f"https://api.twitch.tv/helix/games?id={game_id}"
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                if "data" in data and data["data"]:
-                    boxart_url = data["data"][0].get("box_art_url")
-                    # Twitch returns URLs with {width}x{height} placeholders
-                    if boxart_url:
-                        return boxart_url.replace("{width}", "285").replace("{height}", "380")
-        except Exception as e:
-            print(f"Error fetching boxart: {e}")
-    return None
-
-    
     async def download_file(self, url: str, save_path: str) -> bool:
         """Download a file if it doesn't exist."""
         if os.path.exists(save_path):
@@ -231,6 +210,26 @@ async def get_game_boxart(self, game_id, headers):
             days_ahead += 7
         next_sunday = today + timedelta(days=days_ahead)
         return next_sunday
+    
+    async def get_game_boxart(self, game_id, headers):
+        """Fetch the box art URL for a game from Twitch API."""
+        if not game_id or not headers:
+            return None
+        url = f"https://api.twitch.tv/helix/games?id={game_id}"
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+                    if "data" in data and data["data"]:
+                        boxart_url = data["data"][0].get("box_art_url")
+                        # Twitch returns URLs with {width}x{height} placeholders
+                        if boxart_url:
+                            return boxart_url.replace("{width}", "285").replace("{height}", "380")
+            except Exception as e:
+                print(f"Error fetching boxart: {e}")
+        return None
 
     async def generate_schedule_image(self, schedule: list) -> Optional[io.BytesIO]:
         """Generate schedule image using template."""
