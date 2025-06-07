@@ -269,8 +269,8 @@ class TwitchSchedule(commands.Cog):
             draw.text((1600, 20), date_text, font=date_font, fill=(255, 255, 255))
 
             # Schedule positioning for 1920x1080
-            day_x = 0        # X position for day/time
-            game_x = 0       # X position for game title
+            day_x = 50      # X position for day/time
+            game_x = 50     # X position for game title
             initial_y = 280    # Starting Y position for first day
             row_height = 160   # Space between each row's start
             day_offset = -45   # How far above the bar the day text should be
