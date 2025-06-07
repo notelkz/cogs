@@ -387,8 +387,7 @@ class TwitchSchedule(commands.Cog):
 
             channel = ctx.guild.get_channel(channel_id)
             if not channel:
-                await ctx.send("Cannot
-                await ctx.send("Cannot find the configured channel!")
+                                await ctx.send("Cannot find the configured channel!")
                 print("❌ Channel not found")
                 return
 
