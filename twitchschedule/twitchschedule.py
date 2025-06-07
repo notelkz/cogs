@@ -33,6 +33,101 @@ class TwitchSchedule(commands.Cog):
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
+    async def get_schedule(self, username: str):
+        """Fetch schedule from Twitch API"""
+        print("\n=== FETCHING TWITCH SCHEDULE ===")
+        print(f"Username: {username}")
+
+        credentials = await self.get_credentials()
+        if not credentials:
+            print("❌ No credentials found")
+            return None
+
+        if not self.access_token:
+            print("Getting new access token...")
+            self.access_token = await self.get_twitch_token()
+            if not self.access_token:
+                print("❌ Failed to get access token")
+                return None
+
+        client_id, _ = credentials
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {self.access_token}"
+        }
+
+        # First, verify the user exists
+        async with aiohttp.ClientSession() as session:
+            user_url = f"https://api.twitch.tv/helix/users?login={username}"
+            print(f"Verifying user exists: {user_url}")
+
+            try:
+                async with session.get(user_url, headers=headers) as resp:
+                    print(f"User check status: {resp.status}")
+                    user_data = await resp.json()
+                    print(f"User data: {user_data}")
+
+                    if resp.status != 200 or not user_data.get("data"):
+                        print(f"❌ User {username} not found")
+                        return None
+
+                    broadcaster_id = user_data["data"][0]["id"]
+                    broadcaster_name = user_data["data"][0]["login"]
+                    print(f"Found broadcaster ID: {broadcaster_id}")
+
+            except Exception as e:
+                print(f"❌ Error checking user: {str(e)}")
+                return None
+
+        # Now fetch the schedule using broadcaster ID
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
+            print(f"Requesting schedule: {url}")
+
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    print(f"Schedule response status: {resp.status}")
+                    response_text = await resp.text()
+                    print(f"Schedule response: {response_text}")
+
+                    if resp.status == 404:
+                        print(f"✓ User exists but has no schedule")
+                        return []
+                    elif resp.status != 200:
+                        print(f"❌ Error response: {response_text}")
+                        return None
+
+                    try:
+                        data = await resp.json()
+                        print(f"Parsed schedule data: {data}")
+
+                        if "data" not in data:
+                            print("❌ No data field in response")
+                            return []
+
+                        segments = data.get("data", {}).get("segments", [])
+                        print(f"Found {len(segments)} schedule segments")
+
+                        # Attach broadcaster_name to each segment for later use
+                        for seg in segments:
+                            seg["broadcaster_name"] = broadcaster_name
+
+                        if not segments:
+                            print("✓ No scheduled streams found")
+                            return []
+
+                        return segments
+
+                    except Exception as e:
+                        print(f"❌ Error parsing response: {str(e)}")
+                        return None
+
+            except Exception as e:
+                print(f"❌ Network error: {str(e)}")
+                return None
+            finally:
+                print("=== END FETCH ===\n")
+
     async def download_file(self, url: str, save_path: str) -> bool:
         """Download a file if it doesn't exist."""
         if os.path.exists(save_path):
