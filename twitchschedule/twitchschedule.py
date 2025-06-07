@@ -4,6 +4,7 @@ from redbot.core.bot import Red
 from typing import Optional
 import aiohttp
 import datetime
+from datetime import timedelta
 import asyncio
 import traceback
 from PIL import Image, ImageDraw, ImageFont
@@ -37,6 +38,26 @@ class TwitchSchedule(commands.Cog):
 
     def cog_unload(self):
         self.task.cancel()
+
+    async def get_game_boxart(self, game_id, headers):
+    """Fetch the box art URL for a game from Twitch API."""
+    if not game_id or not headers:
+        return None
+    url = f"https://api.twitch.tv/helix/games?id={game_id}"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                if "data" in data and data["data"]:
+                    boxart_url = data["data"][0].get("box_art_url")
+                    # Twitch returns URLs with {width}x{height} placeholders
+                    if boxart_url:
+                        return boxart_url.replace("{width}", "285").replace("{height}", "380")
+        except Exception as e:
+            print(f"Error fetching boxart: {e}")
+    return None
 
     async def get_credentials(self) -> Optional[tuple[str, str]]:
         """Get stored Twitch credentials"""
