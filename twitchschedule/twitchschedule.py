@@ -343,7 +343,6 @@ class TwitchSchedule(commands.Cog):
                 update_channel_mention = channel_msg.channel_mentions[0].mention
                 await self.config.guild(ctx.guild).channel_id.set(channel_id)
                 await ctx.send(f"✅ Update channel set to: {update_channel_mention}")
-            except
             except (IndexError, AttributeError):
                 await ctx.send("❌ Invalid channel. Please mention a channel like #channel-name")
                 return
