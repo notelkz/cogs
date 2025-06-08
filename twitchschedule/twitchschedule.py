@@ -298,15 +298,16 @@ class TwitchSchedule(commands.Cog):
         # 2. Set Discord Channel
         await ctx.send("Please mention the Discord channel where updates should be posted:")
         try:
-            msg = await self.bot.wait_for(
+            channel_msg = await self.bot.wait_for(
                 "message",
                 check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
                 timeout=30.0
             )
             try:
-                channel_id = msg.channel_mentions[0].id
+                channel_id = channel_msg.channel_mentions[0].id
+                update_channel_mention = channel_msg.channel_mentions[0].mention
                 await self.config.guild(ctx.guild).channel_id.set(channel_id)
-                await ctx.send(f"✅ Update channel set to: {msg.channel_mentions[0].mention}")
+                await ctx.send(f"✅ Update channel set to: {update_channel_mention}")
             except (IndexError, AttributeError):
                 await ctx.send("❌ Invalid channel. Please mention a channel like #channel-name")
                 return
