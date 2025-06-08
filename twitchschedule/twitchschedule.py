@@ -189,7 +189,7 @@ class TwitchSchedule(commands.Cog):
                     update_time = await self.config.guild(guild).update_time()
                     if not update_days or not update_time:
                         continue
-                    now = datetime.datetime.now()
+                    now = datetime.datetime.utcnow()
                     current_day = now.weekday()
                     current_time = now.strftime("%H:%M")
                     if current_day in update_days and current_time == update_time:
