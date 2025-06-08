@@ -20,7 +20,10 @@ class TwitchSchedule(commands.Cog):
         default_guild = {
             "channel_id": None,
             "twitch_username": None,
-            "update_interval": 3600,  # Update every hour by default
+            "update_interval": 3600,  # Keep this for backward compatibility
+            "update_days": [],        # List of days to update on (0-6, where 0 is Monday)
+            "update_time": None,      # Time to update in HH:MM format
+            "use_interval": True,     # Whether to use interval or specific days
             "schedule_message_id": None  # Store the pinned schedule message ID
         }
         self.config.register_guild(**default_guild)
@@ -39,6 +42,11 @@ class TwitchSchedule(commands.Cog):
     def cog_unload(self):
         self.task.cancel()
 
+    def get_next_sunday(self):
+        """Get current Sunday if today is Sunday, otherwise get next Sunday."""
+        today = datetime.datetime.now()
+        days_until_sunday = (6 - today.weekday()) % 7  # 6 = Sunday
+        return today + timedelta(days=days_until_sunday)
     async def get_credentials(self) -> Optional[tuple[str, str]]:
         """Get stored Twitch credentials"""
         tokens = await self.bot.get_shared_api_tokens("twitch")
@@ -80,6 +88,60 @@ class TwitchSchedule(commands.Cog):
                 return None
             finally:
                 print("=== END TOKEN REQUEST ===\n")
+
+    async def download_file(self, url: str, save_path: str) -> bool:
+        """Download a file if it doesn't exist."""
+        try:
+            print(f"Attempting to download: {url}")
+            print(f"Saving to: {save_path}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    print(f"Download status: {resp.status}")
+                    if resp.status == 200:
+                        data = await resp.read()
+                        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                        with open(save_path, 'wb') as f:
+                            f.write(data)
+                        print(f"Successfully downloaded to {save_path}")
+                        return True
+                    else:
+                        print(f"Failed to download. Status: {resp.status}")
+                        return False
+        except Exception as e:
+            print(f"Error downloading file: {e}")
+            traceback.print_exc()
+            return False
+
+    async def ensure_resources(self):
+        """Ensure template and font files are available."""
+        print("\n=== DOWNLOADING RESOURCES ===")
+        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
+        template_url = "https://zerolivesleft.net/notelkz/schedule.png"
+        
+        # Force redownload by removing existing files
+        try:
+            if os.path.exists(self.font_path):
+                os.remove(self.font_path)
+                print(f"Removed existing font file: {self.font_path}")
+            if os.path.exists(self.template_path):
+                os.remove(self.template_path)
+                print(f"Removed existing template file: {self.template_path}")
+        except Exception as e:
+            print(f"Error removing existing files: {e}")
+        
+        print(f"Cache directory: {self.cache_dir}")
+        print(f"Font path: {self.font_path}")
+        print(f"Template path: {self.template_path}")
+        
+        font_ok = await self.download_file(font_url, self.font_path)
+        template_ok = await self.download_file(template_url, self.template_path)
+        
+        print(f"Font download success: {font_ok}")
+        print(f"Template download success: {template_ok}")
+        print("=== END DOWNLOADING RESOURCES ===\n")
+        
+        return font_ok and template_ok
     async def get_schedule(self, username: str):
         """Fetch schedule from Twitch API"""
         print("\n=== FETCHING TWITCH SCHEDULE ===")
@@ -175,40 +237,7 @@ class TwitchSchedule(commands.Cog):
             finally:
                 print("=== END FETCH ===\n")
 
-    async def download_file(self, url: str, save_path: str) -> bool:
-        """Download a file if it doesn't exist."""
-        if os.path.exists(save_path):
-            return True
-            
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        with open(save_path, 'wb') as f:
-                            f.write(data)
-                        return True
-        except Exception as e:
-            print(f"Error downloading file: {e}")
-        return False
-
-    async def ensure_resources(self):
-        """Ensure template and font files are available."""
-        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
-        template_url = "https://zerolivesleft.net/notelkz/schedule.png"
-        
-        font_ok = await self.download_file(font_url, self.font_path)
-        template_ok = await self.download_file(template_url, self.template_path)
-        
-        return font_ok and template_ok
-
-    def get_next_sunday(self):
-        """Get current Sunday if today is Sunday, otherwise get next Sunday."""
-        today = datetime.datetime.now()
-        days_until_sunday = (6 - today.weekday()) % 7  # 6 = Sunday
-        return today + timedelta(days=days_until_sunday)
-
-    async def get_game_boxart(self, game_id, headers):
+    async def get_game_boxart(self, game_id: str, headers: dict) -> Optional[str]:
         """Fetch the box art URL for a game from Twitch API."""
         if not game_id or not headers:
             return None
@@ -227,23 +256,6 @@ class TwitchSchedule(commands.Cog):
             except Exception as e:
                 print(f"Error fetching boxart: {e}")
         return None
-
-    async def ensure_resources(self):
-        """Ensure template and font files are available."""
-        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
-        template_url = "https://zerolivesleft.net/notelkz/schedule.png"
-        
-        # Force redownload by removing existing files
-        if os.path.exists(self.font_path):
-            os.remove(self.font_path)
-        if os.path.exists(self.template_path):
-            os.remove(self.template_path)
-        
-        font_ok = await self.download_file(font_url, self.font_path)
-        template_ok = await self.download_file(template_url, self.template_path)
-        
-        return font_ok and template_ok
-
     async def generate_schedule_image(self, schedule: list) -> Optional[io.BytesIO]:
         """Generate schedule image using template."""
         try:
@@ -257,7 +269,7 @@ class TwitchSchedule(commands.Cog):
             draw = ImageDraw.Draw(img)
 
             # Load fonts - adjusted for 1920x1080
-            date_font = ImageFont.truetype(self.font_path, 40)  # For "Week of"
+            date_font = ImageFont.truetype(self.font_path, 40)  # For date
             schedule_font = ImageFont.truetype(self.font_path, 42)  # For schedule items
 
             # Add just the date text underneath the template's "Week of" text
@@ -265,11 +277,11 @@ class TwitchSchedule(commands.Cog):
             date_text = next_sunday.strftime("%B %d")  # Just the date
 
             # Position date text underneath "Week of" in template
-            draw.text((1585, 180), date_text, font=date_font, fill=(255, 255, 255))
+            draw.text((1600, 180), date_text, font=date_font, fill=(255, 255, 255))
 
             # Schedule positioning for 1920x1080
-            day_x = 125    # X position for day/time
-            game_x = 125   # X position for game title
+            day_x = 125        # X position for day/time
+            game_x = 125       # X position for game title
             initial_y = 350    # Starting Y position for first day
             row_height = 150   # Space between each row's start
             day_offset = -45   # How far above the bar the day text should be
@@ -282,7 +294,7 @@ class TwitchSchedule(commands.Cog):
 
                 bar_y = initial_y + (i * row_height)  # Position of the purple bar
                 day_y = bar_y + day_offset           # Position day text above bar
-                game_y = bar_y + (bar_height // 2) - 20  # Center game text in bar
+                game_y = bar_y + 15                  # Position game text inside bar
                 
                 # Format the day and time
                 start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
@@ -292,7 +304,7 @@ class TwitchSchedule(commands.Cog):
                 # Draw day and time (above the purple bar)
                 draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
                 
-                # Draw game title (centered in the purple bar)
+                # Draw game title (inside the purple bar)
                 draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
 
             # Save to buffer
@@ -305,7 +317,7 @@ class TwitchSchedule(commands.Cog):
             print(f"Error generating schedule image: {e}")
             traceback.print_exc()
             return None
-    
+
     async def update_schedule_image(self, channel: discord.TextChannel, schedule: list):
         """Update or create the pinned schedule image."""
         try:
@@ -348,27 +360,45 @@ class TwitchSchedule(commands.Cog):
         except Exception as e:
             print(f"Error in update_schedule_image: {e}")
             return False
-
     async def schedule_update_loop(self):
-        """Loop to periodically update the schedule"""
+        """Loop to check for updates based on interval or specific days."""
         await self.bot.wait_until_ready()
         while True:
             try:
                 for guild in self.bot.guilds:
-                    channel_id = await self.config.guild(guild).channel_id()
-                    twitch_username = await self.config.guild(guild).twitch_username()
-                    update_interval = await self.config.guild(guild).update_interval()
-
-                    if channel_id and twitch_username:
-                        channel = guild.get_channel(channel_id)
-                        if channel:
-                            schedule = await self.get_schedule(twitch_username)
-                            if schedule is not None:
-                                await self.post_schedule(channel, schedule)
-                            else:
-                                print(f"Could not fetch schedule for {twitch_username}")
-
-                await asyncio.sleep(update_interval)
+                    use_interval = await self.config.guild(guild).use_interval()
+                    
+                    if use_interval:
+                        # Use the old interval-based update
+                        update_interval = await self.config.guild(guild).update_interval()
+                        await asyncio.sleep(update_interval)
+                    else:
+                        # Check if we should update based on day and time
+                        update_days = await self.config.guild(guild).update_days()
+                        update_time = await self.config.guild(guild).update_time()
+                        
+                        if not update_days or not update_time:
+                            continue
+                            
+                        now = datetime.datetime.now()
+                        current_day = now.weekday()
+                        current_time = now.strftime("%H:%M")
+                        
+                        # If it's the right day and time, update
+                        if current_day in update_days and current_time == update_time:
+                            channel_id = await self.config.guild(guild).channel_id()
+                            twitch_username = await self.config.guild(guild).twitch_username()
+                            
+                            if channel_id and twitch_username:
+                                channel = guild.get_channel(channel_id)
+                                if channel:
+                                    schedule = await self.get_schedule(twitch_username)
+                                    if schedule is not None:
+                                        await self.post_schedule(channel, schedule)
+                
+                # Check every minute for day-based updates
+                await asyncio.sleep(60)
+                
             except Exception as e:
                 tb = traceback.format_exc()
                 print(f"Error in schedule update loop: {e}\n{tb}")
@@ -462,7 +492,6 @@ class TwitchSchedule(commands.Cog):
         except Exception as e:
             print(f"Error in post_schedule: {e}")
             traceback.print_exc()
-
     @commands.command()
     async def testsend(self, ctx):
         """Test if the bot can send messages in this channel."""
@@ -586,14 +615,68 @@ class TwitchSchedule(commands.Cog):
         await self.config.guild(ctx.guild).update_interval.set(hours * 3600)
         await ctx.send(f"Schedule will update every {hours} hours")
 
+    @twitchschedule.command(name="setdays")
+    async def setdays(self, ctx, *days: str):
+        """Set which days to update the schedule. Use MON, TUE, WED, THU, FRI, SAT, SUN"""
+        day_map = {
+            "MON": 0, "TUE": 1, "WED": 2, "THU": 3,
+            "FRI": 4, "SAT": 5, "SUN": 6
+        }
+        
+        update_days = []
+        for day in days:
+            day = day.upper()
+            if day in day_map:
+                update_days.append(day_map[day])
+            else:
+                await ctx.send(f"Invalid day: {day}. Use MON, TUE, WED, THU, FRI, SAT, SUN")
+                return
+        
+        await self.config.guild(ctx.guild).update_days.set(update_days)
+        await self.config.guild(ctx.guild).use_interval.set(False)
+        
+        day_names = [list(day_map.keys())[list(day_map.values()).index(d)] for d in update_days]
+        await ctx.send(f"Schedule will update on: {', '.join(day_names)}")
+
+    @twitchschedule.command(name="settime")
+    async def settime(self, ctx, time: str):
+        """Set what time to update the schedule. Use 24-hour format (HH:MM)"""
+        try:
+            # Validate time format
+            datetime.datetime.strptime(time, "%H:%M")
+            await self.config.guild(ctx.guild).update_time.set(time)
+            await self.config.guild(ctx.guild).use_interval.set(False)
+            await ctx.send(f"Schedule will update at {time}")
+        except ValueError:
+            await ctx.send("Invalid time format. Please use HH:MM (24-hour format)")
+
+    @twitchschedule.command(name="useinterval")
+    async def useinterval(self, ctx, use_interval: bool):
+        """Switch between interval-based and day-based updates"""
+        await self.config.guild(ctx.guild).use_interval.set(use_interval)
+        if use_interval:
+            interval = await self.config.guild(ctx.guild).update_interval()
+            await ctx.send(f"Using interval-based updates every {interval // 3600} hours")
+        else:
+            days = await self.config.guild(ctx.guild).update_days()
+            time = await self.config.guild(ctx.guild).update_time()
+            if days and time:
+                day_map = {
+                    0: "MON", 1: "TUE", 2: "WED", 3: "THU",
+                    4: "FRI", 5: "SAT", 6: "SUN"
+                }
+                day_names = [day_map[d] for d in days]
+                await ctx.send(f"Using day-based updates on {', '.join(day_names)} at {time}")
+            else:
+                await ctx.send("Please set update days and time using `setdays` and `settime`")
+
     @twitchschedule.command(name="settings")
     async def settings(self, ctx):
         """Show current settings."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        update_interval = await self.config.guild(ctx.guild).update_interval()
-        schedule_message_id = await self.config.guild(ctx.guild).schedule_message_id()
-
+        use_interval = await self.config.guild(ctx.guild).use_interval()
+        
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
 
         embed = discord.Embed(
@@ -610,111 +693,29 @@ class TwitchSchedule(commands.Cog):
             value=twitch_username or "Not set",
             inline=False
         )
-        embed.add_field(
-            name="Update Interval",
-            value=f"{update_interval // 3600} hours" if update_interval else "Not set",
-            inline=False
-        )
-        embed.add_field(
-            name="Schedule Image",
-            value="Pinned" if schedule_message_id else "Not set",
-            inline=False
-        )
+        
+        if use_interval:
+            update_interval = await self.config.guild(ctx.guild).update_interval()
+            embed.add_field(
+                name="Update Method",
+                value=f"Interval: Every {update_interval // 3600} hours",
+                inline=False
+            )
+        else:
+            update_days = await self.config.guild(ctx.guild).update_days()
+            update_time = await self.config.guild(ctx.guild).update_time()
+            day_map = {
+                0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday",
+                4: "Friday", 5: "Saturday", 6: "Sunday"
+            }
+            day_names = [day_map[d] for d in update_days] if update_days else ["Not set"]
+            embed.add_field(
+                name="Update Method",
+                value=f"Days: {', '.join(day_names)}\nTime: {update_time or 'Not set'}",
+                inline=False
+            )
 
         await ctx.send(embed=embed)
 
-    @twitchschedule.command(name="updateimage")
-    async def updateimage(self, ctx):
-        """Force update of just the schedule image."""
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-
-        if not channel_id or not twitch_username:
-            await ctx.send("Please set both channel and username first!")
-            return
-
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel:
-            await ctx.send("Cannot find the configured channel!")
-            return
-
-        status = await ctx.send("🔄 Updating schedule image...")
-        schedule = await self.get_schedule(twitch_username)
-        
-        if schedule is not None:
-            if await self.update_schedule_image(channel, schedule):
-                await status.edit(content="✅ Schedule image updated!")
-            else:
-                await status.edit(content="❌ Failed to update schedule image")
-        else:
-            await status.edit(content="❌ Could not fetch schedule data")
-
-    @twitchschedule.command(name="forceupdate")
-    async def forceupdate(self, ctx):
-        """Force an immediate schedule update."""
-        try:
-            print("\n=== FORCE UPDATE REQUESTED ===")
-            channel_id = await self.config.guild(ctx.guild).channel_id()
-            twitch_username = await self.config.guild(ctx.guild).twitch_username()
-
-            print(f"Channel ID: {channel_id}")
-            print(f"Twitch Username: {twitch_username}")
-
-            if not channel_id or not twitch_username:
-                await ctx.send("Please set both channel and username first!")
-                print("❌ Missing channel or username configuration")
-                return
-
-            channel = ctx.guild.get_channel(channel_id)
-            if not channel:
-                await ctx.send("Cannot find the configured channel!")
-                print("❌ Channel not found")
-                return
-
-            credentials = await self.get_credentials()
-            if not credentials:
-                await ctx.send("Twitch API credentials are not set! Please use `[p]settwitchcreds` to set them.")
-                print("❌ No credentials found")
-                return
-
-            status_message = await ctx.send(f"🔄 Checking schedule for {twitch_username}...")
-            print(f"Attempting fetch for user: {twitch_username}")
-
-            schedule = await self.get_schedule(twitch_username)
-
-            if schedule is not None:  # None means error, empty list means no schedule
-                if len(schedule) > 0:
-                    await self.post_schedule(channel, schedule)
-                    await status_message.edit(content="✅ Schedule has been updated!")
-                    print("✅ Schedule updated successfully")
-                else:
-                    await status_message.edit(
-                        content=f"ℹ️ No upcoming scheduled streams found for {twitch_username}\n"
-                        "This could mean:\n"
-                        "1. The streamer hasn't set up any scheduled streams\n"
-                        "2. All scheduled streams have already passed\n"
-                        "3. The schedule is currently empty"
-                    )
-                    print("ℹ️ No scheduled streams found")
-            else:
-                error_msg = (
-                    "❌ Error fetching schedule:\n"
-                    f"1. Verified '{twitch_username}' exists? (Check capitalization)\n"
-                    "2. API credentials are working (✓ confirmed)\n"
-                    "3. The Twitch API is responding properly\n\n"
-                    "Current settings:\n"
-                    f"• Username: {twitch_username}\n"
-                    f"• Channel: {channel.mention}\n\n"
-                    "Check bot logs for detailed error information."
-                )
-                await status_message.edit(content=error_msg)
-                print("❌ Failed to fetch schedule")
-
-            print("=== END FORCE UPDATE ===\n")
-        except Exception as e:
-            tb = traceback.format_exc()
-            print(f"Exception in forceupdate: {e}\n{tb}")
-            await ctx.send(f"An error occurred: `{e}`\n```py\n{tb}```")
-
-def setup(bot: Red):
-    bot.add_cog(TwitchSchedule(bot))
+async def setup(bot: Red):
+    await bot.add_cog(TwitchSchedule(bot))
