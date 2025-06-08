@@ -11,6 +11,7 @@ import io
 import os
 import pytz
 london_tz = pytz.timezone("Europe/London")
+import dateutil.parser
 
 class TwitchSchedule(commands.Cog):
     """Sync Twitch streaming schedule to Discord"""
@@ -172,7 +173,8 @@ class TwitchSchedule(commands.Cog):
             bar_y = initial_y + (i * row_height)
             day_y = bar_y + day_offset
             game_y = bar_y + 15
-            start_time_utc = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
+            # Use dateutil.parser for robust ISO8601 parsing
+            start_time_utc = dateutil.parser.isoparse(segment["start_time"])
             if start_time_utc.tzinfo is None:
                 start_time_utc = start_time_utc.replace(tzinfo=datetime.timezone.utc)
             start_time_london = start_time_utc.astimezone(london_tz)
@@ -184,7 +186,7 @@ class TwitchSchedule(commands.Cog):
         img.save(buf, format="PNG")
         buf.seek(0)
         return buf
-
+    
     async def schedule_update_loop(self):
         await self.bot.wait_until_ready()
         while True:
