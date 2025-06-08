@@ -380,16 +380,22 @@ class TwitchSchedule(commands.Cog):
     async def post_schedule(self, channel: discord.TextChannel, schedule: list):
         """Post schedule with both image and embeds."""
         try:
+            # First, warn about message deletion
+            warning_msg = await channel.send("⚠️ Updating schedule - Previous schedule messages will be deleted in 10 seconds...")
+            await asyncio.sleep(10)  # Wait 10 seconds
+
+            # Delete the warning message
+            await warning_msg.delete()
+
+            # Delete all previous messages in the channel
+            async for message in channel.history(limit=100):  # Increase limit if needed
+                if message.author == self.bot.user:
+                    await message.delete()
+
             # First, update the schedule image
             await self.update_schedule_image(channel, schedule)
 
-            # Delete previous schedule embeds (but not the pinned image)
-            message_id = await self.config.guild(channel.guild).schedule_message_id()
-            async for message in channel.history(limit=20):
-                if message.author == self.bot.user and message.embeds:
-                    if not message_id or message.id != message_id:
-                        await message.delete()
-
+            # Now continue with posting new schedule embeds
             credentials = await self.get_credentials()
             headers = None
             if credentials and self.access_token:
@@ -459,6 +465,7 @@ class TwitchSchedule(commands.Cog):
         except Exception as e:
             print(f"Error in post_schedule: {e}")
             traceback.print_exc()
+
     @commands.command()
     async def testsend(self, ctx):
         """Test if the bot can send messages in this channel."""
