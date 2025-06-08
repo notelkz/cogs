@@ -298,6 +298,7 @@ class TwitchSchedule(commands.Cog):
         except Exception as e:
             print(f"Error in update_schedule_image: {e}")
             return False
+
     @commands.group(aliases=["tsched"])
     @commands.admin_or_permissions(manage_guild=True)
     async def twitchschedule(self, ctx):
@@ -310,24 +311,6 @@ class TwitchSchedule(commands.Cog):
         """Interactive setup process for Twitch schedule."""
         if isinstance(ctx.channel, discord.DMChannel):
             await ctx.send("❌ Setup must be started in a server channel!")
-            return
-
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        update_days = await self.config.guild(ctx.guild).update_days()
-        update_time = await self.config.guild(ctx.guild).update_time()
-        if twitch_username and channel_id and update_days and update_time:
-            channel = ctx.guild.get_channel(channel_id)
-            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            days_str = ", ".join(day_names[d] for d in update_days)
-            await ctx.send(
-                f"❌ Setup has already been completed for this server!\n"
-                f"**Twitch:** `{twitch_username}`\n"
-                f"**Channel:** {channel.mention if channel else channel_id}\n"
-                f"**Days:** {days_str}\n"
-                f"**Time:** {update_time}\n"
-                f"Use `[p]tsched force` to update, or `[p]tsched notify` to change notification role."
-            )
             return
 
         await ctx.send("🔄 Starting setup process...")
@@ -350,16 +333,17 @@ class TwitchSchedule(commands.Cog):
         # 2. Set Discord Channel
         await ctx.send("Please mention the Discord channel where updates should be posted:")
         try:
-            channel_msg = await self.bot.wait_for(  # Store this message for later
+            channel_msg = await self.bot.wait_for(
                 "message",
                 check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
                 timeout=30.0
             )
             try:
                 channel_id = channel_msg.channel_mentions[0].id
-                update_channel_mention = channel_msg.channel_mentions[0].mention  # Store the mention
+                update_channel_mention = channel_msg.channel_mentions[0].mention
                 await self.config.guild(ctx.guild).channel_id.set(channel_id)
                 await ctx.send(f"✅ Update channel set to: {update_channel_mention}")
+            except
             except (IndexError, AttributeError):
                 await ctx.send("❌ Invalid channel. Please mention a channel like #channel-name")
                 return
@@ -390,14 +374,14 @@ class TwitchSchedule(commands.Cog):
         # 4. Set Update Time
         await ctx.send("What time should the schedule update? Use 24-hour format (e.g., 14:30):")
         try:
-            time_msg = await self.bot.wait_for(  # Store this message for later
+            time_msg = await self.bot.wait_for(
                 "message",
                 check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
                 timeout=30.0
             )
             try:
                 datetime.datetime.strptime(time_msg.content, "%H:%M")
-                update_time_str = time_msg.content  # Store the time string
+                update_time_str = time_msg.content
                 await self.config.guild(ctx.guild).update_time.set(update_time_str)
                 await ctx.send(f"✅ Update time set to: {update_time_str}")
             except ValueError:
@@ -408,7 +392,26 @@ class TwitchSchedule(commands.Cog):
             return
 
         # 5. Set Notification Role (Optional)
-        # ... (rest of notification setup code as before)
+        await ctx.send("Optionally, mention a role to ping for schedule updates (or type `none` to skip):")
+        try:
+            role_msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            if role_msg.content.lower() == "none":
+                await self.config.guild(ctx.guild).notify_role_id.set(None)
+                await ctx.send("✅ No role will be pinged for schedule updates.")
+            elif role_msg.role_mentions:
+                role_id = role_msg.role_mentions[0].id
+                await self.config.guild(ctx.guild).notify_role_id.set(role_id)
+                await ctx.send(f"✅ Will ping <@&{role_id}> for schedule updates.")
+            else:
+                await ctx.send("❌ Invalid input. No role will be pinged.")
+                await self.config.guild(ctx.guild).notify_role_id.set(None)
+        except asyncio.TimeoutError:
+            await ctx.send("⏰ No response, skipping notification role.")
+            await self.config.guild(ctx.guild).notify_role_id.set(None)
 
         # 6. Set number of events to display
         await ctx.send("How many upcoming events should be listed in the schedule image? (1-10, default is 5):")
@@ -430,36 +433,26 @@ class TwitchSchedule(commands.Cog):
             await self.config.guild(ctx.guild).event_count.set(5)
             await ctx.send("⏰ No response, defaulting to 5 events.")
 
-        # Setup Complete
-        embed = discord.Embed(
-            title="✅ Setup Complete!",
-            color=discord.Color.green(),
-            description="Your schedule updates have been configured."
-        )
-        embed.add_field(
-            name="Settings",
-            value=(
-                f"📺 Twitch Channel: {username}\n"
-                f"📝 Discord Channel: {update_channel_mention}\n"  # Use the stored channel mention
-                f"📅 Update Day: {day_names[update_day]}\n"
-                f"⏰ Update Time: {update_time_str}\n"  # Use the stored time string
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="Next Steps",
-            value=(
-                "• Use `[p]tsched force` to generate your first schedule\n"
-                "• The schedule will automatically update every week"
-            ),
-            inline=False
-        )
-        await ctx.send(embed=embed)
+        await ctx.send("✅ Setup complete! Use `[p]tsched force` to generate your first schedule.")
 
     @twitchschedule.command(name="force")
     async def force_update(self, ctx):
         """Force an immediate schedule update."""
-        # ... (force_update code as before)
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        if not channel_id or not twitch_username:
+            await ctx.send("❌ Please run `[p]tsched setup` first.")
+            return
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("❌ The configured channel no longer exists. Please run `[p]tsched setup` again.")
+            return
+        schedule = await self.get_schedule(twitch_username)
+        if schedule is None:
+            await ctx.send("❌ Could not fetch schedule from Twitch. Check your Twitch credentials and username.")
+            return
+        await self.post_schedule(channel, schedule)
+        await ctx.send("✅ Schedule updated!")
 
     @twitchschedule.command(name="notify")
     async def set_notify(self, ctx, role: discord.Role = None):
@@ -486,12 +479,39 @@ class TwitchSchedule(commands.Cog):
     @twitchschedule.command(name="help")
     async def show_help(self, ctx):
         """Show detailed help for Twitch Schedule commands."""
-        # ... (show_help code as before)
+        prefix = ctx.clean_prefix
+        embed = discord.Embed(
+            title="Twitch Schedule Help",
+            color=discord.Color.purple(),
+            description=(
+                f"**{prefix}tsched setup** - Interactive setup\n"
+                f"**{prefix}tsched force** - Force an immediate schedule update\n"
+                f"**{prefix}tsched notify [@role/none]** - Set or clear notification role\n"
+                f"**{prefix}tsched events [number]** - Set number of events to show\n"
+                f"**{prefix}tsched settings** - Show current settings\n"
+            )
+        )
+        await ctx.send(embed=embed)
 
     @twitchschedule.command(name="settings")
     async def settings(self, ctx):
         """Show current settings."""
-        # ... (settings code as before)
+        data = await self.config.guild(ctx.guild).all()
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        channel = ctx.guild.get_channel(data["channel_id"]) if data["channel_id"] else None
+        role = ctx.guild.get_role(data["notify_role_id"]) if data["notify_role_id"] else None
+        days = ", ".join(day_names[d] for d in data["update_days"]) if data["update_days"] else "Not set"
+        embed = discord.Embed(
+            title="Twitch Schedule Settings",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Twitch Username", value=data["twitch_username"] or "Not set", inline=False)
+        embed.add_field(name="Channel", value=channel.mention if channel else "Not set", inline=False)
+        embed.add_field(name="Update Days", value=days, inline=False)
+        embed.add_field(name="Update Time", value=data["update_time"] or "Not set", inline=False)
+        embed.add_field(name="Notify Role", value=role.mention if role else "None", inline=False)
+        embed.add_field(name="Events Shown", value=data["event_count"], inline=False)
+        await ctx.send(embed=embed)
 
     @twitchschedule.command(name="testsend")
     async def testsend(self, ctx):
@@ -500,3 +520,4 @@ class TwitchSchedule(commands.Cog):
 
 async def setup(bot: Red):
     await bot.add_cog(TwitchSchedule(bot))
+
