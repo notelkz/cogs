@@ -265,7 +265,7 @@ class TwitchSchedule(commands.Cog):
 
             # Add next week's date (top right)
             next_sunday = self.get_next_sunday()
-            date_text = next_sunday.strftime("Week of %B %d")
+            date_text = next_sunday.strftime("%B %d")
             draw.text((1600, 20), date_text, font=date_font, fill=(255, 255, 255))
 
             # Schedule positioning for 1920x1080
