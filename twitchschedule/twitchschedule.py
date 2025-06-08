@@ -260,7 +260,7 @@ class TwitchSchedule(commands.Cog):
             draw = ImageDraw.Draw(img)
 
             # Load fonts - adjusted for 1920x1080
-            date_font = ImageFont.truetype(self.font_path, 48)  # For "Week of"
+            date_font = ImageFont.truetype(self.font_path, 40)  # For "Week of"
             schedule_font = ImageFont.truetype(self.font_path, 42)  # For schedule items
 
             # Add just the date text underneath the template's "Week of" text
@@ -268,7 +268,7 @@ class TwitchSchedule(commands.Cog):
             date_text = next_sunday.strftime("%B %d")  # Just the date
 
             # Position date text underneath "Week of" in template
-            draw.text((1800, 180), date_text, font=date_font, fill=(255, 255, 255))
+            draw.text((1700, 180), date_text, font=date_font, fill=(255, 255, 255))
 
             # Schedule positioning for 1920x1080
             day_x = 125    # X position for day/time
