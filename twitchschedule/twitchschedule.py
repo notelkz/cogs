@@ -172,8 +172,11 @@ class TwitchSchedule(commands.Cog):
             bar_y = initial_y + (i * row_height)
             day_y = bar_y + day_offset
             game_y = bar_y + 15
-            start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
-            day_time = start_time.strftime("%A // %I:%M%p").upper()
+            start_time_utc = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
+            if start_time_utc.tzinfo is None:
+                start_time_utc = start_time_utc.replace(tzinfo=datetime.timezone.utc)
+            start_time_london = start_time_utc.astimezone(london_tz)
+            day_time = start_time_london.strftime("%A // %I:%M%p").upper()
             title = segment["title"]
             draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
             draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
