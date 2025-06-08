@@ -263,10 +263,13 @@ class TwitchSchedule(commands.Cog):
             date_font = ImageFont.truetype(self.font_path, 48)  # For "Week of"
             schedule_font = ImageFont.truetype(self.font_path, 42)  # For schedule items
 
-            # Add next week's date (top right)
+            # Add just the date (in the generate_schedule_image method)
             next_sunday = self.get_next_sunday()
-            date_text = next_sunday.strftime("%B %d")
-            draw.text((1600, 20), date_text, font=date_font, fill=(255, 255, 255))
+            date_text = next_sunday.strftime("%B %d")  # Just the date
+
+            # Position date text in the top right
+            draw.text((1600, 40), date_text, font=date_font, fill=(255, 255, 255))
+
 
             # Schedule positioning for 1920x1080
             day_x = 125    # X position for day/time
