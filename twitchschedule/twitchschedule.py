@@ -268,7 +268,7 @@ class TwitchSchedule(commands.Cog):
             date_text = next_sunday.strftime("%B %d")  # Just the date
 
             # Position date text underneath "Week of" in template
-            draw.text((1700, 180), date_text, font=date_font, fill=(255, 255, 255))
+            draw.text((1650, 180), date_text, font=date_font, fill=(255, 255, 255))
 
             # Schedule positioning for 1920x1080
             day_x = 125    # X position for day/time
