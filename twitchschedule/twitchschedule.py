@@ -203,14 +203,11 @@ class TwitchSchedule(commands.Cog):
         return font_ok and template_ok
 
     def get_next_sunday(self):
-        """Get the Sunday of the current week."""
+        """Get current Sunday if today is Sunday, otherwise get next Sunday."""
         today = datetime.datetime.now()
-        # Get the most recent Sunday (0 = Monday, 6 = Sunday in weekday())
-        days_since_sunday = today.weekday() + 1  # +1 because weekday() considers Monday as 0
-        last_sunday = today - timedelta(days=days_since_sunday)
-        return last_sunday
+        days_until_sunday = (6 - today.weekday()) % 7  # 6 = Sunday
+        return today + timedelta(days=days_until_sunday)
 
-    
     async def get_game_boxart(self, game_id, headers):
         """Fetch the box art URL for a game from Twitch API."""
         if not game_id or not headers:
