@@ -272,7 +272,7 @@ class TwitchSchedule(commands.Cog):
             day_x = 125    # X position for day/time
             game_x = 125   # X position for game title
             initial_y = 350    # Starting Y position for first day
-            row_height = 180   # Space between each row's start
+            row_height = 140   # Space between each row's start
             day_offset = -45   # How far above the bar the day text should be
             bar_height = 70    # Height of the semi-transparent bar
 
