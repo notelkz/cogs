@@ -278,6 +278,27 @@ class TwitchSchedule(commands.Cog):
             await ctx.send("❌ Setup must be started in a server channel!")
             return
 
+        # Check if already set up
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        update_days = await self.config.guild(ctx.guild).update_days()
+        update_time = await self.config.guild(ctx.guild).update_time()
+        if twitch_username and channel_id and update_days and update_time:
+            channel = ctx.guild.get_channel(channel_id)
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            days_str = ", ".join(day_names[d] for d in update_days)
+            await ctx.send(
+                f"❌ Setup has already been completed for this server!\n"
+                f"**Twitch:** `{twitch_username}`\n"
+                f"**Channel:** {channel.mention if channel else channel_id}\n"
+                f"**Days:** {days_str}\n"
+                f"**Time:** {update_time}\n"
+                f"Use `[p]tsched force` to update, or `[p]tsched notify` to change notification role."
+            )
+            return
+
+        await ctx.send("🔄 Starting setup process...")
+
         await ctx.send("🔄 Starting setup process...")
 
         # 1. Set Twitch Username
