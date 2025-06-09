@@ -569,5 +569,6 @@ class StreamView(discord.ui.View):
         self.add_item(self.watch_button)
         self.add_item(self.subscribe_button)
 
+
 async def setup(bot):
-    await bot.add_cog(TwitchAnnouncer(
+    await bot.add_cog(TwitchAnnouncer(bot))
