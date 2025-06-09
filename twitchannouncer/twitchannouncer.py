@@ -559,14 +559,12 @@ class StreamView(discord.ui.View):
         self.watch_button = discord.ui.Button(
             label="Watch Stream",
             url=f"https://twitch.tv/{twitch_name}",
-            style=discord.ButtonStyle.url,
-            custom_id=f"watch_{twitch_name}"
+            style=discord.ButtonStyle.url
         )
         self.subscribe_button = discord.ui.Button(
             label="Subscribe",
             url=f"https://twitch.tv/{twitch_name}/subscribe",
-            style=discord.ButtonStyle.url,
-            custom_id=f"subscribe_{twitch_name}"
+            style=discord.ButtonStyle.url
         )
         self.add_item(self.watch_button)
         self.add_item(self.subscribe_button)
