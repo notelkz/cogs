@@ -78,6 +78,7 @@ class TwitchAnnouncer(commands.Cog):
             except Exception as e:
                 print(f"Error in stream check loop: {e}")
                 await asyncio.sleep(60)
+
     async def check_guild_streams(self, guild):
         """Check streams for a specific guild."""
         streamers = await self.config.guild(guild).streamers()
@@ -86,15 +87,16 @@ class TwitchAnnouncer(commands.Cog):
 
         headers = await self.get_twitch_headers(guild)
         if not headers:
+            print(f"[DEBUG] No Twitch headers for guild {guild.id}")
             return
 
         async with aiohttp.ClientSession() as session:
             for twitch_name in streamers:
-                async with session.get(
-                    f"https://api.twitch.tv/helix/streams?user_login={twitch_name}",
-                    headers=headers
-                ) as resp:
+                url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
+                async with session.get(url, headers=headers) as resp:
+                    text = await resp.text()
                     if resp.status != 200:
+                        print(f"[DEBUG] Twitch API error for {twitch_name}: {resp.status} {text}")
                         continue
                     data = await resp.json()
                     
@@ -134,13 +136,13 @@ class TwitchAnnouncer(commands.Cog):
         
         embed.add_field(
             name="Playing",
-            value=stream_data["game_name"],
+            value=stream_data.get("game_name", "Unknown"),
             inline=True
         )
         
         embed.add_field(
             name="Viewers",
-            value=str(stream_data["viewer_count"]),
+            value=str(stream_data.get("viewer_count", 0)),
             inline=True
         )
 
@@ -187,6 +189,7 @@ class TwitchAnnouncer(commands.Cog):
             await channel.send(role_mentions, embed=embed, view=view)
         else:
             await channel.send(embed=embed, view=view)
+
     @commands.group(aliases=["tann"])
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
@@ -372,12 +375,13 @@ class TwitchAnnouncer(commands.Cog):
             return
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://api.twitch.tv/helix/streams?user_login={twitch_name}",
-                headers=headers
-            ) as resp:
+            url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                print(f"[DEBUG] Twitch API status: {resp.status}")
+                print(f"[DEBUG] Twitch API response: {text}")
                 if resp.status != 200:
-                    await ctx.send("Failed to fetch stream data.")
+                    await ctx.send(f"Failed to fetch stream data. Twitch API returned {resp.status}: {text}")
                     return
                     
                 data = await resp.json()
