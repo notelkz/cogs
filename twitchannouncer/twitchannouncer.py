@@ -90,10 +90,10 @@ class TwitchAnnouncer(commands.Cog):
 
         async with aiohttp.ClientSession() as session:
             for twitch_name in streamers:
-                    async with session.get(
-                        f"https://api.twitch.tv/helix/streams?user_login={twitch_name}",
-                        headers=headers
-                    ) as resp:
+                async with session.get(
+                    f"https://api.twitch.tv/helix/streams?user_login={twitch_name}",
+                    headers=headers
+                ) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json()
