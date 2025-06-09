@@ -24,6 +24,9 @@ class TwitchAnnouncer(commands.Cog):
         self.config.register_guild(**default_guild)
         self.check_streams_task = self.bot.loop.create_task(self.check_streams_loop())
         self.headers = None
+        self.rate_limiter = commands.CooldownMapping.from_cooldown(
+            1, 1, commands.BucketType.guild
+        )  # 1 request per second per guild
 
     def cog_unload(self):
         if self.check_streams_task:
@@ -43,23 +46,27 @@ class TwitchAnnouncer(commands.Cog):
             if not client_id or not client_secret:
                 return None
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    "https://id.twitch.tv/oauth2/token",
-                    params={
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "grant_type": "client_credentials"
-                    }
-                ) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.json()
-                    access_token = data["access_token"]
-                    expires_in = data["expires_in"]
-                    
-                    await self.config.guild(guild).access_token.set(access_token)
-                    await self.config.guild(guild).token_expires.set(now + expires_in)
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://id.twitch.tv/oauth2/token",
+                        params={
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "grant_type": "client_credentials"
+                        }
+                    ) as resp:
+                        if resp.status != 200:
+                            return None
+                        data = await resp.json()
+                        access_token = data["access_token"]
+                        expires_in = data["expires_in"]
+                        
+                        await self.config.guild(guild).access_token.set(access_token)
+                        await self.config.guild(guild).token_expires.set(now + expires_in)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                print(f"Error getting Twitch token: {e}")
+                return None
 
         return {
             "Client-ID": await self.config.guild(guild).client_id(),
@@ -73,10 +80,15 @@ class TwitchAnnouncer(commands.Cog):
             try:
                 for guild in self.bot.guilds:
                     await self.check_guild_streams(guild)
-                    check_frequency = await self.config.guild(guild).check_frequency()
-                    await asyncio.sleep(check_frequency)
+                
+                # Sleep after checking all guilds
+                check_frequency = await self.config.guild(guild).check_frequency()
+                await asyncio.sleep(check_frequency)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                print(f"Network error in stream check loop: {e}")
+                await asyncio.sleep(60)
             except Exception as e:
-                print(f"Error in stream check loop: {e}")
+                print(f"Unexpected error in stream check loop: {e}")
                 await asyncio.sleep(60)
 
     async def check_guild_streams(self, guild):
@@ -90,23 +102,32 @@ class TwitchAnnouncer(commands.Cog):
             print(f"[DEBUG] No Twitch headers for guild {guild.id}")
             return
 
+        # Apply rate limiting
+        bucket = self.rate_limiter.get_bucket(discord.Object(id=guild.id))
+        retry_after = bucket.update_rate_limit()
+        if retry_after:
+            await asyncio.sleep(retry_after)
+
         async with aiohttp.ClientSession() as session:
             for twitch_name in streamers:
-                url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
-                async with session.get(url, headers=headers) as resp:
-                    text = await resp.text()
-                    if resp.status != 200:
-                        print(f"[DEBUG] Twitch API error for {twitch_name}: {resp.status} {text}")
-                        continue
-                    data = await resp.json()
-                    
-                    is_live = bool(data["data"])
-                    last_announced = streamers[twitch_name].get("last_announced", 0)
-                    
-                    if is_live and data["data"][0]["started_at"] != last_announced:
-                        await self.announce_stream(guild, twitch_name, data["data"][0])
-                        streamers[twitch_name]["last_announced"] = data["data"][0]["started_at"]
-                        await self.config.guild(guild).streamers.set(streamers)
+                try:
+                    url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status != 200:
+                            print(f"[DEBUG] Twitch API error for {twitch_name}: {resp.status}")
+                            continue
+                        data = await resp.json()
+                        
+                        is_live = bool(data["data"])
+                        last_announced = streamers[twitch_name].get("last_announced", 0)
+                        
+                        if is_live and data["data"][0]["started_at"] != last_announced:
+                            await self.announce_stream(guild, twitch_name, data["data"][0])
+                            streamers[twitch_name]["last_announced"] = data["data"][0]["started_at"]
+                            await self.config.guild(guild).streamers.set(streamers)
+                except Exception as e:
+                    print(f"Error checking stream {twitch_name}: {e}")
+                    continue
 
     async def announce_stream(self, guild, twitch_name, stream_data):
         """Announce a live stream."""
@@ -151,45 +172,258 @@ class TwitchAnnouncer(commands.Cog):
                 thumbnail = stream_data["thumbnail_url"]
                 timestamp = int(datetime.now().timestamp())
                 
-                # Try different resolutions in case one works better
                 resolutions = [
                     ("1280", "720"),
                     ("640", "360"),
                     ("480", "270")
                 ]
                 
+                thumbnail_set = False
                 for width, height in resolutions:
                     try:
                         current_thumbnail = thumbnail.replace("{width}", width).replace("{height}", height)
                         current_thumbnail = f"{current_thumbnail}?t={timestamp}"
                         
-                        # Verify the thumbnail URL is accessible
                         async with aiohttp.ClientSession() as session:
                             async with session.head(current_thumbnail) as resp:
                                 if resp.status == 200:
                                     embed.set_image(url=current_thumbnail)
+                                    thumbnail_set = True
                                     break
                     except:
                         continue
                 
-                # If no thumbnail was set, try the channel preview
-                if not embed.image:
+                if not thumbnail_set:
                     preview_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name}-1280x720.jpg"
                     embed.set_image(url=f"{preview_url}?t={timestamp}")
                     
             except Exception as e:
                 print(f"Error setting stream thumbnail: {e}")
-                # If all else fails, try the direct preview URL
                 preview_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name}-1280x720.jpg"
                 embed.set_image(url=f"{preview_url}?t={timestamp}")
 
         view = StreamView(twitch_name)
         
-        if role_mentions:
-            await channel.send(role_mentions, embed=embed, view=view)
-        else:
-            await channel.send(embed=embed, view=view)
+        try:
+            if role_mentions:
+                await channel.send(role_mentions, embed=embed, view=view)
+            else:
+                await channel.send(embed=embed, view=view)
+        except discord.HTTPException as e:
+            print(f"Error sending announcement: {e}")
+import discord
+from redbot.core import commands, Config, checks
+import aiohttp
+import asyncio
+from datetime import datetime
+from typing import Optional
 
+class TwitchAnnouncer(commands.Cog):
+    """Announce when specific users go live on Twitch."""
+
+    def __init__(self, bot):
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=1234567890)
+        default_guild = {
+            "announcement_channel": None,
+            "ping_roles": [],
+            "streamers": {},  # {twitch_name: {"discord_id": id, "last_announced": timestamp}}
+            "client_id": None,
+            "client_secret": None,
+            "access_token": None,
+            "token_expires": None,
+            "check_frequency": 300  # Default 5 minutes
+        }
+        self.config.register_guild(**default_guild)
+        self.check_streams_task = self.bot.loop.create_task(self.check_streams_loop())
+        self.headers = None
+        self.rate_limiter = commands.CooldownMapping.from_cooldown(
+            1, 1, commands.BucketType.guild
+        )  # 1 request per second per guild
+
+    def cog_unload(self):
+        if self.check_streams_task:
+            self.check_streams_task.cancel()
+
+    async def get_twitch_headers(self, guild):
+        """Get valid Twitch API headers."""
+        now = datetime.utcnow().timestamp()
+        token_expires = await self.config.guild(guild).token_expires()
+        access_token = await self.config.guild(guild).access_token()
+
+        if not token_expires or not access_token or now >= token_expires:
+            # Need new token
+            client_id = await self.config.guild(guild).client_id()
+            client_secret = await self.config.guild(guild).client_secret()
+            
+            if not client_id or not client_secret:
+                return None
+
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://id.twitch.tv/oauth2/token",
+                        params={
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "grant_type": "client_credentials"
+                        }
+                    ) as resp:
+                        if resp.status != 200:
+                            return None
+                        data = await resp.json()
+                        access_token = data["access_token"]
+                        expires_in = data["expires_in"]
+                        
+                        await self.config.guild(guild).access_token.set(access_token)
+                        await self.config.guild(guild).token_expires.set(now + expires_in)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                print(f"Error getting Twitch token: {e}")
+                return None
+
+        return {
+            "Client-ID": await self.config.guild(guild).client_id(),
+            "Authorization": f"Bearer {access_token}"
+        }
+
+    async def check_streams_loop(self):
+        """Loop to check if streamers are live."""
+        await self.bot.wait_until_ready()
+        while True:
+            try:
+                for guild in self.bot.guilds:
+                    await self.check_guild_streams(guild)
+                
+                # Sleep after checking all guilds
+                check_frequency = await self.config.guild(guild).check_frequency()
+                await asyncio.sleep(check_frequency)
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                print(f"Network error in stream check loop: {e}")
+                await asyncio.sleep(60)
+            except Exception as e:
+                print(f"Unexpected error in stream check loop: {e}")
+                await asyncio.sleep(60)
+
+    async def check_guild_streams(self, guild):
+        """Check streams for a specific guild."""
+        streamers = await self.config.guild(guild).streamers()
+        if not streamers:
+            return
+
+        headers = await self.get_twitch_headers(guild)
+        if not headers:
+            print(f"[DEBUG] No Twitch headers for guild {guild.id}")
+            return
+
+        # Apply rate limiting
+        bucket = self.rate_limiter.get_bucket(discord.Object(id=guild.id))
+        retry_after = bucket.update_rate_limit()
+        if retry_after:
+            await asyncio.sleep(retry_after)
+
+        async with aiohttp.ClientSession() as session:
+            for twitch_name in streamers:
+                try:
+                    url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
+                    async with session.get(url, headers=headers) as resp:
+                        if resp.status != 200:
+                            print(f"[DEBUG] Twitch API error for {twitch_name}: {resp.status}")
+                            continue
+                        data = await resp.json()
+                        
+                        is_live = bool(data["data"])
+                        last_announced = streamers[twitch_name].get("last_announced", 0)
+                        
+                        if is_live and data["data"][0]["started_at"] != last_announced:
+                            await self.announce_stream(guild, twitch_name, data["data"][0])
+                            streamers[twitch_name]["last_announced"] = data["data"][0]["started_at"]
+                            await self.config.guild(guild).streamers.set(streamers)
+                except Exception as e:
+                    print(f"Error checking stream {twitch_name}: {e}")
+                    continue
+
+    async def announce_stream(self, guild, twitch_name, stream_data):
+        """Announce a live stream."""
+        channel_id = await self.config.guild(guild).announcement_channel()
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        # Get roles to ping
+        ping_roles = await self.config.guild(guild).ping_roles()
+        role_mentions = " ".join(f"<@&{role_id}>" for role_id in ping_roles)
+
+        embed = discord.Embed(
+            title=stream_data["title"],
+            url=f"https://twitch.tv/{twitch_name}",
+            color=discord.Color.purple(),
+            timestamp=datetime.now()
+        )
+        
+        embed.set_author(
+            name=f"{twitch_name} is now live on Twitch!",
+            icon_url="https://static.twitchcdn.net/assets/favicon-32-d6025c14e900565d6177.png"
+        )
+        
+        embed.add_field(
+            name="Playing",
+            value=stream_data.get("game_name", "Unknown"),
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Viewers",
+            value=str(stream_data.get("viewer_count", 0)),
+            inline=True
+        )
+
+        if stream_data.get("thumbnail_url"):
+            try:
+                thumbnail = stream_data["thumbnail_url"]
+                timestamp = int(datetime.now().timestamp())
+                
+                resolutions = [
+                    ("1280", "720"),
+                    ("640", "360"),
+                    ("480", "270")
+                ]
+                
+                thumbnail_set = False
+                for width, height in resolutions:
+                    try:
+                        current_thumbnail = thumbnail.replace("{width}", width).replace("{height}", height)
+                        current_thumbnail = f"{current_thumbnail}?t={timestamp}"
+                        
+                        async with aiohttp.ClientSession() as session:
+                            async with session.head(current_thumbnail) as resp:
+                                if resp.status == 200:
+                                    embed.set_image(url=current_thumbnail)
+                                    thumbnail_set = True
+                                    break
+                    except:
+                        continue
+                
+                if not thumbnail_set:
+                    preview_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name}-1280x720.jpg"
+                    embed.set_image(url=f"{preview_url}?t={timestamp}")
+                    
+            except Exception as e:
+                print(f"Error setting stream thumbnail: {e}")
+                preview_url = f"https://static-cdn.jtvnw.net/previews-ttv/live_user_{twitch_name}-1280x720.jpg"
+                embed.set_image(url=f"{preview_url}?t={timestamp}")
+
+        view = StreamView(twitch_name)
+        
+        try:
+            if role_mentions:
+                await channel.send(role_mentions, embed=embed, view=view)
+            else:
+                await channel.send(embed=embed, view=view)
+        except discord.HTTPException as e:
+            print(f"Error sending announcement: {e}")
     @commands.group(aliases=["tann"])
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
@@ -404,17 +638,20 @@ class StreamView(discord.ui.View):
         super().__init__(timeout=None)
         self.twitch_name = twitch_name
         
-        # Add buttons
-        self.add_item(discord.ui.Button(
+        self.watch_button = discord.ui.Button(
             label="Watch Stream",
             url=f"https://twitch.tv/{twitch_name}",
-            style=discord.ButtonStyle.url
-        ))
-        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.url,
+            custom_id=f"watch_{twitch_name}"
+        )
+        self.subscribe_button = discord.ui.Button(
             label="Subscribe",
             url=f"https://twitch.tv/{twitch_name}/subscribe",
-            style=discord.ButtonStyle.url
-        ))
+            style=discord.ButtonStyle.url,
+            custom_id=f"subscribe_{twitch_name}"
+        )
+        self.add_item(self.watch_button)
+        self.add_item(self.subscribe_button)
 
 async def setup(bot):
     await bot.add_cog(TwitchAnnouncer(bot))
