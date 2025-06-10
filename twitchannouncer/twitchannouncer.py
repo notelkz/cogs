@@ -162,19 +162,36 @@ class TwitchAnnouncer(commands.Cog):
         """Announce a live stream."""
         channel_id = await self.config.guild(guild).announcement_channel()
         if not channel_id:
+            print(f"[DEBUG] No announcement channel set for guild {guild.id}")
             return
 
         channel = guild.get_channel(channel_id)
         if not channel:
+            print(f"[DEBUG] Could not find channel with ID {channel_id} in guild {guild.id}")
             return
 
         # Get roles to ping
         ping_roles = await self.config.guild(guild).ping_roles()
-        role_mentions = " ".join(f"<@&{role_id}>" for role_id in ping_roles)
         
         # Debug logging for role mentions
         print(f"[DEBUG] Announcing stream for {twitch_name}")
         print(f"[DEBUG] Ping roles: {ping_roles}")
+        
+        # Check if roles exist and are mentionable
+        valid_roles = []
+        for role_id in ping_roles:
+            role = guild.get_role(role_id)
+            if role:
+                print(f"[DEBUG] Found role {role.name} (ID: {role_id})")
+                if role.mentionable:
+                    print(f"[DEBUG] Role {role.name} is mentionable")
+                    valid_roles.append(role_id)
+                else:
+                    print(f"[DEBUG] Role {role.name} is NOT mentionable")
+            else:
+                print(f"[DEBUG] Could not find role with ID {role_id}")
+        
+        role_mentions = " ".join(f"<@&{role_id}>" for role_id in valid_roles)
         print(f"[DEBUG] Role mentions string: '{role_mentions}'")
 
         embed = discord.Embed(
@@ -240,8 +257,10 @@ class TwitchAnnouncer(commands.Cog):
         
         try:
             if role_mentions:
+                print(f"[DEBUG] Sending announcement with role mentions: {role_mentions}")
                 await channel.send(role_mentions, embed=embed, view=view)
             else:
+                print(f"[DEBUG] Sending announcement without role mentions")
                 await channel.send(embed=embed, view=view)
         except discord.HTTPException as e:
             print(f"Error sending announcement: {e}")
@@ -316,6 +335,74 @@ class TwitchAnnouncer(commands.Cog):
                 msg += f"- Unknown role (ID: {role_id})\n"
         
         await ctx.send(msg)
+
+    @twitchannouncer.command(name="checkrole")
+    async def check_role_settings(self, ctx, role: discord.Role):
+        """Check if a role can be properly pinged by the bot."""
+        embed = discord.Embed(
+            title=f"Role Check: {role.name}",
+            color=discord.Color.blue()
+        )
+        
+        # Check if role is mentionable
+        embed.add_field(
+            name="Mentionable",
+            value="✅ Yes" if role.mentionable else "❌ No - Role cannot be mentioned",
+            inline=False
+        )
+        
+        # Check bot permissions
+        channel_id = await self.config.guild(ctx.guild).announcement_channel()
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        
+        if channel:
+            bot_member = ctx.guild.get_member(self.bot.user.id)
+            permissions = channel.permissions_for(bot_member)
+            
+            embed.add_field(
+                name="Announcement Channel",
+                value=f"{channel.mention}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Mention Permissions",
+                value="✅ Yes" if permissions.mention_everyone else "❌ No - Bot cannot mention roles",
+                inline=True
+            )
+        else:
+            embed.add_field(
+                name="Announcement Channel",
+                value="❌ Not set",
+                inline=False
+            )
+        
+        # Check if role is in ping_roles
+        ping_roles = await self.config.guild(ctx.guild).ping_roles()
+        in_ping_roles = role.id in ping_roles
+        
+        embed.add_field(
+            name="In Ping Roles List",
+            value="✅ Yes" if in_ping_roles else "❌ No - Role not configured for pinging",
+            inline=False
+        )
+        
+        # Test ping
+        test_message = await ctx.send(f"Testing ping for {role.mention}...")
+        
+        embed.add_field(
+            name="Test Ping",
+            value=f"✅ Sent - Check if you received a notification for the message above",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="User Settings Note",
+            value="If users aren't receiving pings, ask them to check their notification settings in Discord.",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
 
     @twitchannouncer.command(name="setfrequency")
     @commands.guild_only()
