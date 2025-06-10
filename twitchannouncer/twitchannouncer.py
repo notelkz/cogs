@@ -157,6 +157,7 @@ class TwitchAnnouncer(commands.Cog):
                         continue
         except Exception as e:
             print(f"[DEBUG] Error in check_guild_streams: {str(e)}")
+    
     async def announce_stream(self, guild, twitch_name, stream_data):
         """Announce a live stream."""
         channel_id = await self.config.guild(guild).announcement_channel()
@@ -170,6 +171,11 @@ class TwitchAnnouncer(commands.Cog):
         # Get roles to ping
         ping_roles = await self.config.guild(guild).ping_roles()
         role_mentions = " ".join(f"<@&{role_id}>" for role_id in ping_roles)
+        
+        # Debug logging for role mentions
+        print(f"[DEBUG] Announcing stream for {twitch_name}")
+        print(f"[DEBUG] Ping roles: {ping_roles}")
+        print(f"[DEBUG] Role mentions string: '{role_mentions}'")
 
         embed = discord.Embed(
             title=stream_data["title"],
@@ -290,6 +296,24 @@ class TwitchAnnouncer(commands.Cog):
                 msg += f"- {twitch_name} ({member.mention if member else 'Unknown member'})\n"
             else:
                 msg += f"- {twitch_name}\n"
+        
+        await ctx.send(msg)
+
+    @twitchannouncer.command(name="listroles")
+    async def list_ping_roles(self, ctx):
+        """List all roles that will be pinged for stream announcements."""
+        ping_roles = await self.config.guild(ctx.guild).ping_roles()
+        if not ping_roles:
+            await ctx.send("No roles configured for pinging.")
+            return
+            
+        msg = "**Roles that will be pinged:**\n"
+        for role_id in ping_roles:
+            role = ctx.guild.get_role(role_id)
+            if role:
+                msg += f"- {role.name} (ID: {role_id})\n"
+            else:
+                msg += f"- Unknown role (ID: {role_id})\n"
         
         await ctx.send(msg)
 
