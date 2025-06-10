@@ -556,7 +556,7 @@ class TwitchManager(commands.Cog):
     # COMMANDS - GENERAL
     #
     
-    @commands.group(aliases=["twitch"])
+    @commands.group(aliases=["twitch", "twiman"])
     @commands.guild_only()
     async def twitchmanager(self, ctx):
         """Twitch Manager - Announcements and Schedule"""
@@ -567,21 +567,21 @@ class TwitchManager(commands.Cog):
     # COMMANDS - LIVE ANNOUNCER
     #
     
-    @twitchmanager.group(aliases=["live", "announcer"])
+    @twitchmanager.group(aliases=["live", "twitchlive"])
     @commands.guild_only()
-    async def announcer(self, ctx):
+    async def liveannouncer(self, ctx):
         """Manage live stream announcements"""
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
 
-    @announcer.command(name="setup")
+    @liveannouncer.command(name="setup")
     @checks.admin_or_permissions(manage_guild=True)
     async def setup_announcer(self, ctx, channel: discord.TextChannel):
         """Set up the Twitch announcer."""
         await self.config.guild(ctx.guild).announcement_channel.set(channel.id)
         await ctx.send(f"Announcement channel set to {channel.mention}")
 
-    @announcer.command(name="addstreamer")
+    @liveannouncer.command(name="addstreamer")
     @checks.admin_or_permissions(manage_guild=True)
     async def add_streamer(self, ctx, twitch_name: str, discord_member: Optional[discord.Member] = None):
         """Add a Twitch streamer to announce."""
@@ -592,7 +592,7 @@ class TwitchManager(commands.Cog):
             }
         await ctx.send(f"Added {twitch_name} to announcement list.")
 
-    @announcer.command(name="removestreamer")
+    @liveannouncer.command(name="removestreamer")
     @checks.admin_or_permissions(manage_guild=True)
     async def remove_streamer(self, ctx, twitch_name: str):
         """Remove a Twitch streamer from announcements."""
@@ -603,7 +603,7 @@ class TwitchManager(commands.Cog):
             else:
                 await ctx.send("Streamer not found in list.")
 
-    @announcer.command(name="liststreamers")
+    @liveannouncer.command(name="liststreamers")
     async def list_streamers(self, ctx):
         """List all tracked streamers."""
         streamers = await self.config.guild(ctx.guild).streamers()
@@ -622,7 +622,7 @@ class TwitchManager(commands.Cog):
         
         await ctx.send(msg)
 
-    @announcer.command(name="listroles")
+    @liveannouncer.command(name="listroles")
     async def list_ping_roles(self, ctx):
         """List all roles that will be pinged for stream announcements."""
         ping_roles = await self.config.guild(ctx.guild).ping_roles()
@@ -640,7 +640,7 @@ class TwitchManager(commands.Cog):
         
         await ctx.send(msg)
 
-    @announcer.command(name="checkrole")
+    @liveannouncer.command(name="checkrole")
     async def check_role_settings(self, ctx, role: discord.Role):
         """Check if a role can be properly pinged by the bot."""
         embed = discord.Embed(
@@ -708,7 +708,20 @@ class TwitchManager(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @announcer.command(name="setfrequency")
+    @liveannouncer.command(name="setfrequency")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_check_frequency(self, ctx, seconds: int):
+        """Set how frequently to check for live streams (in seconds)."""
+        if seconds < 30:
+            await ctx.send("❌ Check frequency cannot be less than 30 seconds to avoid API rate limits.")
+            return
+            
+        streamer_count = len(await self.config.guild(ctx.guild).streamers())
+        requests_per_minute = (60 / seconds) * streamer_count
+        
+        if requests_per_minute > 
+    @liveannouncer.command(name="setfrequency")
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
     async def set_check_frequency(self, ctx, seconds: int):
@@ -722,8 +735,478 @@ class TwitchManager(commands.Cog):
         
         if requests_per_minute > 50:
             await ctx.send(f"⚠️ Warning: With {streamer_count} streamers, checking every {seconds} seconds "
-                        f"will make approximately {requests_per_minute:.1f} requests per minute to the Twitch API. "
-                        "This might cause rate limit issues.")
+                          f"will make approximately {requests_per_minute:.1f} requests per minute to the Twitch API. "
+                          "This might cause rate limit issues.")
         
         await self.config.guild(ctx.guild).check_frequency.set(seconds)
         await ctx.send(f"✅ Stream check frequency set to {seconds} seconds.")
+
+    @liveannouncer.command(name="showfrequency")
+    @commands.guild_only()
+    async def show_check_frequency(self, ctx):
+        """Show the current check frequency for live streams."""
+        frequency = await self.config.guild(ctx.guild).check_frequency()
+        streamer_count = len(await self.config.guild(ctx.guild).streamers())
+        requests_per_minute = (60 / frequency) * streamer_count
+        
+        embed = discord.Embed(
+            title="Twitch Announcer Settings",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Check Frequency", value=f"{frequency} seconds", inline=True)
+        embed.add_field(name="Tracked Streamers", value=str(streamer_count), inline=True)
+        embed.add_field(name="Requests per Minute", value=f"{requests_per_minute:.1f}", inline=True)
+        
+        await ctx.send(embed=embed)
+
+    @liveannouncer.command(name="addrole")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def add_ping_role(self, ctx, role: discord.Role):
+        """Add a role to ping for stream announcements."""
+        async with self.config.guild(ctx.guild).ping_roles() as roles:
+            if role.id not in roles:
+                roles.append(role.id)
+        await ctx.send(f"Added {role.name} to announcement pings.")
+
+    @liveannouncer.command(name="removerole")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def remove_ping_role(self, ctx, role: discord.Role):
+        """Remove a role from stream announcements."""
+        async with self.config.guild(ctx.guild).ping_roles() as roles:
+            if role.id in roles:
+                roles.remove(role.id)
+        await ctx.send(f"Removed {role.name} from announcement pings.")
+
+    @liveannouncer.command(name="setauth")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_twitch_auth(self, ctx):
+        """Set Twitch API authentication."""
+        await ctx.send("Please check your DMs for the setup process.")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel.type == discord.ChannelType.private
+
+        try:
+            await ctx.author.send("Please enter your Twitch Client ID:")
+            client_id_msg = await self.bot.wait_for('message', check=check, timeout=60)
+            
+            await ctx.author.send("Please enter your Twitch Client Secret:")
+            client_secret_msg = await self.bot.wait_for('message', check=check, timeout=60)
+
+            client_id = client_id_msg.content
+            client_secret = client_secret_msg.content
+
+            # Test the credentials
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://id.twitch.tv/oauth2/token",
+                    params={
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "grant_type": "client_credentials"
+                    }
+                ) as resp:
+                    if resp.status != 200:
+                        await ctx.author.send("❌ Invalid credentials! Please check your Client ID and Secret.")
+                        return
+                    
+                    data = await resp.json()
+                    access_token = data["access_token"]
+                    expires_in = data["expires_in"]
+                    now = datetime.utcnow().timestamp()
+                    
+                    await self.config.guild(ctx.guild).client_id.set(client_id)
+                    await self.config.guild(ctx.guild).client_secret.set(client_secret)
+                    await self.config.guild(ctx.guild).access_token.set(access_token)
+                    await self.config.guild(ctx.guild).token_expires.set(now + expires_in)
+                    
+                    await ctx.author.send("✅ Twitch API authentication successfully set and verified!")
+                    if ctx.channel.type != discord.ChannelType.private:
+                        await ctx.send("✅ Twitch API authentication has been set up via DM.")
+
+        except asyncio.TimeoutError:
+            await ctx.author.send("Setup timed out. Please try again.")
+        except discord.Forbidden:
+            await ctx.send("I couldn't send you a DM. Please enable DMs and try again.")
+        except Exception as e:
+            await ctx.author.send(f"An error occurred: {str(e)}")
+
+    @liveannouncer.command(name="checkauth")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def check_auth(self, ctx):
+        """Check the status of Twitch API authentication."""
+        client_id = await self.config.guild(ctx.guild).client_id()
+        client_secret = await self.config.guild(ctx.guild).client_secret()
+        access_token = await self.config.guild(ctx.guild).access_token()
+        token_expires = await self.config.guild(ctx.guild).token_expires()
+        
+        if not client_id or not client_secret:
+            await ctx.send("❌ Client ID or Client Secret not set. Please use `setauth` to configure them.")
+            return
+
+        # If we don't have a token, try to get one
+        if not access_token:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://id.twitch.tv/oauth2/token",
+                        params={
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "grant_type": "client_credentials"
+                        }
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            access_token = data["access_token"]
+                            expires_in = data["expires_in"]
+                            now = datetime.utcnow().timestamp()
+                            
+                            await self.config.guild(ctx.guild).access_token.set(access_token)
+                            await self.config.guild(ctx.guild).token_expires.set(now + expires_in)
+                            
+                            token_expires = now + expires_in
+                            await ctx.send("✅ Successfully generated new access token!")
+                        else:
+                            error_text = await resp.text()
+                            await ctx.send(f"❌ Failed to generate token. Status: {resp.status}, Error: {error_text}")
+            except Exception as e:
+                await ctx.send(f"❌ Error generating token: {str(e)}")
+            
+        now = datetime.utcnow().timestamp()
+        
+        embed = discord.Embed(
+            title="Twitch API Authentication Status",
+            color=discord.Color.purple()
+        )
+        
+        embed.add_field(
+            name="Client ID",
+            value="✅ Set" if client_id else "❌ Not Set",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Client Secret",
+            value="✅ Set" if client_secret else "❌ Not Set",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Access Token",
+            value="✅ Set" if access_token else "❌ Not Set",
+            inline=True
+        )
+        
+        if token_expires:
+            if now >= token_expires:
+                status = "❌ Expired"
+            else:
+                remaining = int(token_expires - now)
+                status = f"✅ Valid for {remaining} seconds"
+        else:
+            status = "❌ Not Set"
+            
+        embed.add_field(
+            name="Token Status",
+            value=status,
+            inline=False
+        )
+
+        # Test the current token if we have one
+        if access_token:
+            try:
+                headers = {
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {access_token}"
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://api.twitch.tv/helix/users",
+                        headers=headers
+                    ) as resp:
+                        if resp.status == 200:
+                            embed.add_field(
+                                name="Token Test",
+                                value="✅ Token working correctly",
+                                inline=False
+                            )
+                        else:
+                            error_text = await resp.text()
+                            embed.add_field(
+                                name="Token Test",
+                                value=f"❌ Token not working (Status {resp.status}): {error_text}",
+                                inline=False
+                            )
+            except Exception as e:
+                embed.add_field(
+                    name="Token Test",
+                    value=f"❌ Error testing token: {str(e)}",
+                    inline=False
+                )
+        
+        await ctx.send(embed=embed)
+
+    @liveannouncer.command(name="test")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def test_announcement(self, ctx, twitch_name: str):
+        """Test stream announcement for a specific streamer."""
+        headers = await self.get_twitch_headers(ctx.guild)
+        if not headers:
+            await ctx.send("Twitch API authentication not set up!")
+            return
+
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                print(f"[DEBUG] Twitch API status: {resp.status}")
+                print(f"[DEBUG] Twitch API response: {text}")
+                if resp.status != 200:
+                    await ctx.send(f"Failed to fetch stream data. Twitch API returned {resp.status}: {text}")
+                    return
+                    
+                data = await resp.json()
+                if not data["data"]:
+                    await ctx.send(f"{twitch_name} is not live. Creating test announcement anyway...")
+                    test_data = {
+                        "title": "Test Stream",
+                        "game_name": "Just Chatting",
+                        "viewer_count": 0,
+                        "started_at": datetime.utcnow().isoformat(),
+                        "thumbnail_url": None
+                    }
+                    await self.announce_stream(ctx.guild, twitch_name, test_data)
+                else:
+                    await self.announce_stream(ctx.guild, twitch_name, data["data"][0])
+
+    #
+    # COMMANDS - SCHEDULE
+    #
+    
+    @twitchmanager.group(aliases=["schedule", "sched"])
+    @commands.guild_only()
+    async def twitchschedule(self, ctx):
+        """Manage Twitch schedule integration"""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @twitchschedule.command(name="setup")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def setup_schedule(self, ctx):
+        """Interactive setup process for Twitch schedule."""
+        if isinstance(ctx.channel, discord.DMChannel):
+            await ctx.send("❌ Setup must be started in a server channel!")
+            return
+
+        await ctx.send("🔄 Starting setup process...")
+
+        # 1. Set Twitch Username
+        await ctx.send("Please enter the Twitch username to track:")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            username = msg.content.lower()
+            await self.config.guild(ctx.guild).twitch_username.set(username)
+            await ctx.send(f"✅ Twitch username set to: {username}")
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Setup timed out. Please try again.")
+            return
+
+        # 2. Set Discord Channel
+        await ctx.send("Please mention the Discord channel where updates should be posted:")
+        try:
+            channel_msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            try:
+                channel_id = channel_msg.channel_mentions[0].id
+                update_channel_mention = channel_msg.channel_mentions[0].mention
+                await self.config.guild(ctx.guild).schedule_channel_id.set(channel_id)
+                await ctx.send(f"✅ Update channel set to: {update_channel_mention}")
+            except (IndexError, AttributeError):
+                await ctx.send("❌ Invalid channel. Please mention a channel like #channel-name")
+                return
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Setup timed out. Please try again.")
+            return
+
+        # 3. Set Update Day
+        days_text = (
+            "Which day should the schedule update? Type the number:\n"
+            "1. Monday\n2. Tuesday\n3. Wednesday\n4. Thursday\n5. Friday\n6. Saturday\n7. Sunday"
+        )
+        await ctx.send(days_text)
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel and m.content in "1234567",
+                timeout=30.0
+            )
+            update_day = int(msg.content) - 1
+            await self.config.guild(ctx.guild).update_days.set([update_day])
+            day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            await ctx.send(f"✅ Schedule will update every {day_names[update_day]}")
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Setup timed out. Please try again.")
+            return
+
+        # 4. Set Update Time
+        await ctx.send("What time should the schedule update? Use 24-hour format (e.g., 14:30):")
+        try:
+            time_msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            try:
+                datetime.strptime(time_msg.content, "%H:%M")
+                update_time_str = time_msg.content
+                await self.config.guild(ctx.guild).update_time.set(update_time_str)
+                await ctx.send(f"✅ Update time set to: {update_time_str}")
+            except ValueError:
+                await ctx.send("❌ Invalid time format. Please use HH:MM (e.g., 14:30)")
+                return
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Setup timed out. Please try again.")
+            return
+
+        # 5. Set Notification Role (Optional)
+        await ctx.send("Optionally, mention a role to ping for schedule updates (or type `none` to skip):")
+        try:
+            role_msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            if role_msg.content.lower() == "none":
+                await self.config.guild(ctx.guild).notify_role_id.set(None)
+                await ctx.send("✅ No role will be pinged for schedule updates.")
+            elif role_msg.role_mentions:
+                role_id = role_msg.role_mentions[0].id
+                await self.config.guild(ctx.guild).notify_role_id.set(role_id)
+                await ctx.send(f"✅ Will ping <@&{role_id}> for schedule updates.")
+            else:
+                await ctx.send("❌ Invalid input. No role will be pinged.")
+                await self.config.guild(ctx.guild).notify_role_id.set(None)
+        except asyncio.TimeoutError:
+            await ctx.send("⏰ No response, skipping notification role.")
+            await self.config.guild(ctx.guild).notify_role_id.set(None)
+
+        # 6. Set number of events to display
+        await ctx.send("How many upcoming events should be listed in the schedule image? (1-10, default is 5):")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            try:
+                count = int(msg.content)
+                if not 1 <= count <= 10:
+                    raise ValueError
+            except ValueError:
+                count = 5
+            await self.config.guild(ctx.guild).event_count.set(count)
+            await ctx.send(f"✅ Will show up to {count} events in the schedule image.")
+        except asyncio.TimeoutError:
+            await self.config.guild(ctx.guild).event_count.set(5)
+            await ctx.send("⏰ No response, defaulting to 5 events.")
+
+        await ctx.send("✅ Setup complete! Use `!twiman sched force` to generate your first schedule.")
+
+    @twitchschedule.command(name="force")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def force_update(self, ctx):
+        """Force an immediate schedule update."""
+        channel_id = await self.config.guild(ctx.guild).schedule_channel_id()
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        if not channel_id or not twitch_username:
+            await ctx.send("❌ Please run `!twiman sched setup` first.")
+            return
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("❌ The configured channel no longer exists. Please run `!twiman sched setup` again.")
+            return
+        schedule = await self.get_schedule(twitch_username, ctx.guild)
+        if schedule is None:
+            await ctx.send("❌ Could not fetch schedule from Twitch. Check your Twitch credentials and username.")
+            return
+        await self.post_schedule(channel, schedule)
+        await ctx.send("✅ Schedule updated!")
+
+    @twitchschedule.command(name="notify")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_notify(self, ctx, role: discord.Role = None):
+        """Set or remove the role to ping for schedule updates."""
+        await self.config.guild(ctx.guild).notify_role_id.set(role.id if role else None)
+        if role:
+            await ctx.send(f"✅ Schedule updates will ping {role.mention}")
+        else:
+            await ctx.send("✅ Schedule updates will not ping any role")
+
+    @twitchschedule.command(name="events")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_event_count(self, ctx, count: int = None):
+        """Set how many events to show in the schedule image (1-10)."""
+        if count is None:
+            current = await self.config.guild(ctx.guild).event_count()
+            await ctx.send(f"Currently showing up to **{current}** events. Use `!twiman sched events <1-10>` to change.")
+            return
+        if not 1 <= count <= 10:
+            await ctx.send("❌ Please choose a number between 1 and 10.")
+            return
+        await self.config.guild(ctx.guild).event_count.set(count)
+        await ctx.send(f"✅ Will show up to {count} events in the schedule image.")
+
+    @twitchschedule.command(name="settings")
+    async def schedule_settings(self, ctx):
+        """Show current schedule settings."""
+        data = await self.config.guild(ctx.guild).all()
+        day_names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        channel = ctx.guild.get_channel(data["schedule_channel_id"]) if data["schedule_channel_id"] else None
+        role = ctx.guild.get_role(data["notify_role_id"]) if data["notify_role_id"] else None
+        days = ", ".join(day_names[d] for d in data["update_days"]) if data["update_days"] else "Not set"
+        embed = discord.Embed(
+            title="Twitch Schedule Settings",
+            color=discord.Color.purple()
+        )
+        embed.add_field(name="Twitch Username", value=data["twitch_username"] or "Not set", inline=False)
+        embed.add_field(name="Channel", value=channel.mention if channel else "Not set", inline=False)
+        embed.add_field(name="Update Days", value=days, inline=False)
+        embed.add_field(name="Update Time", value=data["update_time"] or "Not set", inline=False)
+        embed.add_field(name="Notify Role", value=role.mention if role else "None", inline=False)
+        embed.add_field(name="Events Shown", value=data["event_count"], inline=False)
+        await ctx.send(embed=embed)
+
+    @twitchschedule.command(name="testsend")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def testsend(self, ctx):
+        """Test if the bot can send messages in this channel."""
+        await ctx.send("Test message! If you see this, the bot can send messages here.")
+
+
+class StreamView(discord.ui.View):
+    def __init__(self, twitch_name):
+        super().__init__(timeout=None)
+        self.twitch_name = twitch_name
+        
+        self.watch_button = discord.ui.Button(
+            label="Watch Stream",
+            url=f"https://twitch.tv/{twitch_name}",
+            style=discord.ButtonStyle.url
+        )
+        self.subscribe_button = discord.ui.Button(
+            label="Subscribe",
+            url=f"https://twitch.tv/{twitch_name}/subscribe",
+            style=discord.ButtonStyle.url
+        )
+        self.add_item(self.watch_button)
+        self.add_item(self.subscribe_button)
