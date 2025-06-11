@@ -154,44 +154,7 @@ class TwitchSchedule(commands.Cog):
     async def generate_schedule_image(self, schedule: list, guild) -> io.BytesIO:
         if not await self.ensure_resources():
             return None
-        
-        # Open the template image
         img = Image.open(self.template_path)
-        
-        # Calculate how many events we'll actually display
-        event_count = await self.config.guild(guild).event_count()
-        actual_events = min(len(schedule), event_count)
-        
-        # If we have fewer than the maximum events, resize the image
-        if actual_events < event_count:
-            # Get original dimensions
-            width, height = img.size
-            
-            # Calculate how much height to remove
-            row_height = 150  # This matches your row_height in the drawing code
-            height_to_remove = (event_count - actual_events) * row_height
-            
-            # Create a new image with adjusted height
-            new_height = height - height_to_remove
-            new_img = Image.new(img.mode, (width, new_height))
-            
-            # Copy the top portion of the template
-            new_img.paste(img.crop((0, 0, width, 350)), (0, 0))
-            
-            # Copy only the needed rows for the events
-            if actual_events > 0:
-                event_section_height = actual_events * row_height
-                new_img.paste(img.crop((0, 350, width, 350 + event_section_height)), (0, 350))
-            
-            # Copy the bottom portion of the template if needed
-            if height > 350 + event_count * row_height:
-                bottom_start = 350 + event_count * row_height
-                bottom_height = height - bottom_start
-                new_img.paste(img.crop((0, bottom_start, width, height)), (0, 350 + actual_events * row_height))
-            
-            # Use the resized image
-            img = new_img
-        
         draw = ImageDraw.Draw(img)
         date_font = ImageFont.truetype(self.font_path, 40)
         schedule_font = ImageFont.truetype(self.font_path, 42)
@@ -203,9 +166,9 @@ class TwitchSchedule(commands.Cog):
         initial_y = 350
         row_height = 150
         day_offset = -45
-        
+        event_count = await self.config.guild(guild).event_count()
         for i, segment in enumerate(schedule):
-            if i >= actual_events:
+            if i >= event_count:
                 break
             bar_y = initial_y + (i * row_height)
             day_y = bar_y + day_offset
@@ -219,7 +182,6 @@ class TwitchSchedule(commands.Cog):
             title = segment["title"]
             draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
             draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
-        
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         buf.seek(0)
@@ -234,7 +196,7 @@ class TwitchSchedule(commands.Cog):
                     update_time = await self.config.guild(guild).update_time()
                     if not update_days or not update_time:
                         continue
-                    now = datetime.datetime.now(london_tz)  # Fixed this line
+                    now = datetime.datetime.utcnow(Europe/London)
                     current_day = now.weekday()
                     current_time = now.strftime("%H:%M")
                     if current_day in update_days and current_time == update_time:
@@ -533,7 +495,6 @@ class TwitchSchedule(commands.Cog):
                 f"**{prefix}tsched notify [@role/none]** - Set or clear notification role\n"
                 f"**{prefix}tsched events [number]** - Set number of events to show\n"
                 f"**{prefix}tsched settings** - Show current settings\n"
-                f"**{prefix}tsched test #channel** - Test post schedule to a specific channel\n"
             )
         )
         await ctx.send(embed=embed)
@@ -562,30 +523,7 @@ class TwitchSchedule(commands.Cog):
     async def testsend(self, ctx):
         """Test if the bot can send messages in this channel."""
         await ctx.send("Test message! If you see this, the bot can send messages here.")
-        
-    @twitchschedule.command(name="test")
-    async def test_schedule(self, ctx, channel: discord.TextChannel):
-        """Test post the schedule to a specific channel."""
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        if not twitch_username:
-            await ctx.send("❌ Please run `[p]tsched setup` first to set a Twitch username.")
-            return
-            
-        await ctx.send(f"🔄 Fetching schedule for {twitch_username} and posting to {channel.mention}...")
-        
-        # Create a test schedule with varying number of events
-        test_events = await self.get_schedule(twitch_username)
-        
-        if test_events is None:
-            await ctx.send("❌ Could not fetch schedule from Twitch. Check your Twitch credentials and username.")
-            return
-            
-        if not test_events:
-            await ctx.send("⚠️ No scheduled events found for this Twitch channel.")
-            
-        # Post the schedule to the specified channel
-        await self.post_schedule(channel, test_events)
-        await ctx.send(f"✅ Test schedule posted to {channel.mention}!")
 
 async def setup(bot: Red):
     await bot.add_cog(TwitchSchedule(bot))
+

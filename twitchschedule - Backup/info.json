@@ -1,0 +1,11 @@
+{
+    "author": ["YourName"],
+    "install_msg": "Thanks for installing TwitchSchedule!",
+    "name": "TwitchSchedule",
+    "disabled": false,
+    "short": "Sync Twitch streaming schedule to Discord",
+    "description": "Automatically syncs your Twitch streaming schedule to a Discord channel",
+    "tags": ["twitch", "schedule", "streaming"],
+    "requirements": ["Pillow"],
+    "min_bot_version": "3.5.0"
+}
