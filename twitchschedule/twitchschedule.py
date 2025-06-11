@@ -26,7 +26,8 @@ class TwitchSchedule(commands.Cog):
             "update_time": None,
             "schedule_message_id": None,
             "notify_role_id": None,
-            "event_count": 5
+            "event_count": 5,
+            "timezone": None
         }
         self.config.register_guild(**default_guild)
         self.task = self.bot.loop.create_task(self.schedule_update_loop())
@@ -100,45 +101,6 @@ class TwitchSchedule(commands.Cog):
         if not os.path.exists(self.template_path):
             await self.download_file(template_url, self.template_path)
         return os.path.exists(self.font_path) and os.path.exists(self.template_path)
-
-    @commands.group(aliases=["tsched"])
-    @commands.admin_or_permissions(manage_guild=True)
-    async def twitchschedule(self, ctx):
-        """Twitch Schedule Management Commands"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help()
-
-    @twitchschedule.command(name="reload")
-    async def reload_resources(self, ctx, template_url: str = None):
-        """Force redownload of the template image and font files.
-        
-        You can optionally provide a custom URL for the template image.
-        """
-        await ctx.send("🔄 Redownloading resources...")
-        
-        # Delete existing files if they exist
-        if os.path.exists(self.font_path):
-            os.remove(self.font_path)
-        if os.path.exists(self.template_path):
-            os.remove(self.template_path)
-        
-        # Use default URLs or custom URL if provided
-        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
-        default_template_url = "https://zerolivesleft.net/notelkz/schedule.png"
-        
-        # Use custom template URL if provided
-        if template_url:
-            await ctx.send(f"Using custom template URL: {template_url}")
-        else:
-            template_url = default_template_url
-        
-        font_success = await self.download_file(font_url, self.font_path)
-        template_success = await self.download_file(template_url, self.template_path)
-        
-        if font_success and template_success:
-            await ctx.send("✅ Successfully redownloaded resources!")
-        else:
-            await ctx.send("❌ Failed to redownload some resources. Please check the URLs and try again.")
     async def get_schedule(self, username: str):
         credentials = await self.get_credentials()
         if not credentials:
@@ -316,7 +278,7 @@ class TwitchSchedule(commands.Cog):
         right_margin = 100  # Distance from right edge
         
         # Get text widths to align properly
-        week_of_text = "WEEK OF"
+        week_of_text = "Week of"  # Changed from "WEEK OF" to "Week of"
         week_of_width, week_of_height = title_font.getsize(week_of_text) if hasattr(title_font, 'getsize') else title_font.getbbox(week_of_text)[2:4]
         date_width, date_height = date_font.getsize(date_text) if hasattr(date_font, 'getsize') else date_font.getbbox(date_text)[2:4]
         
@@ -327,7 +289,6 @@ class TwitchSchedule(commands.Cog):
         # Draw the text with adjusted Y positions
         draw.text((week_of_x, 100), week_of_text, font=title_font, fill=(255, 255, 255))
         draw.text((date_x, 180), date_text, font=date_font, fill=(255, 255, 255))
-        
         day_x = 125
         game_x = 125
         initial_y = 350
@@ -353,6 +314,7 @@ class TwitchSchedule(commands.Cog):
         img.save(buf, format="PNG")
         buf.seek(0)
         return buf
+
     async def generate_schedule_image_for_range(self, schedule: list, guild, start_date, end_date) -> io.BytesIO:
         """Generate a schedule image for a specific date range."""
         if not await self.ensure_resources():
@@ -408,7 +370,7 @@ class TwitchSchedule(commands.Cog):
         right_margin = 100  # Distance from right edge
         
         # Get text widths to align properly
-        week_of_text = "WEEK OF"
+        week_of_text = "Week of"  # Changed from "WEEK OF" to "Week of"
         week_of_width, week_of_height = title_font.getsize(week_of_text) if hasattr(title_font, 'getsize') else title_font.getbbox(week_of_text)[2:4]
         date_width, date_height = date_font.getsize(date_text) if hasattr(date_font, 'getsize') else date_font.getbbox(date_text)[2:4]
         
@@ -445,7 +407,6 @@ class TwitchSchedule(commands.Cog):
         img.save(buf, format="PNG")
         buf.seek(0)
         return buf
-    
     async def schedule_update_loop(self):
         await self.bot.wait_until_ready()
         while True:
@@ -585,58 +546,203 @@ class TwitchSchedule(commands.Cog):
             print(f"Error in update_schedule_image: {e}")
             return False
 
+    @commands.group(aliases=["tsched"])
+    @commands.admin_or_permissions(manage_guild=True)
+    async def twitchschedule(self, ctx):
+        """Twitch Schedule Management Commands"""
+        if ctx.invoked_subcommand is None:
+            embed = discord.Embed(
+                title="Twitch Schedule Commands",
+                color=discord.Color.purple(),
+                description=(
+                    f"`{ctx.clean_prefix}tsched setup` - Interactive setup process\n"
+                    f"`{ctx.clean_prefix}tsched force` - Force an immediate schedule update\n"
+                    f"`{ctx.clean_prefix}tsched notify [@role/none]` - Set or clear notification role\n"
+                    f"`{ctx.clean_prefix}tsched events [number]` - Set number of events to show (1-10)\n"
+                    f"`{ctx.clean_prefix}tsched settings` - Show current settings\n"
+                    f"`{ctx.clean_prefix}tsched test #channel` - Test post schedule to a channel\n"
+                    f"`{ctx.clean_prefix}tsched imgr DD/MM[/YYYY] [#channel]` - Generate schedule for specific week\n"
+                    f"`{ctx.clean_prefix}tsched next [#channel]` - Show next week's schedule\n"
+                    f"`{ctx.clean_prefix}tsched timezone [zone]` - Set timezone for list view\n"
+                    f"`{ctx.clean_prefix}tsched list` - Show text-only schedule\n"
+                    f"`{ctx.clean_prefix}tsched reload [url]` - Redownload template image and font files\n"
+                )
+            )
+            await ctx.send(embed=embed)
+
+    @twitchschedule.command(name="reload")
+    async def reload_resources(self, ctx, template_url: str = None):
+        """Force redownload of the template image and font files."""
+        await ctx.send("🔄 Redownloading resources...")
+        
+        # Delete existing files if they exist
+        if os.path.exists(self.font_path):
+            os.remove(self.font_path)
+        if os.path.exists(self.template_path):
+            os.remove(self.template_path)
+        
+        # Use default URLs or custom URL if provided
+        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
+        default_template_url = "https://zerolivesleft.net/notelkz/schedule.png"
+        
+        # Use custom template URL if provided
+        if template_url:
+            await ctx.send(f"Using custom template URL: {template_url}")
+        else:
+            template_url = default_template_url
+        
+        font_success = await self.download_file(font_url, self.font_path)
+        template_success = await self.download_file(template_url, self.template_path)
+        
+        if font_success and template_success:
+            await ctx.send("✅ Successfully redownloaded resources!")
+        else:
+            await ctx.send("❌ Failed to redownload some resources. Please check the URLs and try again.")
+
+    @twitchschedule.command(name="next")
+    async def next_week_schedule(self, ctx, channel: discord.TextChannel = None):
+        """Generate schedule image for next week."""
+        if channel is None:
+            channel = ctx.channel
+            
+        # Calculate next week's Sunday
+        today = datetime.datetime.now(london_tz)
+        days_until_next_sunday = (6 - today.weekday()) % 7 + 1
+        next_sunday = today + timedelta(days=days_until_next_sunday)
+        next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        await self.image_range(ctx, next_sunday.strftime("%d/%m/%Y"), channel)
+
+    @twitchschedule.command(name="timezone")
+    async def set_timezone(self, ctx, timezone: str = None):
+        """Set your preferred timezone for viewing stream times."""
+        if timezone is None:
+            current_tz = await self.config.guild(ctx.guild).timezone()
+            await ctx.send(f"Current timezone is: {current_tz or 'BST (Default)'}")
+            return
+            
+        if timezone.lower() == "list":
+            common_tz = ["US/Eastern", "US/Central", "US/Pacific", "Europe/London", "Europe/Paris", 
+                        "Australia/Sydney", "Asia/Tokyo", "Europe/Berlin"]
+            await ctx.send("Common timezones:\n" + "\n".join(common_tz))
+            return
+            
+        try:
+            pytz.timezone(timezone)
+            await self.config.guild(ctx.guild).timezone.set(timezone)
+            await ctx.send(f"✅ Timezone set to: {timezone}")
+        except pytz.exceptions.UnknownTimeZoneError:
+            await ctx.send("❌ Invalid timezone. Use !tsched timezone list for common options.")
+
+    @twitchschedule.command(name="list")
+    async def list_schedule(self, ctx):
+        """Show a text-only version of the schedule."""
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        if not twitch_username:
+            await ctx.send("❌ Please run `[p]tsched setup` first.")
+            return
+            
+        schedule = await self.get_schedule(twitch_username)
+        if not schedule:
+            await ctx.send("No scheduled streams found.")
+            return
+            
+        embed = discord.Embed(
+            title="Upcoming Streams",
+            color=discord.Color.purple(),
+            url=f"https://twitch.tv/{twitch_username}/schedule"
+        )
+        
+        # Get user's timezone preference
+        user_tz = await self.config.guild(ctx.guild).timezone()
+        if user_tz:
+            try:
+                timezone = pytz.timezone(user_tz)
+            except:
+                timezone = london_tz
+        else:
+            timezone = london_tz
+        
+        for stream in schedule[:10]:  # Limit to 10 streams
+            start_time = dateutil.parser.isoparse(stream["start_time"])
+            start_time_local = start_time.astimezone(timezone)
+            date_str = start_time_local.strftime("%A, %B %d at %I:%M %p")
+            game = stream.get("category", {}).get("name", "No Category")
+            
+            # Calculate duration if end time is available
+            duration_str = ""
+            if stream.get("end_time"):
+                end_time = dateutil.parser.isoparse(stream["end_time"])
+                duration = end_time - start_time
+                hours, remainder = divmod(duration.seconds, 3600)
+                minutes = remainder // 60
+                duration_str = f" ({hours}h {minutes}m)"
+            
+            embed.add_field(
+                name=f"{date_str}{duration_str}",
+                value=f"**{stream['title']}**\n{game}",
+                inline=False
+            )
+        
+        timezone_name = user_tz if user_tz else "BST (Default)"
+        embed.set_footer(text=f"Times shown in {timezone_name}")
+        await ctx.send(embed=embed)
+
     @twitchschedule.command(name="imgr")
     async def image_range(self, ctx, date_str: str, channel: discord.TextChannel = None):
-        """Generate a schedule image for a specific week containing the given date.
-        
-        Date format: DD/MM/YYYY (UK format)
-        Example: !tsched imgr 08/06/2025 #channel
-        Shows the full week (Sunday to Saturday) containing the specified date.
-        If no channel is specified, uses the current channel.
-        """
+        """Generate a schedule image for a specific week containing the given date."""
         if channel is None:
             channel = ctx.channel
             
         # Parse the date
         try:
-            # Parse UK format date (day/month/year)
-            day, month, year = map(int, date_str.split('/'))
+            # Split the date string
+            parts = date_str.split('/')
+            
+            # If only day and month provided, use current year
+            if len(parts) == 2:
+                day, month = map(int, parts)
+                year = datetime.datetime.now(london_tz).year
+            elif len(parts) == 3:
+                day, month, year = map(int, parts)
+            else:
+                raise ValueError
+                
             target_date = datetime.datetime(year, month, day, tzinfo=london_tz)
+            
         except ValueError:
-            await ctx.send("❌ Invalid date format. Please use DD/MM/YYYY (e.g., 08/06/2025)")
+            await ctx.send("❌ Invalid date format. Please use DD/MM or DD/MM/YYYY (e.g., 08/06 or 08/06/2025)")
             return
             
         # Calculate the start of the week (Sunday)
-        days_since_sunday = target_date.weekday() + 1  # +1 because weekday() returns 0 for Monday, we want 0 for Sunday
-        if days_since_sunday == 7:  # If it's already Sunday
+        days_since_sunday = target_date.weekday() + 1
+        if days_since_sunday == 7:
             days_since_sunday = 0
         start_date = target_date - timedelta(days=days_since_sunday)
         start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
         
         # Calculate the end of the week (Saturday at 11:59 PM)
-        end_date = start_date + timedelta(days=6)  # 6 days after Sunday is Saturday
+        end_date = start_date + timedelta(days=6)
         end_date = end_date.replace(hour=23, minute=59, second=59)
         
         # Get the Twitch username
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
         if not twitch_username:
-            await ctx.send("❌ Please run `[p]tsched setup` first to set a Twitch username.")
+            await ctx.send("❌ Please run `[p]tsched setup` first.")
             return
             
         await ctx.send(f"🔄 Generating schedule for week of {start_date.strftime('%d/%m/%Y')}...")
         
-        # Get the schedule for the specified date range
         schedule = await self.get_schedule_for_range(twitch_username, start_date, end_date)
         
         if schedule is None:
-            await ctx.send("❌ Could not fetch schedule from Twitch. Check your Twitch credentials and username.")
+            await ctx.send("❌ Could not fetch schedule from Twitch.")
             return
             
         if not schedule:
             await ctx.send(f"⚠️ No scheduled events found for the week of {start_date.strftime('%d/%m/%Y')}.")
             return
             
-        # Generate and send the image
         image_buf = await self.generate_schedule_image_for_range(schedule, ctx.guild, start_date, end_date)
         if not image_buf:
             await ctx.send("❌ Failed to generate schedule image.")
