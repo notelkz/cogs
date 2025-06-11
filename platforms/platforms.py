@@ -8,10 +8,10 @@ class PlatformView(View):
     def __init__(self, roles: dict):
         super().__init__(timeout=None)
         
-        # PC/Steam (Dark blue and black)
+        # PC/Steam (Gray)
         if roles.get('pc'):
             self.add_item(Button(
-                style=discord.ButtonStyle.primary,
+                style=discord.ButtonStyle.secondary,
                 label="PC",
                 custom_id="platform_pc"
             ))
@@ -166,25 +166,6 @@ class Platforms(commands.Cog):
             color=discord.Color.blurple()
         )
         
-        # Add fields for each configured platform
-        platform_emojis = {
-            "pc": "🖥️",
-            "nintendo": "🎮",
-            "playstation": "🎮",
-            "xbox": "🎮"
-        }
-        
-        for platform, role_id in roles.items():
-            if role_id:
-                role = ctx.guild.get_role(role_id)
-                if role:
-                    emoji = platform_emojis.get(platform, "")
-                    embed.add_field(
-                        name=f"{emoji} {platform.title()}",
-                        value=f"Role: {role.mention}",
-                        inline=True
-                    )
-        
         view = PlatformView(roles)
         message = await channel.send(embed=embed, view=view)
         
@@ -223,24 +204,6 @@ class Platforms(commands.Cog):
                        "Click a button below to add or remove the role.",
             color=discord.Color.blurple()
         )
-        
-        platform_emojis = {
-            "pc": "🖥️",
-            "nintendo": "🎮",
-            "playstation": "🎮",
-            "xbox": "🎮"
-        }
-        
-        for platform, role_id in roles.items():
-            if role_id:
-                role = ctx.guild.get_role(role_id)
-                if role:
-                    emoji = platform_emojis.get(platform, "")
-                    embed.add_field(
-                        name=f"{emoji} {platform.title()}",
-                        value=f"Role: {role.mention}",
-                        inline=True
-                    )
         
         view = PlatformView(roles)
         await message.edit(embed=embed, view=view)
