@@ -259,22 +259,38 @@ class TwitchSchedule(commands.Cog):
             img = new_img
         
         draw = ImageDraw.Draw(img)
-        date_font = ImageFont.truetype(self.font_path, 40)
+        title_font = ImageFont.truetype(self.font_path, 60)  # Larger font for "Week Of"
+        date_font = ImageFont.truetype(self.font_path, 40)   # Smaller font for the date
         schedule_font = ImageFont.truetype(self.font_path, 42)
         
-        # Get today's date and end of week date for the header
+        # Get today's date and calculate the start of the week (Sunday)
         today = datetime.datetime.now(london_tz)
-        end_of_week = self.get_end_of_week()
+        days_since_sunday = today.weekday() + 1  # +1 because weekday() returns 0 for Monday, we want 0 for Sunday
+        if days_since_sunday == 7:  # If it's already Sunday
+            days_since_sunday = 0
+        start_of_week = today - timedelta(days=days_since_sunday)
+        start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
         
-        # Format the date range for display
-        if today.month == end_of_week.month:
-            # Same month (e.g., "March 1-5")
-            date_text = f"{today.strftime('%B %d')}-{end_of_week.strftime('%d')}"
-        else:
-            # Different months (e.g., "March 29-April 4")
-            date_text = f"{today.strftime('%B %d')}-{end_of_week.strftime('%B %d')}"
+        # Format the date text
+        date_text = start_of_week.strftime("%B %d")
         
-        draw.text((1600, 180), date_text, font=date_font, fill=(255, 255, 255))
+        # Calculate positions for right-aligned text
+        width, _ = img.size
+        right_margin = 100  # Distance from right edge
+        
+        # Get text widths to align properly
+        week_of_text = "WEEK OF"
+        week_of_width, week_of_height = title_font.getsize(week_of_text) if hasattr(title_font, 'getsize') else title_font.getbbox(week_of_text)[2:4]
+        date_width, date_height = date_font.getsize(date_text) if hasattr(date_font, 'getsize') else date_font.getbbox(date_text)[2:4]
+        
+        # Calculate positions (right-aligned)
+        week_of_x = width - right_margin - week_of_width
+        date_x = width - right_margin - date_width
+        
+        # Draw the text
+        draw.text((week_of_x, 130), week_of_text, font=title_font, fill=(255, 255, 255))
+        draw.text((date_x, 200), date_text, font=date_font, fill=(255, 255, 255))
+        
         day_x = 125
         game_x = 125
         initial_y = 350
@@ -345,18 +361,30 @@ class TwitchSchedule(commands.Cog):
             img = new_img
         
         draw = ImageDraw.Draw(img)
-        date_font = ImageFont.truetype(self.font_path, 40)
+        title_font = ImageFont.truetype(self.font_path, 60)  # Larger font for "Week Of"
+        date_font = ImageFont.truetype(self.font_path, 40)   # Smaller font for the date
         schedule_font = ImageFont.truetype(self.font_path, 42)
         
-        # Format the date range for display
-        if start_date.month == end_date.month:
-            # Same month (e.g., "March 1-5")
-            date_text = f"{start_date.strftime('%B %d')}-{end_date.strftime('%d')}"
-        else:
-            # Different months (e.g., "March 29-April 4")
-            date_text = f"{start_date.strftime('%B %d')}-{end_date.strftime('%B %d')}"
+        # Format the date text
+        date_text = start_date.strftime("%B %d")
         
-        draw.text((1600, 180), date_text, font=date_font, fill=(255, 255, 255))
+        # Calculate positions for right-aligned text
+        width, _ = img.size
+        right_margin = 100  # Distance from right edge
+        
+        # Get text widths to align properly
+        week_of_text = "WEEK OF"
+        week_of_width, week_of_height = title_font.getsize(week_of_text) if hasattr(title_font, 'getsize') else title_font.getbbox(week_of_text)[2:4]
+        date_width, date_height = date_font.getsize(date_text) if hasattr(date_font, 'getsize') else date_font.getbbox(date_text)[2:4]
+        
+        # Calculate positions (right-aligned)
+        week_of_x = width - right_margin - week_of_width
+        date_x = width - right_margin - date_width
+        
+        # Draw the text
+        draw.text((week_of_x, 130), week_of_text, font=title_font, fill=(255, 255, 255))
+        draw.text((date_x, 200), date_text, font=date_font, fill=(255, 255, 255))
+        
         day_x = 125
         game_x = 125
         initial_y = 350
@@ -833,4 +861,3 @@ class TwitchSchedule(commands.Cog):
 
 async def setup(bot: Red):
     await bot.add_cog(TwitchSchedule(bot))
-
