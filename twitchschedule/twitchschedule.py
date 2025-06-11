@@ -42,9 +42,16 @@ class TwitchSchedule(commands.Cog):
         self.task.cancel()
 
     def get_next_sunday(self):
-        today = datetime.datetime.now()
+        today = datetime.datetime.now(london_tz)
         days_until_sunday = (6 - today.weekday()) % 7
-        return today + timedelta(days=days_until_sunday)
+        next_sunday = today + timedelta(days=days_until_sunday)
+        return next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def get_end_of_week(self):
+        today = datetime.datetime.now(london_tz)
+        days_until_saturday = (5 - today.weekday()) % 7
+        end_of_week = today + timedelta(days=days_until_saturday)
+        return end_of_week.replace(hour=23, minute=59, second=59, microsecond=0)
 
     async def get_credentials(self):
         tokens = await self.bot.get_shared_api_tokens("twitch")
@@ -124,9 +131,22 @@ class TwitchSchedule(commands.Cog):
                     return None
                 data = await resp.json()
                 segments = data.get("data", {}).get("segments", [])
+                
+                # Filter segments to only include those before end of week (Saturday 11:59 PM)
+                end_of_week = self.get_end_of_week()
+                
+                filtered_segments = []
                 for seg in segments:
-                    seg["broadcaster_name"] = broadcaster_name
-                return segments
+                    start_time = dateutil.parser.isoparse(seg["start_time"])
+                    if start_time.tzinfo is None:
+                        start_time = start_time.replace(tzinfo=datetime.timezone.utc)
+                    start_time_local = start_time.astimezone(london_tz)
+                    
+                    if start_time_local <= end_of_week:
+                        seg["broadcaster_name"] = broadcaster_name
+                        filtered_segments.append(seg)
+                        
+                return filtered_segments
 
     async def get_category_info(self, category_id: str):
         credentials = await self.get_credentials()
@@ -195,8 +215,19 @@ class TwitchSchedule(commands.Cog):
         draw = ImageDraw.Draw(img)
         date_font = ImageFont.truetype(self.font_path, 40)
         schedule_font = ImageFont.truetype(self.font_path, 42)
-        next_sunday = self.get_next_sunday()
-        date_text = next_sunday.strftime("%B %d")
+        
+        # Get today's date and end of week date for the header
+        today = datetime.datetime.now(london_tz)
+        end_of_week = self.get_end_of_week()
+        
+        # Format the date range for display
+        if today.month == end_of_week.month:
+            # Same month (e.g., "March 1-5")
+            date_text = f"{today.strftime('%B %d')}-{end_of_week.strftime('%d')}"
+        else:
+            # Different months (e.g., "March 29-April 4")
+            date_text = f"{today.strftime('%B %d')}-{end_of_week.strftime('%B %d')}"
+        
         draw.text((1600, 180), date_text, font=date_font, fill=(255, 255, 255))
         day_x = 125
         game_x = 125
@@ -234,7 +265,7 @@ class TwitchSchedule(commands.Cog):
                     update_time = await self.config.guild(guild).update_time()
                     if not update_days or not update_time:
                         continue
-                    now = datetime.datetime.now(london_tz)  # Fixed this line
+                    now = datetime.datetime.now(london_tz)
                     current_day = now.weekday()
                     current_time = now.strftime("%H:%M")
                     if current_day in update_days and current_time == update_time:
