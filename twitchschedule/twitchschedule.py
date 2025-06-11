@@ -260,9 +260,28 @@ class TwitchSchedule(commands.Cog):
             warning_msg = await channel.send(warning_content)
             await asyncio.sleep(10)
             await warning_msg.delete()
-            async for message in channel.history(limit=100):
-                if message.author == self.bot.user:
+            
+            # Get only the last 10 messages from the bot
+            bot_messages = []
+            async for message in channel.history(limit=30):
+                if message.author == self.bot.user and message.id != warning_msg.id:
+                    bot_messages.append(message)
+                    if len(bot_messages) >= 10:
+                        break
+            
+            # Delete messages with a delay to avoid rate limits
+            for message in bot_messages:
+                try:
                     await message.delete()
+                    await asyncio.sleep(1.5)  # 1.5 second delay between deletions
+                except discord.errors.NotFound:
+                    pass  # Message was already deleted
+                except discord.errors.Forbidden:
+                    break  # No permission to delete
+                except Exception as e:
+                    print(f"Error deleting message: {e}")
+                    break
+            
             await self.update_schedule_image(channel, schedule)
             event_count = await self.config.guild(channel.guild).event_count()
             for i, segment in enumerate(schedule):
@@ -304,6 +323,8 @@ class TwitchSchedule(commands.Cog):
                 if boxart_url:
                     embed.set_thumbnail(url=boxart_url)
                 await channel.send(embed=embed)
+                await asyncio.sleep(0.5)  # Small delay between sending embeds
+                
             if not schedule:
                 embed = discord.Embed(
                     title="No Upcoming Streams",
