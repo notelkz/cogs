@@ -161,8 +161,7 @@ class Platforms(commands.Cog):
         
         embed = discord.Embed(
             title="Gaming Platforms",
-            description="Select your gaming platforms to access their specific channels!\n"
-                       "Click a button below to add or remove the role.",
+            description="Pick your platforms below to be pinged for games on that specific platform!",
             color=discord.Color.blurple()
         )
         
@@ -200,8 +199,7 @@ class Platforms(commands.Cog):
         
         embed = discord.Embed(
             title="Gaming Platforms",
-            description="Select your gaming platforms to access their specific channels!\n"
-                       "Click a button below to add or remove the role.",
+            description="Pick your platforms below to be pinged for games on that specific platform!",
             color=discord.Color.blurple()
         )
         
