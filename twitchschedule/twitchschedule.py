@@ -148,6 +148,52 @@ class TwitchSchedule(commands.Cog):
                         
                 return filtered_segments
 
+    async def get_schedule_for_range(self, username: str, start_date, end_date):
+        """Get the Twitch schedule for a specific date range."""
+        credentials = await self.get_credentials()
+        if not credentials:
+            return None
+        if not self.access_token:
+            self.access_token = await self.get_twitch_token()
+            if not self.access_token:
+                return None
+        client_id, _ = credentials
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {self.access_token}"
+        }
+        async with aiohttp.ClientSession() as session:
+            user_url = f"https://api.twitch.tv/helix/users?login={username}"
+            async with session.get(user_url, headers=headers) as resp:
+                user_data = await resp.json()
+                if resp.status != 200 or not user_data.get("data"):
+                    return None
+                broadcaster_id = user_data["data"][0]["id"]
+                broadcaster_name = user_data["data"][0]["login"]
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 404:
+                    return []
+                elif resp.status != 200:
+                    return None
+                data = await resp.json()
+                segments = data.get("data", {}).get("segments", [])
+                
+                # Filter segments to only include those in the specified date range
+                filtered_segments = []
+                for seg in segments:
+                    start_time = dateutil.parser.isoparse(seg["start_time"])
+                    if start_time.tzinfo is None:
+                        start_time = start_time.replace(tzinfo=datetime.timezone.utc)
+                    start_time_local = start_time.astimezone(london_tz)
+                    
+                    if start_date <= start_time_local <= end_date:
+                        seg["broadcaster_name"] = broadcaster_name
+                        filtered_segments.append(seg)
+                        
+                return filtered_segments
+
     async def get_category_info(self, category_id: str):
         credentials = await self.get_credentials()
         if not credentials:
@@ -227,6 +273,88 @@ class TwitchSchedule(commands.Cog):
         else:
             # Different months (e.g., "March 29-April 4")
             date_text = f"{today.strftime('%B %d')}-{end_of_week.strftime('%B %d')}"
+        
+        draw.text((1600, 180), date_text, font=date_font, fill=(255, 255, 255))
+        day_x = 125
+        game_x = 125
+        initial_y = 350
+        row_height = 150
+        day_offset = -45
+        
+        for i, segment in enumerate(schedule):
+            if i >= actual_events:
+                break
+            bar_y = initial_y + (i * row_height)
+            day_y = bar_y + day_offset
+            game_y = bar_y + 15
+            # Use dateutil.parser for robust ISO8601 parsing
+            start_time_utc = dateutil.parser.isoparse(segment["start_time"])
+            if start_time_utc.tzinfo is None:
+                start_time_utc = start_time_utc.replace(tzinfo=datetime.timezone.utc)
+            start_time_london = start_time_utc.astimezone(london_tz)
+            day_time = start_time_london.strftime("%A // %I:%M%p").upper()
+            title = segment["title"]
+            draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
+            draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
+        
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+    async def generate_schedule_image_for_range(self, schedule: list, guild, start_date, end_date) -> io.BytesIO:
+        """Generate a schedule image for a specific date range."""
+        if not await self.ensure_resources():
+            return None
+        
+        # Open the template image
+        img = Image.open(self.template_path)
+        
+        # Calculate how many events we'll actually display
+        event_count = await self.config.guild(guild).event_count()
+        actual_events = min(len(schedule), event_count)
+        
+        # If we have fewer than the maximum events, resize the image
+        if actual_events < event_count:
+            # Get original dimensions
+            width, height = img.size
+            
+            # Calculate how much height to remove
+            row_height = 150  # This matches your row_height in the drawing code
+            height_to_remove = (event_count - actual_events) * row_height
+            
+            # Create a new image with adjusted height
+            new_height = height - height_to_remove
+            new_img = Image.new(img.mode, (width, new_height))
+            
+            # Copy the top portion of the template
+            new_img.paste(img.crop((0, 0, width, 350)), (0, 0))
+            
+            # Copy only the needed rows for the events
+            if actual_events > 0:
+                event_section_height = actual_events * row_height
+                new_img.paste(img.crop((0, 350, width, 350 + event_section_height)), (0, 350))
+            
+            # Copy the bottom portion of the template if needed
+            if height > 350 + event_count * row_height:
+                bottom_start = 350 + event_count * row_height
+                bottom_height = height - bottom_start
+                new_img.paste(img.crop((0, bottom_start, width, height)), (0, 350 + actual_events * row_height))
+            
+            # Use the resized image
+            img = new_img
+        
+        draw = ImageDraw.Draw(img)
+        date_font = ImageFont.truetype(self.font_path, 40)
+        schedule_font = ImageFont.truetype(self.font_path, 42)
+        
+        # Format the date range for display
+        if start_date.month == end_date.month:
+            # Same month (e.g., "March 1-5")
+            date_text = f"{start_date.strftime('%B %d')}-{end_date.strftime('%d')}"
+        else:
+            # Different months (e.g., "March 29-April 4")
+            date_text = f"{start_date.strftime('%B %d')}-{end_date.strftime('%B %d')}"
         
         draw.text((1600, 180), date_text, font=date_font, fill=(255, 255, 255))
         day_x = 125
@@ -586,6 +714,7 @@ class TwitchSchedule(commands.Cog):
                 f"**{prefix}tsched events [number]** - Set number of events to show\n"
                 f"**{prefix}tsched settings** - Show current settings\n"
                 f"**{prefix}tsched test #channel** - Test post schedule to a specific channel\n"
+                f"**{prefix}tsched imgr DD/MM/YYYY [#channel]** - Generate schedule for specific week\n"
             )
         )
         await ctx.send(embed=embed)
@@ -639,5 +768,69 @@ class TwitchSchedule(commands.Cog):
         await self.post_schedule(channel, test_events)
         await ctx.send(f"✅ Test schedule posted to {channel.mention}!")
 
+    @twitchschedule.command(name="imgr")
+    async def image_range(self, ctx, date_str: str, channel: discord.TextChannel = None):
+        """Generate a schedule image for a specific week containing the given date.
+        
+        Date format: DD/MM/YYYY (UK format)
+        Example: !tsched imgr 08/06/2025 #channel
+        Shows the full week (Sunday to Saturday) containing the specified date.
+        If no channel is specified, uses the current channel.
+        """
+        if channel is None:
+            channel = ctx.channel
+            
+        # Parse the date
+        try:
+            # Parse UK format date (day/month/year)
+            day, month, year = map(int, date_str.split('/'))
+            target_date = datetime.datetime(year, month, day, tzinfo=london_tz)
+        except ValueError:
+            await ctx.send("❌ Invalid date format. Please use DD/MM/YYYY (e.g., 08/06/2025)")
+            return
+            
+        # Calculate the start of the week (Sunday)
+        days_since_sunday = target_date.weekday() + 1  # +1 because weekday() returns 0 for Monday, we want 0 for Sunday
+        if days_since_sunday == 7:  # If it's already Sunday
+            days_since_sunday = 0
+        start_date = target_date - timedelta(days=days_since_sunday)
+        start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Calculate the end of the week (Saturday at 11:59 PM)
+        end_date = start_date + timedelta(days=6)  # 6 days after Sunday is Saturday
+        end_date = end_date.replace(hour=23, minute=59, second=59)
+        
+        # Get the Twitch username
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        if not twitch_username:
+            await ctx.send("❌ Please run `[p]tsched setup` first to set a Twitch username.")
+            return
+            
+        await ctx.send(f"🔄 Generating schedule for week of {start_date.strftime('%d/%m/%Y')} to {end_date.strftime('%d/%m/%Y')}...")
+        
+        # Get the schedule for the specified date range
+        schedule = await self.get_schedule_for_range(twitch_username, start_date, end_date)
+        
+        if schedule is None:
+            await ctx.send("❌ Could not fetch schedule from Twitch. Check your Twitch credentials and username.")
+            return
+            
+        if not schedule:
+            await ctx.send(f"⚠️ No scheduled events found for the week of {start_date.strftime('%d/%m/%Y')} to {end_date.strftime('%d/%m/%Y')}.")
+            return
+            
+        # Generate and send the image
+        image_buf = await self.generate_schedule_image_for_range(schedule, ctx.guild, start_date, end_date)
+        if not image_buf:
+            await ctx.send("❌ Failed to generate schedule image.")
+            return
+            
+        await channel.send(
+            f"📅 Schedule for week of {start_date.strftime('%d/%m/%Y')} to {end_date.strftime('%d/%m/%Y')}:",
+            file=discord.File(image_buf, filename="schedule.png")
+        )
+        await ctx.send(f"✅ Schedule image for week of {start_date.strftime('%d/%m/%Y')} posted to {channel.mention}!")
+
 async def setup(bot: Red):
     await bot.add_cog(TwitchSchedule(bot))
+
