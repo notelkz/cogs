@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+        
+        :root {
+            --card-width: 400px;
+            --card-height: 560px;
+            --card-radius: 4.75% / 3.5%;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-family: 'Roboto', sans-serif;
+        }
+
+        .card {
+            width: var(--card-width);
+            height: var(--card-height);
+            position: relative;
+            border-radius: var(--card-radius);
+            text-align: center;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        /* Card Background with Holo Effect */
+        .card__bg {
+            position: absolute;
+            inset: 0;
+            background-color: {{cardColor}};
+            background-image: 
+                radial-gradient(circle at 50% -20%, {{cardLightColor}}, {{cardColor}} 70%),
+                url("data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.15 0.1'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+            border-radius: var(--card-radius);
+            z-index: 1;
+        }
+
+        .card__holo-effect {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            border-radius: var(--card-radius);
+            opacity: {{holoOpacity}};
+            background-image: 
+                linear-gradient(115deg, 
+                    transparent 0%, 
+                    rgba(255, 255, 255, 0.25) 30%, 
+                    transparent 47.5%, 
+                    transparent 52.5%, 
+                    rgba(255, 255, 255, 0.25) 70%, 
+                    transparent 100%);
+            background-size: 200% 200%;
+            background-position: 0% 0%;
+            filter: brightness(1) contrast(1);
+            mix-blend-mode: color-dodge;
+            animation: holo 10s linear infinite;
+        }
+
+        /* Card Content */
+        .card__content {
+            position: relative;
+            z-index: 3;
+            padding: 12px;
+            height: 100%;
+            box-sizing: border-box;
+        }
+
+        /* Header Section */
+        .card__header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 8px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+
+        .card__name {
+            font-size: 1.3em;
+            font-weight: bold;
+            color: #000;
+        }
+
+        .card__hp {
+            color: #e54242;
+            font-weight: bold;
+        }
+
+        /* Image Section */
+        .card__image {
+            width: calc(100% - 24px);
+            height: 200px;
+            margin: 8px auto;
+            border-radius: 4px;
+            border: 4px solid {{cardBorderColor}};
+            overflow: hidden;
+        }
+
+        .card__image img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        /* Type & Evolution */
+        .card__type {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            font-size: 24px;
+            background: rgba(255, 255, 255, 0.9);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .card__evolution {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin: 8px 0;
+            font-style: italic;
+        }
+
+        /* Moves Section */
+        .card__move {
+            background: rgba(255, 255, 255, 0.9);
+            margin: 8px 0;
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .move__header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+
+        .move__energy {
+            display: flex;
+            gap: 2px;
+        }
+
+        .energy__symbol {
+            width: 15px;
+            height: 15px;
+            background: {{cardBorderColor}};
+            border-radius: 50%;
+        }
+
+        .move__name {
+            font-weight: bold;
+        }
+
+        .move__damage {
+            color: #e54242;
+            font-weight: bold;
+        }
+
+        .move__description {
+            font-size: 0.9em;
+            color: #666;
+        }
+
+        /* Stats Section */
+        .card__stats {
+            display: flex;
+            justify-content: space-around;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px;
+            border-radius: 4px;
+            margin: 8px 0;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat__value {
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+
+        .stat__label {
+            font-size: 0.8em;
+            color: #666;
+            text-transform: uppercase;
+        }
+
+        /* Footer Elements */
+        .card__footer {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            right: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card__weakness {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .card__rarity {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        /* Animations */
+        @keyframes holo {
+            0% { background-position: 0% 0%; }
+            100% { background-position: 200% 0%; }
+        }
+
+        /* Rarity-specific effects */
+        .card--rare .card__holo-effect {
+            background-image: 
+                linear-gradient(115deg, 
+                    transparent 0%, 
+                    rgba(255, 255, 255, 0.4) 30%, 
+                    transparent 47.5%, 
+                    transparent 52.5%, 
+                    rgba(255, 255, 255, 0.4) 70%, 
+                    transparent 100%);
+        }
+
+        .card--ultra-rare .card__holo-effect {
+            background-image: 
+                linear-gradient(115deg, 
+                    transparent 0%, 
+                    rgba(255, 255, 255, 0.6) 30%, 
+                    transparent 47.5%, 
+                    transparent 52.5%, 
+                    rgba(255, 255, 255, 0.6) 70%, 
+                    transparent 100%);
+        }
+
+        .card--secret-rare .card__holo-effect {
+            background-image: 
+                linear-gradient(115deg, 
+                    transparent 0%, 
+                    rgba(255, 255, 255, 0.8) 30%, 
+                    transparent 47.5%, 
+                    transparent 52.5%, 
+                    rgba(255, 255, 255, 0.8) 70%, 
+                    transparent 100%);
+        }
+    </style>
+</head>
+<body>
+    <div class="card card--{{rarityClass}}">
+        <div class="card__bg"></div>
+        <div class="card__holo-effect"></div>
+        <div class="card__content">
+            <div class="card__header">
+                <div class="card__name">{{username}}</div>
+                <div class="card__hp">HP {{hp}}</div>
+            </div>
+
+            <div class="card__type">{{typeEmoji}}</div>
+
+            <div class="card__image">
+                <img src="{{profileImageUrl}}" alt="{{username}}">
+            </div>
+
+            <div class="card__evolution">{{evolutionStage}} Subscriber • {{subscriptionLength}}</div>
+
+            <div class="card__move">
+                <div class="move__header">
+                    <div class="move__energy">
+                        {{#each moveEnergy}}
+                        <div class="energy__symbol"></div>
+                        {{/each}}
+                    </div>
+                    <div class="move__name">{{moveName}}</div>
+                    <div class="move__damage">{{moveDamage}}</div>
+                </div>
+                <div class="move__description">{{moveDescription}}</div>
+            </div>
+
+            <div class="card__move">
+                <div class="move__header">
+                    <div class="move__energy">
+                        {{#each specialMoveEnergy}}
+                        <div class="energy__symbol"></div>
+                        {{/each}}
+                    </div>
+                    <div class="move__name">{{specialMoveName}}</div>
+                    <div class="move__damage">{{specialMoveDamage}}</div>
+                </div>
+                <div class="move__description">{{specialMoveDescription}}</div>
+            </div>
+
+            <div class="card__stats">
+                <div class="stat">
+                    <div class="stat__value">{{charisma}}</div>
+                    <div class="stat__label">Charisma</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value">{{luck}}</div>
+                    <div class="stat__label">Luck</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value">{{loyalty}}</div>
+                    <div class="stat__label">Loyalty</div>
+                </div>
+            </div>
+
+            <div class="card__footer">
+                <div class="card__weakness">
+                    <span>{{weaknessEmoji}}</span>
+                    <span>×{{weaknessMultiplier}}</span>
+                </div>
+                <div class="card__rarity">
+                    <span>{{raritySymbol}} {{rarityText}}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

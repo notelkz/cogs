@@ -708,26 +708,7 @@ class TwitchManager(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @liveannouncer.command(name="setfrequency")
-    @commands.guild_only()
-    @checks.admin_or_permissions(manage_guild=True)
-    async def set_check_frequency(self, ctx, seconds: int):
-        """Set how frequently to check for live streams (in seconds)."""
-        if seconds < 30:
-            await ctx.send("❌ Check frequency cannot be less than 30 seconds to avoid API rate limits.")
-            return
-            
-        streamer_count = len(await self.config.guild(ctx.guild).streamers())
-        requests_per_minute = (60 / seconds) * streamer_count
-        
-        if requests_per_minute > 50:
-            await ctx.send(f"⚠️ Warning: With {streamer_count} streamers, checking every {seconds} seconds "
-                        f"will make approximately {requests_per_minute:.1f} requests per minute to the Twitch API. "
-                        "This might cause rate limit issues.")
-        
-        await self.config.guild(ctx.guild).check_frequency.set(seconds)
-        await ctx.send(f"✅ Stream check frequency set to {seconds} seconds.")
-    
+w   
     @liveannouncer.command(name="setfrequency")
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
