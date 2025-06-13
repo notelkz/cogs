@@ -149,6 +149,50 @@ class TwitchSchedule(commands.Cog):
                         
                 return filtered_segments
 
+    async def get_schedule_for_range(self, username: str, start_date, end_date):
+        credentials = await self.get_credentials()
+        if not credentials:
+            return None
+        if not self.access_token:
+            self.access_token = await self.get_twitch_token()
+            if not self.access_token:
+                return None
+        client_id, _ = credentials
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {self.access_token}"
+        }
+        async with aiohttp.ClientSession() as session:
+            user_url = f"https://api.twitch.tv/helix/users?login={username}"
+            async with session.get(user_url, headers=headers) as resp:
+                user_data = await resp.json()
+                if resp.status != 200 or not user_data.get("data"):
+                    return None
+                broadcaster_id = user_data["data"][0]["id"]
+                broadcaster_name = user_data["data"][0]["login"]
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 404:
+                    return []
+                elif resp.status != 200:
+                    return None
+                data = await resp.json()
+                segments = data.get("data", {}).get("segments", [])
+                
+                filtered_segments = []
+                for seg in segments:
+                    start_time = dateutil.parser.isoparse(seg["start_time"])
+                    if start_time.tzinfo is None:
+                        start_time = start_time.replace(tzinfo=datetime.timezone.utc)
+                    start_time_local = start_time.astimezone(london_tz)
+                    
+                    if start_date <= start_time_local <= end_date:
+                        seg["broadcaster_name"] = broadcaster_name
+                        filtered_segments.append(seg)
+                        
+                return filtered_segments
+
     async def get_category_info(self, category_id: str):
         credentials = await self.get_credentials()
         if not credentials:
@@ -171,7 +215,7 @@ class TwitchSchedule(commands.Cog):
                 if data.get("data"):
                     return data["data"][0]
         return None
-    async def generate_schedule_image(self, schedule: list, guild) -> io.BytesIO:
+    async def generate_schedule_image(self, schedule: list, guild, start_date=None) -> io.BytesIO:
         if not await self.ensure_resources():
             return None
         
@@ -203,12 +247,15 @@ class TwitchSchedule(commands.Cog):
         date_font = ImageFont.truetype(self.font_path, 40)
         schedule_font = ImageFont.truetype(self.font_path, 42)
         
-        today = datetime.datetime.now(london_tz)
-        days_since_sunday = today.weekday() + 1
-        if days_since_sunday == 7:
-            days_since_sunday = 0
-        start_of_week = today - timedelta(days=days_since_sunday)
-        start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+        if start_date is None:
+            today = datetime.datetime.now(london_tz)
+            days_since_sunday = today.weekday() + 1
+            if days_since_sunday == 7:
+                days_since_sunday = 0
+            start_of_week = today - timedelta(days=days_since_sunday)
+            start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start_of_week = start_date
         
         date_text = start_of_week.strftime("%B %d")
         width, _ = img.size
@@ -275,9 +322,8 @@ class TwitchSchedule(commands.Cog):
             except Exception:
                 await asyncio.sleep(60)
 
-    async def post_schedule(self, channel: discord.TextChannel, schedule: list):
+    async def post_schedule(self, channel: discord.TextChannel, schedule: list, start_date=None):
         try:
-            # 1. Send warning and handle notification role
             notify_role_id = await self.config.guild(channel.guild).notify_role_id()
             notify_role = channel.guild.get_role(notify_role_id) if notify_role_id else None
             warning_content = "⚠️ Updating schedule - Previous schedule messages will be deleted in 10 seconds..."
@@ -287,7 +333,6 @@ class TwitchSchedule(commands.Cog):
             await asyncio.sleep(10)
             await warning_msg.delete()
             
-            # 2. Delete old messages
             bot_messages = []
             async for message in channel.history(limit=30):
                 if message.author == self.bot.user and message.id != warning_msg.id:
@@ -307,8 +352,7 @@ class TwitchSchedule(commands.Cog):
                     print(f"Error deleting message: {e}")
                     break
 
-            # 3. Generate and send the schedule image
-            image_buf = await self.generate_schedule_image(schedule, channel.guild)
+            image_buf = await self.generate_schedule_image(schedule, channel.guild, start_date)
             if image_buf:
                 schedule_message = await channel.send(
                     file=discord.File(image_buf, filename="schedule.png")
@@ -319,7 +363,6 @@ class TwitchSchedule(commands.Cog):
                 except:
                     pass
 
-            # 4. Send stream embeds
             event_count = await self.config.guild(channel.guild).event_count()
             for i, segment in enumerate(schedule):
                 if i >= event_count:
@@ -370,7 +413,6 @@ class TwitchSchedule(commands.Cog):
                 await channel.send(embed=embed)
                 await asyncio.sleep(0.5)
 
-            # 5. Send "No streams" message if schedule is empty
             if not schedule:
                 embed = discord.Embed(
                     title="No Upcoming Streams",
@@ -393,7 +435,7 @@ class TwitchSchedule(commands.Cog):
                 color=discord.Color.purple(),
                 description=(
                     f"`{ctx.clean_prefix}tsched setup` - Interactive setup process\n"
-                    f"`{ctx.clean_prefix}tsched force` - Force an immediate schedule update\n"
+                    f"`{ctx.clean_prefix}tsched force [next]` - Force an immediate schedule update\n"
                     f"`{ctx.clean_prefix}tsched notify [@role/none]` - Set or clear notification role\n"
                     f"`{ctx.clean_prefix}tsched events [number]` - Set number of events to show (1-10)\n"
                     f"`{ctx.clean_prefix}tsched settings` - Show current settings\n"
@@ -407,13 +449,51 @@ class TwitchSchedule(commands.Cog):
             )
             await ctx.send(embed=embed)
 
+    @twitchschedule.command(name="force")
+    async def force_update(self, ctx, option: str = None):
+        """Force an immediate schedule update. Use 'next' to show next week's schedule."""
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        
+        if not channel_id or not twitch_username:
+            await ctx.send("❌ Please run setup first!")
+            return
+            
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("❌ Schedule channel not found!")
+            return
+            
+        await ctx.send("🔄 Forcing schedule update...")
+
+        if option and option.lower() == "next":
+            # Calculate next week's date range
+            today = datetime.datetime.now(london_tz)
+            days_until_next_sunday = (6 - today.weekday()) % 7 + 1
+            next_sunday = today + timedelta(days=days_until_next_sunday)
+            next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+            next_saturday = next_sunday + timedelta(days=6)
+            next_saturday = next_saturday.replace(hour=23, minute=59, second=59)
+            
+            schedule = await self.get_schedule_for_range(twitch_username, next_sunday, next_saturday)
+            if schedule is not None:
+                await self.post_schedule(channel, schedule, start_date=next_sunday)
+        else:
+            schedule = await self.get_schedule(twitch_username)
+            if schedule is not None:
+                await self.post_schedule(channel, schedule)
+
+        if schedule is not None:
+            await ctx.send("✅ Schedule updated!")
+        else:
+            await ctx.send("❌ Failed to fetch schedule from Twitch!")
+
     @twitchschedule.command(name="setup")
     async def setup_schedule(self, ctx):
         """Interactive setup process for Twitch schedule."""
         try:
             await ctx.send("Starting setup process... Please answer the following questions.")
             
-            # Get channel
             await ctx.send("Which channel should I post the schedule in? (Mention the channel, e.g., #schedule)")
             try:
                 msg = await self.bot.wait_for(
@@ -430,7 +510,6 @@ class TwitchSchedule(commands.Cog):
                 await ctx.send("Setup timed out. Please try again.")
                 return
 
-            # Get Twitch username
             await ctx.send("What's your Twitch username?")
             try:
                 msg = await self.bot.wait_for(
@@ -444,7 +523,6 @@ class TwitchSchedule(commands.Cog):
                 await ctx.send("Setup timed out. Please try again.")
                 return
 
-            # Get update days
             await ctx.send("Which days should I update the schedule? (Send numbers: 0=Monday, 6=Sunday, separate with spaces)")
             try:
                 msg = await self.bot.wait_for(
@@ -465,7 +543,6 @@ class TwitchSchedule(commands.Cog):
                 await ctx.send("Setup timed out. Please try again.")
                 return
 
-            # Get update time
             await ctx.send("What time should I update the schedule? (Use 24-hour format, e.g., 14:00)")
             try:
                 msg = await self.bot.wait_for(
@@ -486,29 +563,6 @@ class TwitchSchedule(commands.Cog):
             
         except Exception as e:
             await ctx.send(f"❌ An error occurred during setup: {str(e)}")
-
-    @twitchschedule.command(name="force")
-    async def force_update(self, ctx):
-        """Force an immediate schedule update."""
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        
-        if not channel_id or not twitch_username:
-            await ctx.send("❌ Please run setup first!")
-            return
-            
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel:
-            await ctx.send("❌ Schedule channel not found!")
-            return
-            
-        await ctx.send("🔄 Forcing schedule update...")
-        schedule = await self.get_schedule(twitch_username)
-        if schedule is not None:
-            await self.post_schedule(channel, schedule)
-            await ctx.send("✅ Schedule updated!")
-        else:
-            await ctx.send("❌ Failed to fetch schedule from Twitch!")
 
     @twitchschedule.command(name="notify")
     async def set_notify_role(self, ctx, role: discord.Role = None):
