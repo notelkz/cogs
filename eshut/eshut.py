@@ -8,6 +8,9 @@ class EShut(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         self.config.register_guild(channel=None)
+        
+        # Register the shutdown listener
+        self.bot.add_listener(self.on_shutdown)
 
     @commands.group()
     @commands.guild_only()
@@ -37,7 +40,7 @@ class EShut(commands.Cog):
         await channel.send("Bot is shutting down! :wave:")
 
     async def on_shutdown(self):
-        # This is called when the bot is shutting down
+        """This is called when the bot is shutting down."""
         for guild in self.bot.guilds:
             channel_id = await self.config.guild(guild).channel()
             if channel_id:
