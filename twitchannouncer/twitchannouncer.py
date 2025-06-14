@@ -114,7 +114,7 @@ class TwitchAnnouncer(commands.Cog):
                 return
 
             # Apply rate limiting
-            bucket = self.rate_limiter.get_bucket(discord.Object(id=guild.id))
+            bucket = self.rate_limiter.get_bucket(guild)
             retry_after = bucket.update_rate_limit()
             if retry_after:
                 await asyncio.sleep(retry_after)
