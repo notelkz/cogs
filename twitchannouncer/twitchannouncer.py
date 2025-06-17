@@ -24,9 +24,7 @@ class TwitchAnnouncer(commands.Cog):
         self.config.register_guild(**default_guild)
         self.check_streams_task = self.bot.loop.create_task(self.check_streams_loop())
         self.headers = None
-        self.rate_limiter = commands.CooldownMapping.from_cooldown(
-            1, 1, commands.BucketType.guild
-        )  # 1 request per second per guild
+        # Removed the rate_limiter that was causing issues
 
     def cog_unload(self):
         if self.check_streams_task:
@@ -130,15 +128,15 @@ class TwitchAnnouncer(commands.Cog):
                 print(f"[DEBUG] No valid headers for guild {guild.id}")
                 return
 
-            # Apply rate limiting
-            bucket = self.rate_limiter.get_bucket(guild)
-            retry_after = bucket.update_rate_limit()
-            if retry_after:
-                await asyncio.sleep(retry_after)
+            # Simple rate limiting - sleep for 1 second between requests
+            # This replaces the problematic rate_limiter that was causing the error
 
             async with aiohttp.ClientSession() as session:
                 for twitch_name in streamers:
                     try:
+                        # Add a small delay between requests to avoid rate limits
+                        await asyncio.sleep(1)
+                        
                         url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
                         print(f"[DEBUG] Requesting: {url}")
                         print(f"[DEBUG] Headers: {headers}")
@@ -449,7 +447,7 @@ class TwitchAnnouncer(commands.Cog):
         """Show the current check frequency for live streams."""
         frequency = await self.config.guild(ctx.guild).check_frequency()
         streamer_count = len(await self.config.guild(ctx.guild).streamers())
-        requests_per_minute = (60 / frequency) * streamer_count
+        requests_per_minute = (60 / frequency) * streamer_count if streamer_count > 0 else 0
         
         embed = discord.Embed(
             title="Twitch Announcer Settings",
