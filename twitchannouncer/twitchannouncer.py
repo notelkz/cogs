@@ -88,11 +88,27 @@ class TwitchAnnouncer(commands.Cog):
         await self.bot.wait_until_ready()
         while True:
             try:
+                # Default check frequency in case there are no guilds
+                default_check_frequency = 300  # 5 minutes
+                
+                # Track if we have any guilds
+                has_guilds = False
+                
                 for guild in self.bot.guilds:
+                    has_guilds = True
                     await self.check_guild_streams(guild)
                 
-                # Sleep after checking all guilds
-                check_frequency = await self.config.guild(guild).check_frequency()
+                # Get check frequency from the config, or use default
+                if has_guilds:
+                    # Use the first guild's setting or a default
+                    first_guild = next(iter(self.bot.guilds), None)
+                    if first_guild:
+                        check_frequency = await self.config.guild(first_guild).check_frequency()
+                    else:
+                        check_frequency = default_check_frequency
+                else:
+                    check_frequency = default_check_frequency
+                    
                 await asyncio.sleep(check_frequency)
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 print(f"Network error in stream check loop: {e}")
@@ -104,6 +120,7 @@ class TwitchAnnouncer(commands.Cog):
     async def check_guild_streams(self, guild):
         """Check streams for a specific guild."""
         try:
+            print(f"[DEBUG] Checking streams for guild: {guild.name} (ID: {guild.id})")
             streamers = await self.config.guild(guild).streamers()
             if not streamers:
                 return
@@ -157,6 +174,8 @@ class TwitchAnnouncer(commands.Cog):
                         continue
         except Exception as e:
             print(f"[DEBUG] Error in check_guild_streams: {str(e)}")
+            import traceback
+            traceback.print_exc()  # This will print the full stack trace
     
     async def announce_stream(self, guild, twitch_name, stream_data):
         """Announce a live stream."""
