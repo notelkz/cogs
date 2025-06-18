@@ -46,7 +46,8 @@ class Twitchy(commands.Cog):
         # Default guild settings (for each Discord server)
         self.config.register_guild(
             live_role_id=None,
-            streamers=[],
+            streamers=[], # Stores list of streamer usernames
+            streamer_status_data={}, # NEW: Stores dictionary of {"username": {"live_status": True, ...}}
             announcement_channel_id=None,
             schedule_channel_id=None,
             schedule_ping_role_id=None
@@ -364,6 +365,11 @@ class Twitchy(commands.Cog):
             # Case-insensitive removal
             streamers[:] = [s for s in streamers if s.lower() != twitch_username.lower()]
             await ctx.send(f"✅ Stopped monitoring {twitch_username}'s Twitch stream.")
+        
+        # Also remove their status data
+        async with self.config.guild(ctx.guild).streamer_status_data() as streamer_status_data:
+            if twitch_username.lower() in streamer_status_data:
+                del streamer_status_data[twitch_username.lower()]
 
     @twitchy.command(name="liststreamers")
     @commands.guild_only()
@@ -377,22 +383,6 @@ class Twitchy(commands.Cog):
         streamer_list = "\n".join(f"- {s}" for s in streamers)
         for page in pagify(streamer_list, page_length=1000):
             await ctx.send(f"**Monitored Twitch Streamers:**\n{page}")
-
-    @twitchy.command(name="setchannel")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def twitchy_set_announcement_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel for stream announcements."""
-        await self.config.guild(ctx.guild).announcement_channel_id.set(channel.id)
-        await ctx.send(f"✅ Stream announcements will now be posted in {channel.mention}.")
-
-    @twitchy.command(name="setrole")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def twitchy_set_live_role(self, ctx, role: discord.Role):
-        """Set the 'Live' role to be assigned/removed."""
-        await self.config.guild(ctx.guild).live_role_id.set(role.id)
-        await ctx.send(f"✅ '{role.name}' will now be used as the Live role.")
 
     async def get_stream_info(self, streamer_logins: list):
         if not streamer_logins:
@@ -486,8 +476,9 @@ class Twitchy(commands.Cog):
                             # Get the actual Twitch user ID from user_info
                             twitch_user_id = user_info.get(streamer_username_lower, {}).get("id")
 
-                            # Get current live status from config
-                            last_live_status = (await self.config.guild(guild).get_attr(streamer_username_lower).live_status()) if twitch_user_id else False
+                            # NEW: Get current live status from config using streamer_status_data
+                            streamer_status = await self.config.guild(guild).streamer_status_data.get_raw(streamer_username_lower, default={})
+                            last_live_status = streamer_status.get("live_status", False)
 
                             if twitch_user_id: # Only proceed if we have a valid Twitch user ID
                                 if is_live and not last_live_status:
@@ -540,7 +531,8 @@ class Twitchy(commands.Cog):
                                                     print(f"Twitchy Cog: Error adding role to {member.name}: {e}")
                                                     traceback.print_exc()
                                             
-                                async self.config.guild(guild).get_attr(streamer_username_lower).live_status.set(True)
+                                    streamer_status["live_status"] = True
+                                    await self.config.guild(guild).streamer_status_data.set_raw(streamer_username_lower, value=streamer_status)
 
                                 elif not is_live and last_live_status:
                                     # Stream just went offline
@@ -573,7 +565,8 @@ class Twitchy(commands.Cog):
                                                         print(f"Twitchy Cog: Error removing role from {member.name}: {e}")
                                                         traceback.print_exc()
 
-                                await self.config.guild(guild).get_attr(streamer_username_lower).live_status.set(False)
+                                    streamer_status["live_status"] = False
+                                    await self.config.guild(guild).streamer_status_data.set_raw(streamer_username_lower, value=streamer_status)
 
             except Exception as e:
                 print(f"Twitchy Cog: An error occurred in live check loop: {e}")
@@ -606,7 +599,6 @@ class Twitchy(commands.Cog):
             await self.config.guild(ctx.guild).schedule_ping_role_id.set(role.id)
             await ctx.send(f"✅ '{role.name}' will be pinged when the schedule is posted.")
         else:
-            await self.config.guild(ctx.guild).schedule_ping_role_id.set(None)
             await ctx.send("✅ Schedule ping role removed.")
 
     @twitchy_schedule.command(name="settemplate")
