@@ -33,7 +33,7 @@ class Twitchy(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
 
-        # Default global settings
+        # Default global settings (e.g., Twitch API credentials)
         self.config.register_global(
             twitch_client_id=None,
             twitch_client_secret=None,
@@ -44,875 +44,904 @@ class Twitchy(commands.Cog):
         )
 
         # Default guild settings (for each Discord server)
+        # 'streamers' now acts as a group to store all per-streamer data:
+        # {"twitch_username": {"discord_channel_id": int, "role_ids": [int], "live_status": bool, "stream_message_id": int}}
         self.config.register_guild(
             live_role_id=None,
-            streamers=[], # Stores list of streamer usernames
-            streamer_status_data={}, # NEW: Stores dictionary of {"username": {"live_status": True, ...}}
-            announcement_channel_id=None,
-            schedule_channel_id=None,
-            schedule_ping_role_id=None
+            streamers={}, # Unified storage for all streamer-specific data
+            announcement_channel_id=None, # Central announcement channel (can be overridden per streamer)
+            
+            # Restored schedule-related settings for user configurability
+            schedule_channel_id=None, # Channel to post schedule to
+            schedule_twitch_username=None, # Twitch username whose schedule to track for this guild
+            schedule_timezone="UTC", # Timezone for schedule display (e.g., "Europe/London", "America/New_York")
+            schedule_update_days_in_advance=7, # How many days of schedule to fetch/display
+            schedule_update_time="00:00", # Time of day to update schedule (HH:MM 24hr format)
+            schedule_ping_role_id=None, # Role to ping when schedule updates
+            schedule_event_count=5 # Number of events to show in schedule by default
         )
-
+        
         self.session = aiohttp.ClientSession()
-        self.loop = bot.loop
-        self.live_check_task = None
-        self.refresh_token_task = None
-        self.schedule_update_task = None
+        self.live_check_loop = self.bot.loop.create_task(self.check_live_status_loop())
+        self.token_refresh_loop = self.bot.loop.create_task(self.refresh_twitch_token_loop())
+        self.schedule_update_loop = self.bot.loop.create_task(self.update_all_guild_schedules_loop())
 
-        # Paths for schedule resources
-        self.template_path = data_manager.cog_data_path(self) / "schedule_template.png"
-        self.font_path = data_manager.cog_data_path(self) / "schedule_font.ttf"
+        # Paths for schedule image resources
+        self.font_path = data_manager.cog_data_path(self) / "Twitchy_Schedule_Font.ttf"
+        self.template_path = data_manager.cog_data_path(self) / "Twitchy_Schedule_Template.png"
 
-        # **IMPORTANT: UPDATED DEFAULT FONT URL**
-        self.default_template_url = "https://raw.githubusercontent.com/Twitchy-Cog/Twitchy/main/default_schedule_template.png"
-        self.default_font_url = "https://raw.githubusercontent.com/googlefonts/robotoslab/main/RobotoSlab-Regular.ttf" # Updated URL
-
-        self.template_image = None
-        self.font = None
-
-        self.init_tasks()
-        self.ensure_schedule_resources_task = self.loop.create_task(self.ensure_schedule_resources())
 
     def cog_unload(self):
-        if self.live_check_task:
-            self.live_check_task.cancel()
-        if self.refresh_token_task:
-            self.refresh_token_task.cancel()
-        if self.schedule_update_task:
-            self.schedule_update_task.cancel()
-        self.loop.create_task(self.session.close())
+        self.live_check_loop.cancel()
+        self.token_refresh_loop.cancel()
+        self.schedule_update_loop.cancel()
+        self.bot.loop.create_task(self.session.close())
 
-    def init_tasks(self):
-        self.live_check_task = self.loop.create_task(self.check_live_status_loop())
-        self.refresh_token_task = self.loop.create_task(self.refresh_twitch_token_loop())
-        self.schedule_update_task = self.loop.create_task(self.update_all_guild_schedules_loop())
+    async def get_twitch_headers(self):
+        config_global = await self.config.get_global_settings()
+        access_token_info = config_global["twitch_access_token_info"]
+        client_id = config_global["twitch_client_id"]
 
-    async def _download_file(self, url, path):
+        if not access_token_info or access_token_info.get("expires_at", 0) <= time.time():
+            # Token is missing or expired, try to refresh
+            await self.refresh_twitch_token()
+            access_token_info = (await self.config.get_global_settings())["twitch_access_token_info"]
+            if not access_token_info:
+                raise commands.UserError("Twitch access token is missing or expired and could not be refreshed. Please re-authenticate.")
+
+        return {
+            "Authorization": f"Bearer {access_token_info['access_token']}",
+            "Client-ID": client_id,
+        }
+
+    async def refresh_twitch_token(self):
+        config_global = await self.config.get_global_settings()
+        client_id = config_global["twitch_client_id"]
+        client_secret = config_global["twitch_client_secret"]
+        redirect_uri = config_global["twitch_redirect_uri"]
+        access_token_info = config_global["twitch_access_token_info"]
+
+        if not client_id or not client_secret:
+            raise commands.UserError("Twitch Client ID and Client Secret must be set. Use `[p]twitchy set creds`.")
+
+        payload = {
+            "client_id": client_id,
+            "client_secret": client_secret,
+        }
+
+        if access_token_info and "refresh_token" in access_token_info:
+            payload.update({
+                "grant_type": "refresh_token",
+                "refresh_token": access_token_info["refresh_token"],
+            })
+        else:
+            # This path is usually for initial authentication or if refresh token is lost
+            # It shouldn't be hit during refresh loop unless something is critically wrong
+            self.log.warning("Attempting to refresh token without a refresh token. User might need to re-authenticate.")
+            return
+
+        async with self.session.post("https://id.twitch.tv/oauth2/token", data=payload) as resp:
+            try:
+                resp.raise_for_status()
+                data = await resp.json()
+                if "access_token" in data:
+                    data["expires_at"] = time.time() + data["expires_in"] - 60  # Subtract 60s for buffer
+                    await self.config.twitch_access_token_info.set(data)
+                    self.log.info("Twitch access token refreshed successfully.")
+                else:
+                    self.log.error(f"Failed to refresh Twitch token: {data.get('message', 'Unknown error')}")
+            except aiohttp.ClientResponseError as e:
+                self.log.error(f"HTTP error refreshing Twitch token: {e.status} - {e.message}")
+                self.log.error(f"Response: {await resp.text()}")
+                raise commands.UserError(f"Failed to refresh Twitch token. HTTP Error: {e.status}")
+            except Exception as e:
+                self.log.error(f"An unexpected error occurred during Twitch token refresh: {e}")
+                raise commands.UserError(f"An unexpected error occurred during Twitch token refresh.")
+
+    async def refresh_twitch_token_loop(self):
+        await self.bot.wait_until_ready()
+        while self:
+            try:
+                await self.refresh_twitch_token()
+                # Check token expiration more frequently than full refresh if needed
+                access_token_info = (await self.config.get_global_settings())["twitch_access_token_info"]
+                if access_token_info:
+                    expires_in = access_token_info.get("expires_at", 0) - time.time()
+                    sleep_time = max(3600, expires_in / 2) # Refresh at least once an hour, or halfway through expiry
+                    if sleep_time < 0: # If already expired, refresh immediately next loop
+                        sleep_time = 60 # wait a minute before next attempt
+                    self.log.debug(f"Next Twitch token refresh in {int(sleep_time)} seconds.")
+                    await asyncio.sleep(sleep_time)
+                else:
+                    self.log.debug("No Twitch token info, waiting for 1 hour before next refresh attempt.")
+                    await asyncio.sleep(3600) # Wait 1 hour if no token is set
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.log.exception(f"Error in Twitch token refresh loop: {e}")
+                await asyncio.sleep(3600) # Wait before retrying after an error
+
+    async def get_stream_info(self, usernames: list):
+        headers = await self.get_twitch_headers()
+        params = [("user_login", u) for u in usernames]
+        async with self.session.get("https://api.twitch.tv/helix/streams", headers=headers, params=params) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data["data"]
+
+    async def get_user_info(self, usernames: list):
+        headers = await self.get_twitch_headers()
+        params = [("login", u) for u in usernames]
+        async with self.session.get("https://api.twitch.tv/helix/users", headers=headers, params=params) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data["data"]
+
+    async def _send_announcement(self, streamer_username, guild: discord.Guild, stream_info):
+        guild_config = self.config.guild(guild)
+        streamer_settings = await guild_config.streamers.get_raw(streamer_username.lower(), {})
+        
+        # Determine the channel to send the announcement to
+        channel_id = streamer_settings.get("discord_channel_id")
+        if channel_id is None:
+            channel_id = await guild_config.announcement_channel_id() # Fallback to guild-wide announcement channel
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            self.log.warning(f"Announcement channel not found for guild {guild.id} or streamer {streamer_username}.")
+            return
+
+        message_id = streamer_settings.get("stream_message_id")
+        message_to_edit = None
+        if message_id:
+            try:
+                message_to_edit = await channel.fetch_message(message_id)
+            except discord.NotFound:
+                self.log.info(f"Existing announcement message {message_id} not found, sending a new one.")
+                message_to_edit = None
+            except discord.Forbidden:
+                self.log.warning(f"Bot missing permissions to fetch message {message_id} in channel {channel.id}.")
+                message_to_edit = None
+
+        embed = discord.Embed(
+            title=f"{stream_info['user_name']} is now LIVE on Twitch!",
+            url=f"https://www.twitch.tv/{stream_info['user_login']}",
+            color=0x9146FF  # Twitch purple
+        )
+        embed.set_thumbnail(url=stream_info.get("profile_image_url", "https://static-cdn.jtvnw.net/emoticons/v1/555555555/1.0")) # Fallback
+        embed.add_field(name="Game", value=stream_info.get("game_name", "N/A"), inline=True)
+        embed.add_field(name="Viewers", value=f"{stream_info['viewer_count']:,}", inline=True)
+        embed.set_image(url=stream_info["thumbnail_url"].replace("{width}", "1280").replace("{height}", "720") + f"?{time.time()}")
+        embed.set_footer(text=f"Stream started at: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+
+        watch_url = f"https://www.twitch.tv/{stream_info['user_login']}"
+        subscribe_url = f"https://www.twitch.tv/subs/{stream_info['user_login']}"
+        view = StreamButtons(watch_url, subscribe_url)
+
         try:
-            async with self.session.get(url) as response:
-                response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
-                with open(path, 'wb') as f:
-                    f.write(await response.read())
-                return True
-        except aiohttp.ClientError as e:
-            print(f"Twitchy Cog: Failed to download file from {url}: {e}")
-            return False
+            if message_to_edit:
+                await message_to_edit.edit(embed=embed, view=view)
+                message = message_to_edit
+            else:
+                message = await channel.send(embed=embed, view=view)
+            
+            # Save the message ID for future edits
+            streamer_settings["stream_message_id"] = message.id
+            await guild_config.streamers.set_raw(streamer_username.lower(), streamer_settings)
+
+            # Assign live role
+            live_role_id = await guild_config.live_role_id()
+            if live_role_id:
+                live_role = guild.get_role(live_role_id)
+                if live_role:
+                    # Get the Discord member linked to the Twitch user
+                    # This requires manual linking or a system to know which Discord user maps to which Twitch user
+                    # For now, let's assume the bot is in the server where the streamer is a member by username matching
+                    member = discord.utils.get(guild.members, name=stream_info['user_name'])
+                    if member and live_role not in member.roles:
+                        await member.add_roles(live_role, reason="Twitch stream went live")
+                else:
+                    self.log.warning(f"Live role with ID {live_role_id} not found in guild {guild.name}.")
+        except discord.Forbidden:
+            self.log.warning(f"Bot missing permissions to send/edit messages in channel {channel.id} or manage roles in guild {guild.id}.")
         except Exception as e:
-            print(f"Twitchy Cog: An unexpected error occurred downloading {url}: {e}")
-            traceback.print_exc()
-            return False
+            self.log.exception(f"Error sending/editing announcement or assigning role for {streamer_username}: {e}")
 
-    async def ensure_schedule_resources(self):
-        custom_template_url = await self.config.custom_template_url()
-        custom_font_url = await self.config.custom_font_url()
+    async def _remove_announcement_and_role(self, streamer_username, guild: discord.Guild):
+        guild_config = self.config.guild(guild)
+        streamer_settings = await guild_config.streamers.get_raw(streamer_username.lower(), {})
 
-        template_downloaded = False
-        font_downloaded = False
+        channel_id = streamer_settings.get("discord_channel_id")
+        if channel_id is None:
+            channel_id = await guild_config.announcement_channel_id()
 
-        # Try downloading custom template first
-        if custom_template_url and not self.template_path.exists():
-            print(f"Twitchy Cog: Attempting to download custom template from {custom_template_url}")
-            template_downloaded = await self._download_file(custom_template_url, self.template_path)
-            if template_downloaded:
-                print("Twitchy Cog: Custom schedule template downloaded.")
-            else:
-                print("Twitchy Cog: Failed to download custom template.")
-
-        # If custom template failed or not set, download default
-        if not template_downloaded and not self.template_path.exists():
-            print(f"Twitchy Cog: Downloading default schedule template from {self.default_template_url}")
-            template_downloaded = await self._download_file(self.default_template_url, self.template_path)
-            if template_downloaded:
-                print("Twitchy Cog: Default schedule template downloaded.")
-            else:
-                print("Twitchy Cog: Failed to download default schedule template. Creating a placeholder.")
-                # Create a simple placeholder image if download fails
+        channel = guild.get_channel(channel_id)
+        if channel:
+            message_id = streamer_settings.get("stream_message_id")
+            if message_id:
                 try:
-                    img = Image.new('RGB', (1000, 500), color = (73, 109, 137))
-                    d = ImageDraw.Draw(img)
-                    d.text((10,10), "Schedule template missing! Check bot console.", fill=(255,255,255))
-                    img.save(self.template_path)
-                    print("Twitchy Cog: Created a placeholder schedule template image.")
-                    template_downloaded = True
+                    message_to_delete = await channel.fetch_message(message_id)
+                    await message_to_delete.delete()
+                    streamer_settings["stream_message_id"] = None
+                    await guild_config.streamers.set_raw(streamer_username.lower(), streamer_settings)
+                except discord.NotFound:
+                    self.log.info(f"Announcement message {message_id} already deleted for {streamer_username}.")
+                    streamer_settings["stream_message_id"] = None
+                    await guild_config.streamers.set_raw(streamer_username.lower(), streamer_settings)
+                except discord.Forbidden:
+                    self.log.warning(f"Bot missing permissions to delete message {message_id} in channel {channel.id}.")
                 except Exception as e:
-                    print(f"Twitchy Cog: Could not create placeholder image: {e}")
+                    self.log.exception(f"Error deleting announcement message for {streamer_username}: {e}")
 
-        # Try downloading custom font first
-        if custom_font_url and not self.font_path.exists():
-            print(f"Twitchy Cog: Attempting to download custom font from {custom_font_url}")
-            font_downloaded = await self._download_file(custom_font_url, self.font_path)
-            if font_downloaded:
-                print("Twitchy Cog: Custom font downloaded.")
-            else:
-                print("Twitchy Cog: Failed to download custom font.")
+        # Remove live role
+        live_role_id = await guild_config.live_role_id()
+        if live_role_id:
+            live_role = guild.get_role(live_role_id)
+            if live_role:
+                # Assuming the member mapping logic from _send_announcement
+                member = discord.utils.get(guild.members, name=streamer_username) # This might need refinement for actual Discord user mapping
+                if member and live_role in member.roles:
+                    await member.remove_roles(live_role, reason="Twitch stream went offline")
 
-        # If custom font failed or not set, download default
-        if not font_downloaded and not self.font_path.exists():
-            print(f"Twitchy Cog: Downloading default Roboto-Regular.ttf font from {self.default_font_url}")
-            font_downloaded = await self._download_file(self.default_font_url, self.font_path)
-            if font_downloaded:
-                print("Twitchy Cog: Default font downloaded.")
-            else:
-                print("Twitchy Cog: Failed to download default font.")
 
-        # Load resources into PIL
-        try:
-            if self.template_path.exists():
-                self.template_image = Image.open(self.template_path).convert("RGBA")
-            if self.font_path.exists():
-                self.font = ImageFont.truetype(str(self.font_path), 24) # Adjust size as needed
-        except Exception as e:
-            print(f"Twitchy Cog: Error loading schedule resources: {e}")
-            self.template_image = None
-            self.font = None
-            return False
+    async def check_live_status_loop(self):
+        await self.bot.wait_until_ready()
+        while self:
+            try:
+                all_guilds_data = await self.config.all_guilds()
+                all_streamers_to_check = {} # {username: [guild_id, ...]}
 
-        return self.template_image is not None and self.font is not None
+                for guild_id, guild_data in all_guilds_data.items():
+                    if "streamers" in guild_data and guild_data["streamers"]:
+                        for streamer_username_lower in guild_data["streamers"]:
+                            # Streamers are stored as keys in the 'streamers' dict
+                            all_streamers_to_check.setdefault(streamer_username_lower, []).append(guild_id)
 
-    @commands.group()
+                if not all_streamers_to_check:
+                    await asyncio.sleep(60) # No streamers to check, wait
+                    continue
+
+                # Fetch stream info for all unique streamers across all guilds
+                live_streams = {}
+                try:
+                    stream_info_list = await self.get_stream_info(list(all_streamers_to_check.keys()))
+                    # Also fetch user info for profile images (optimization: only fetch if needed)
+                    user_info_map = {u['login'].lower(): u for u in await self.get_user_info(list(all_streamers_to_check.keys()))}
+
+                    for stream in stream_info_list:
+                        live_streams[stream["user_login"].lower()] = {
+                            **stream,
+                            "profile_image_url": user_info_map.get(stream["user_login"].lower(), {}).get("profile_image_url", "https://static-cdn.jtvnw.net/emoticons/v1/555555555/1.0")
+                        }
+                except Exception as e:
+                    self.log.error(f"Error fetching stream info: {e}")
+                    # Continue with existing live status if API call fails
+                    await asyncio.sleep(60) # Wait before retrying after API error
+                    continue
+
+
+                for guild_id, guild_config_data in all_guilds_data.items():
+                    guild = self.bot.get_guild(guild_id)
+                    if not guild:
+                        continue
+
+                    current_guild_streamers_config = await self.config.guild(guild).streamers.all()
+
+                    for streamer_username_lower in current_guild_streamers_config.keys(): # Iterate through keys of the dict
+                        streamer_settings = current_guild_streamers_config[streamer_username_lower]
+                        is_live_now = streamer_username_lower in live_streams
+
+                        was_live_before = streamer_settings.get("live_status", False)
+
+                        if is_live_now and not was_live_before:
+                            # Stream just went live
+                            streamer_settings["live_status"] = True
+                            await self.config.guild(guild).streamers.set_raw(streamer_username_lower, streamer_settings)
+                            self.bot.loop.create_task(self._send_announcement(streamer_username_lower, guild, live_streams[streamer_username_lower]))
+                        elif not is_live_now and was_live_before:
+                            # Stream just went offline
+                            streamer_settings["live_status"] = False
+                            await self.config.guild(guild).streamers.set_raw(streamer_username_lower, streamer_settings)
+                            self.bot.loop.create_task(self._remove_announcement_and_role(streamer_username_lower, guild))
+                        # If status hasn't changed, do nothing
+
+                await asyncio.sleep(60) # Check every 60 seconds
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self.log.exception(f"Error in live status check loop: {e}")
+                await asyncio.sleep(120) # Wait longer after an unexpected error
+
+    @commands.group(invoke_without_command=True)
     async def twitchy(self, ctx):
-        """Manage Twitchy Cog settings."""
-        pass
+        """Manages Twitch stream announcements and roles."""
+        await ctx.send_help(ctx.command)
 
-    @twitchy.command(name="setcreds")
-    @commands.is_owner()
-    async def twitchy_set_credentials(self, ctx, client_id: str, client_secret: str, redirect_uri: str = "http://localhost:8000/callback"):
+    @twitchy.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def addstreamer(self, ctx, twitch_username: str, discord_channel: discord.TextChannel = None, *, roles: commands.Greedy[discord.Role] = None):
         """
-        Set your Twitch API Client ID, Client Secret, and Redirect URI.
-        The Redirect URI defaults to http://localhost:8000/callback if not provided.
+        Adds a Twitch streamer to track.
+        Provide a Discord channel for announcements and optional roles to assign when live.
+        If no channel is provided, the guild's default announcement channel will be used.
+        Example: `[p]twitchy addstreamer my_streamer #announcements @LiveRole`
         """
-        await self.config.client_id.set(client_id)
-        await self.config.client_secret.set(client_secret)
+        guild = ctx.guild
+        guild_config = self.config.guild(guild)
+        username_lower = twitch_username.lower()
+
+        # Check if streamer already exists
+        all_streamers = await guild_config.streamers()
+        if username_lower in all_streamers:
+            return await ctx.send(f"Error: `{twitch_username}` is already being tracked.")
+
+        # Get Twitch user ID to ensure valid streamer
+        try:
+            twitch_users = await self.get_user_info([username_lower])
+            if not twitch_users:
+                return await ctx.send(f"Error: Could not find Twitch user `{twitch_username}`.")
+            twitch_user_id = twitch_users[0]["id"]
+        except Exception as e:
+            self.log.error(f"Error fetching Twitch user info for {twitch_username}: {e}")
+            return await ctx.send(f"Error communicating with Twitch API: {e}")
+
+        # Store streamer settings within the 'streamers' dictionary
+        streamer_data = {
+            "twitch_user_id": twitch_user_id, # Store ID for schedule fetching
+            "discord_channel_id": discord_channel.id if discord_channel else None,
+            "role_ids": [r.id for r in roles] if roles else [],
+            "live_status": False, # Initialize as offline
+            "stream_message_id": None # No announcement message yet
+        }
+        await guild_config.streamers.set_raw(username_lower, streamer_data)
+
+        msg = f"Successfully added `{twitch_username}`."
+        if discord_channel:
+            msg += f" Announcements will go to {discord_channel.mention}."
+        if roles:
+            msg += f" The {humanize_list([r.name for r in roles])} role(s) will be assigned when live."
+        else:
+            msg += f" No specific roles will be assigned."
+        await ctx.send(msg)
+
+    @twitchy.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def removestreamer(self, ctx, twitch_username: str):
+        """Removes a Twitch streamer from tracking."""
+        guild = ctx.guild
+        guild_config = self.config.guild(guild)
+        username_lower = twitch_username.lower()
+
+        all_streamers = await guild_config.streamers()
+        if username_lower not in all_streamers:
+            return await ctx.send(f"Error: `{twitch_username}` is not currently being tracked.")
+
+        # Clear the specific streamer's data from the 'streamers' group
+        await guild_config.streamers.clear_raw(username_lower)
+        
+        # Also clean up any existing announcement message and role if the stream was live
+        self.bot.loop.create_task(self._remove_announcement_and_role(username_lower, guild))
+
+        await ctx.send(f"Successfully removed `{twitch_username}` from tracking.")
+
+    @twitchy.command()
+    @commands.guild_only()
+    async def streamers(self, ctx):
+        """Lists all tracked Twitch streamers for this guild."""
+        guild_config = self.config.guild(ctx.guild)
+        all_streamers_data = await guild_config.streamers.all()
+
+        if not all_streamers_data:
+            return await ctx.send("No Twitch streamers are currently being tracked in this guild.")
+
+        msg = "Currently tracked Twitch streamers:\n"
+        for username, data in all_streamers_data.items():
+            channel_id = data.get("discord_channel_id")
+            roles = [ctx.guild.get_role(r_id) for r_id in data.get("role_ids", []) if ctx.guild.get_role(r_id)]
+            live_status = "LIVE" if data.get("live_status") else "OFFLINE"
+            
+            channel_mention = f"<#{channel_id}>" if channel_id else "Guild Default"
+            roles_mention = humanize_list([r.name for r in roles]) if roles else "None"
+            
+            msg += f"- `{username}` ({live_status}) -> Channel: {channel_mention}, Roles: {roles_mention}\n"
+        
+        for page in pagify(msg):
+            await ctx.send(page)
+
+    @twitchy.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def setchannel(self, ctx, discord_channel: discord.TextChannel):
+        """
+        Sets the default Discord channel for stream announcements for the guild.
+        This will be used if no specific channel is set for an individual streamer.
+        """
+        await self.config.guild(ctx.guild).announcement_channel_id.set(discord_channel.id)
+        await ctx.send(f"Default announcement channel set to {discord_channel.mention}.")
+
+    @twitchy.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def setliverole(self, ctx, role: discord.Role):
+        """Sets the role to assign to users when their tracked Twitch stream is live."""
+        await self.config.guild(ctx.guild).live_role_id.set(role.id)
+        await ctx.send(f"Live role set to `{role.name}`.")
+
+    @twitchy.command()
+    @commands.guild_only()
+    @commands.has_permissions(manage_guild=True)
+    async def setcreds(self, ctx, client_id: str, client_secret: str, redirect_uri: str = "http://localhost:8000/callback"):
+        """
+        Sets your Twitch API Client ID, Client Secret, and Redirect URI.
+        You need to register an application on Twitch Developers site.
+        The Redirect URI defaults to `http://localhost:8000/callback`.
+        """
+        await self.config.twitch_client_id.set(client_id)
+        await self.config.twitch_client_secret.set(client_secret)
         await self.config.twitch_redirect_uri.set(redirect_uri)
-        await self.config.twitch_access_token_info.set(None) # Clear existing token info
-        await ctx.send("Twitch API credentials set. Please authorize the bot using `[p]twitchy authorize`.")
-        self.refresh_token_task.cancel() # Cancel existing task
-        self.refresh_token_task = self.loop.create_task(self.refresh_twitch_token_loop()) # Start new task
+        await ctx.send(
+            "Twitch API credentials saved. "
+            "Now you need to get an access token. "
+            f"Please visit: `https://id.twitch.tv/oauth2/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=user:read:follows+channel:read:subscriptions+channel:read:schedule`\n"
+            "After authorizing, you'll be redirected. Copy the `code` from the URL and use `[p]twitchy settoken <code>`."
+        )
 
-    @twitchy.command(name="authorize")
+    @twitchy.command()
     @commands.is_owner()
-    async def twitchy_authorize(self, ctx):
+    async def settoken(self, ctx, code: str):
         """
-        Generates the authorization URL for Twitch.
-        After authorization, you will receive a code to complete the process.
+        Sets the Twitch access token using the authorization code.
+        Use this after `[p]twitchy set creds` and visiting the authorization URL.
         """
-        client_id = await self.config.client_id()
-        redirect_uri = await self.config.twitch_redirect_uri()
+        config_global = await self.config.get_global_settings()
+        client_id = config_global["twitch_client_id"]
+        client_secret = config_global["twitch_client_secret"]
+        redirect_uri = config_global["twitch_redirect_uri"]
 
-        if not client_id or not redirect_uri:
-            await ctx.send("Please set your Twitch API credentials first using `[p]twitchy setcreds <client_id> <client_secret> [redirect_uri]`.")
-            return
+        if not all([client_id, client_secret, redirect_uri]):
+            return await ctx.send("Please set your Twitch credentials first using `[p]twitchy set creds`.")
 
-        scope = "user:read:follows user:read:subscriptions channel:read:subscriptions" # Minimal scope for now
-        auth_url = f"https://id.twitch.tv/oauth2/authorize?client_id={client_id}&redirect_uri={redirect_uri}&response_type=code&scope={scope}"
-        await ctx.send(f"Please visit this URL to authorize the bot: {auth_url}\n"
-                       f"After authorization, you will be redirected to your specified Redirect URI with a `code` in the URL. "
-                       f"Use that code with `[p]twitchy setcode <your_code>`.")
-
-    @twitchy.command(name="setcode")
-    @commands.is_owner()
-    async def twitchy_set_code(self, ctx, code: str):
-        """
-        Completes the Twitch authorization process with the received code.
-        """
-        client_id = await self.config.client_id()
-        client_secret = await self.config.twitch_client_secret()
-        redirect_uri = await self.config.twitch_redirect_uri()
-
-        if not client_id or not client_secret or not redirect_uri:
-            await ctx.send("Please set your Twitch API credentials first using `[p]twitchy setcreds`.")
-            return
-
-        token_url = "https://id.twitch.tv/oauth2/token"
         payload = {
             "client_id": client_id,
             "client_secret": client_secret,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": redirect_uri
+            "redirect_uri": redirect_uri,
         }
 
-        try:
-            async with self.session.post(token_url, data=payload) as response:
-                response.raise_for_status()
-                token_info = await response.json()
-                await self.config.twitch_access_token_info.set(token_info)
-                await ctx.send("✅ Twitch authorization successful!")
-                self.refresh_token_task.cancel() # Cancel old task
-                self.refresh_token_task = self.loop.create_task(self.refresh_twitch_token_loop()) # Start new task
-        except aiohttp.ClientError as e:
-            await ctx.send(f"❌ Failed to get Twitch access token: {e}")
-        except Exception as e:
-            await ctx.send(f"❌ An unexpected error occurred: {e}")
-            traceback.print_exc()
-
-    async def get_twitch_headers(self):
-        token_info = await self.config.twitch_access_token_info()
-        client_id = await self.config.client_id()
-
-        if not token_info or "access_token" not in token_info:
-            print("Twitchy Cog: No access token available. Attempting to refresh.")
-            await self.refresh_twitch_token() # Attempt to refresh immediately
-            token_info = await self.config.twitch_access_token_info() # Get updated info
-
-        if not token_info or "access_token" not in token_info:
-            print("Twitchy Cog: Failed to obtain valid access token for Twitch API calls.")
-            return None
-
-        return {
-            "Client-ID": client_id,
-            "Authorization": f"Bearer {token_info['access_token']}"
-        }
-
-    async def refresh_twitch_token(self):
-        token_info = await self.config.twitch_access_token_info()
-        client_id = await self.config.client_id()
-        client_secret = await self.config.twitch_client_secret()
-
-        if not token_info or "refresh_token" not in token_info:
-            print("Twitchy Cog: No refresh token available to refresh Twitch access token.")
-            return False
-
-        refresh_url = "https://id.twitch.tv/oauth2/token"
-        payload = {
-            "grant_type": "refresh_token",
-            "refresh_token": token_info["refresh_token"],
-            "client_id": client_id,
-            "client_secret": client_secret
-        }
-
-        try:
-            async with self.session.post(refresh_url, data=payload) as response:
-                response.raise_for_status()
-                new_token_info = await response.json()
-                new_token_info["retrieved_at"] = time.time() # Store retrieval time for expiration
-                await self.config.twitch_access_token_info.set(new_token_info)
-                print("Twitchy Cog: Twitch access token refreshed successfully.")
-                return True
-        except aiohttp.ClientError as e:
-            print(f"Twitchy Cog: Failed to refresh Twitch access token: {e}")
-            # Optionally clear the token info if refresh fails consistently
-            await self.config.twitch_access_token_info.set(None)
-            return False
-        except Exception as e:
-            print(f"Twitchy Cog: An unexpected error occurred during token refresh: {e}")
-            traceback.print_exc()
-            return False
-
-    async def refresh_twitch_token_loop(self):
-        await self.bot.wait_until_ready()
-        while True:
-            token_info = await self.config.twitch_access_token_info()
-            if token_info and "expires_in" in token_info and "retrieved_at" in token_info:
-                # Refresh 10 minutes before expiration
-                expires_at = token_info["retrieved_at"] + token_info["expires_in"]
-                time_to_sleep = max(0, expires_at - time.time() - 600) # 600 seconds = 10 minutes
-                print(f"Twitchy Cog: Next token refresh in {time_to_sleep / 60:.2f} minutes.")
-                await asyncio.sleep(time_to_sleep)
-            else:
-                # If no token info or incomplete, try refreshing every hour
-                print("Twitchy Cog: No full token info for scheduled refresh. Retrying in 1 hour.")
-                await asyncio.sleep(3600) # 1 hour
-
-            await self.refresh_twitch_token()
-
-    @twitchy.command(name="addstreamer")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def twitchy_add_streamer(self, ctx, twitch_username: str):
-        """Add a Twitch streamer to monitor."""
-        async with self.config.guild(ctx.guild).streamers() as streamers:
-            if twitch_username.lower() in [s.lower() for s in streamers]:
-                await ctx.send(f"{twitch_username} is already being monitored.")
-                return
-
-            # Optional: Verify streamer exists on Twitch
-            headers = await self.get_twitch_headers()
-            if not headers:
-                await ctx.send("Cannot verify streamer without Twitch API authorization. Please authorize the bot first.")
-                streamers.append(twitch_username) # Add anyway, but warn
-                await ctx.send(f"Added {twitch_username}, but could not verify. Authorization needed for live checks.")
-                return
-
+        async with self.session.post("https://id.twitch.tv/oauth2/token", data=payload) as resp:
             try:
-                # Use the new Twitch API endpoint for users
-                users_url = f"https://api.twitch.tv/helix/users?login={twitch_username}"
-                async with self.session.get(users_url, headers=headers) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-                    if not data["data"]:
-                        await ctx.send(f"Could not find Twitch user `{twitch_username}`. Please check the spelling.")
-                        return
-                    else:
-                        streamers.append(twitch_username)
-                        await ctx.send(f"✅ Now monitoring {twitch_username}'s Twitch stream.")
+                resp.raise_for_status()
+                data = await resp.json()
+                if "access_token" in data:
+                    data["expires_at"] = time.time() + data["expires_in"] - 60 # Subtract 60s for buffer
+                    await self.config.twitch_access_token_info.set(data)
+                    await ctx.send("✅ Twitch access token obtained and saved successfully!")
+                    self.bot.loop.create_task(self.refresh_twitch_token_loop()) # Ensure refresh loop starts/restarts
+                else:
+                    await ctx.send(f"❌ Failed to get Twitch access token: {data.get('message', 'Unknown error')}")
             except aiohttp.ClientResponseError as e:
-                await ctx.send(f"❌ Twitch API error when verifying streamer: {e.status} - {e.message}. Check your credentials or try again later.")
+                await ctx.send(f"❌ HTTP error getting Twitch token: {e.status} - {e.message}\n"
+                               f"Response: {await resp.text()}")
             except Exception as e:
                 await ctx.send(f"❌ An unexpected error occurred: {e}")
-                traceback.print_exc()
 
-    @twitchy.command(name="removestreamer")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def twitchy_remove_streamer(self, ctx, twitch_username: str):
-        """Remove a Twitch streamer from monitoring."""
-        async with self.config.guild(ctx.guild).streamers() as streamers:
-            if twitch_username.lower() not in [s.lower() for s in streamers]:
-                await ctx.send(f"{twitch_username} is not currently being monitored.")
-                return
-            
-            # Case-insensitive removal
-            streamers[:] = [s for s in streamers if s.lower() != twitch_username.lower()]
-            await ctx.send(f"✅ Stopped monitoring {twitch_username}'s Twitch stream.")
+    async def _download_file(self, url, path):
+        try:
+            async with self.session.get(url) as response:
+                response.raise_for_status()
+                with open(path, "wb") as f:
+                    f.write(await response.read())
+            return True
+        except Exception as e:
+            self.log.error(f"Failed to download {url}: {e}")
+            return False
+
+    async def ensure_schedule_resources(self):
+        config_global = await self.config.get_global_settings()
+        custom_template_url = config_global.get("custom_template_url")
+        custom_font_url = config_global.get("custom_font_url")
+
+        success_template = False
+        if custom_template_url:
+            success_template = await self._download_file(custom_template_url, self.template_path)
+        if not success_template and not self.template_path.exists():
+            # Fallback to default if custom failed or not set
+            success_template = await self._download_file("https://i.imgur.com/your_default_template.png", self.template_path) # REPLACE with actual default template URL!
+            if not success_template:
+                self.log.error("Failed to download default schedule template.")
+                return False
+
+        success_font = False
+        if custom_font_url:
+            success_font = await self._download_file(custom_font_url, self.font_path)
+        if not success_font and not self.font_path.exists():
+            # Fallback to default if custom failed or not set
+            success_font = await self._download_file("https://raw.githubusercontent.com/googlefonts/roboto/main/src/hinted/Roboto-Regular.ttf", self.font_path) # Example Google Fonts URL
+            if not success_font:
+                self.log.error("Failed to download default schedule font.")
+                return False
         
-        # Also remove their status data
-        async with self.config.guild(ctx.guild).streamer_status_data() as streamer_status_data:
-            if twitch_username.lower() in streamer_status_data:
-                del streamer_status_data[twitch_username.lower()]
-
-    @twitchy.command(name="liststreamers")
-    @commands.guild_only()
-    async def twitchy_list_streamers(self, ctx):
-        """List all Twitch streamers being monitored."""
-        streamers = await self.config.guild(ctx.guild).streamers()
-        if not streamers:
-            await ctx.send("No Twitch streamers are currently being monitored in this server.")
-            return
-
-        streamer_list = "\n".join(f"- {s}" for s in streamers)
-        for page in pagify(streamer_list, page_length=1000):
-            await ctx.send(f"**Monitored Twitch Streamers:**\n{page}")
-
-    async def get_stream_info(self, streamer_logins: list):
-        if not streamer_logins:
-            return {}
-
-        headers = await self.get_twitch_headers()
-        if not headers:
-            return {}
-
-        base_url = "https://api.twitch.tv/helix/streams"
-        stream_info = {}
-        # Twitch API allows up to 100 logins per request
-        for i in range(0, len(streamer_logins), 100):
-            batch = streamer_logins[i:i+100]
-            params = "&".join([f"user_login={login}" for login in batch])
-            url = f"{base_url}?{params}"
-
-            try:
-                async with self.session.get(url, headers=headers) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-                    for stream in data.get("data", []):
-                        stream_info[stream["user_login"].lower()] = stream
-            except aiohttp.ClientResponseError as e:
-                print(f"Twitchy Cog: API error during stream info fetch: {e.status} - {e.message}")
-            except Exception as e:
-                print(f"Twitchy Cog: An unexpected error occurred fetching stream info: {e}")
-                traceback.print_exc()
-        return stream_info
-
-    async def get_user_info(self, user_logins: list):
-        if not user_logins:
-            return {}
-
-        headers = await self.get_twitch_headers()
-        if not headers:
-            return {}
-
-        base_url = "https://api.twitch.tv/helix/users"
-        user_info = {}
-        for i in range(0, len(user_logins), 100):
-            batch = user_logins[i:i+100]
-            params = "&".join([f"login={login}" for login in batch])
-            url = f"{base_url}?{params}"
-
-            try:
-                async with self.session.get(url, headers=headers) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-                    for user in data.get("data", []):
-                        user_info[user["login"].lower()] = user
-            except aiohttp.ClientResponseError as e:
-                print(f"Twitchy Cog: API error during user info fetch: {e.status} - {e.message}")
-            except Exception as e:
-                print(f"Twitchy Cog: An unexpected error occurred fetching user info: {e}")
-                traceback.print_exc()
-        return user_info
-
-    async def check_live_status_loop(self):
-        await self.bot.wait_until_ready()
-        while True:
-            try:
-                all_streamers = set()
-                for guild_id in await self.config.all_guilds():
-                    guild_data = await self.config.guild_from_id(guild_id).all()
-                    if guild_data.get("streamers"):
-                        all_streamers.update(guild_data["streamers"])
-                
-                if all_streamers:
-                    stream_info = await self.get_stream_info(list(all_streamers))
-                    user_info = await self.get_user_info(list(all_streamers)) # Fetch user info for profile pictures, etc.
-
-                    for guild_id in await self.config.all_guilds():
-                        guild_config = await self.config.guild_from_id(guild_id).all()
-                        guild = self.bot.get_guild(guild_id)
-                        
-                        if not guild:
-                            continue # Guild no longer exists
-
-                        streamers_to_monitor = guild_config.get("streamers", [])
-                        announcement_channel_id = guild_config.get("announcement_channel_id")
-                        live_role_id = guild_config.get("live_role_id")
-
-                        channel = guild.get_channel(announcement_channel_id) if announcement_channel_id else None
-                        live_role = guild.get_role(live_role_id) if live_role_id else None
-
-                        for streamer_username in streamers_to_monitor:
-                            streamer_username_lower = streamer_username.lower()
-                            is_live = streamer_username_lower in stream_info
-                            
-                            # Get the actual Twitch user ID from user_info
-                            twitch_user_id = user_info.get(streamer_username_lower, {}).get("id")
-
-                            # NEW: Get current live status from config using streamer_status_data
-                            streamer_status = await self.config.guild(guild).streamer_status_data.get_raw(streamer_username_lower, default={})
-                            last_live_status = streamer_status.get("live_status", False)
-
-                            if twitch_user_id: # Only proceed if we have a valid Twitch user ID
-                                if is_live and not last_live_status:
-                                    # Stream just went live
-                                    stream_data = stream_info[streamer_username_lower]
-                                    stream_title = stream_data.get("title", "No Title")
-                                    game_name = stream_data.get("game_name", "N/A")
-                                    thumbnail_url = stream_data.get("thumbnail_url", "").replace("{width}", "1280").replace("{height}", "720")
-                                    viewer_count = stream_data.get("viewer_count", 0)
-                                    profile_image_url = user_info.get(streamer_username_lower, {}).get("profile_image_url")
-                                    
-                                    embed = discord.Embed(
-                                        title=f"🔴 {streamer_username} is now LIVE on Twitch!",
-                                        url=f"https://www.twitch.tv/{streamer_username}",
-                                        description=f"**{stream_title}**\nPlaying: {game_name}\nViewers: {viewer_count}",
-                                        color=0x9146FF # Twitch purple
-                                    )
-                                    embed.set_thumbnail(url=profile_image_url)
-                                    embed.set_image(url=thumbnail_url)
-                                    embed.set_footer(text="Twitch Stream Announcement")
-                                    embed.timestamp = datetime.datetime.now(datetime.timezone.utc)
-
-                                    if channel:
-                                        try:
-                                            # Create buttons for Watch Now and Subscribe
-                                            watch_url = f"https://www.twitch.tv/{streamer_username}"
-                                            subscribe_url = f"https://www.twitch.tv/subs/{streamer_username}" # General subscribe link
-                                            view = StreamButtons(watch_url, subscribe_url)
-                                            await channel.send(content=f"{live_role.mention}" if live_role else None, embed=embed, view=view)
-                                        except discord.Forbidden:
-                                            print(f"Twitchy Cog: Missing permissions to send messages in {channel.name} ({guild.name}).")
-                                        except Exception as e:
-                                            print(f"Twitchy Cog: Error sending announcement: {e}")
-                                            traceback.print_exc()
-                                    
-                                    if live_role:
-                                        for member in guild.members:
-                                            # Only add role if member is actually a follower/subscriber or if you want to give to all
-                                            # For simplicity, we'll iterate through all members for now.
-                                            # A more advanced check would involve Twitch API for followers/subs.
-                                            # For now, this just adds the role to any member.
-                                            # If this is for specific members, logic needs to be added to find them.
-                                            if streamer_username.lower() in [a.name.lower() for a in member.activities if isinstance(a, discord.Activity) and a.type == discord.ActivityType.streaming and a.platform == "Twitch"]:
-                                                try:
-                                                    await member.add_roles(live_role)
-                                                except discord.Forbidden:
-                                                    print(f"Twitchy Cog: Missing permissions to add role in {guild.name}.")
-                                                    break
-                                                except Exception as e:
-                                                    print(f"Twitchy Cog: Error adding role to {member.name}: {e}")
-                                                    traceback.print_exc()
-                                            
-                                    streamer_status["live_status"] = True
-                                    await self.config.guild(guild).streamer_status_data.set_raw(streamer_username_lower, value=streamer_status)
-
-                                elif not is_live and last_live_status:
-                                    # Stream just went offline
-                                    print(f"Twitchy Cog: {streamer_username} just went offline.")
-                                    # Optionally send an offline announcement
-                                    # if channel:
-                                    #     await channel.send(f"🔴 {streamer_username} is now offline.")
-                                    
-                                    if live_role:
-                                        for member in guild.members:
-                                            if live_role in member.roles:
-                                                # Check if the member is still streaming this specific streamer, or any other Twitch stream
-                                                # If they are, don't remove the role.
-                                                is_still_streaming_twitch = False
-                                                for activity in member.activities:
-                                                    if isinstance(activity, discord.Activity) and activity.type == discord.ActivityType.streaming and activity.platform == "Twitch":
-                                                        # This logic assumes the role is for *any* live Twitch streamer.
-                                                        # If it's specific to the streamer who just went offline, then you can remove the role.
-                                                        # For now, we are generous and only remove if *no* Twitch stream is active for the member.
-                                                        is_still_streaming_twitch = True
-                                                        break
-                                                
-                                                if not is_still_streaming_twitch:
-                                                    try:
-                                                        await member.remove_roles(live_role)
-                                                    except discord.Forbidden:
-                                                        print(f"Twitchy Cog: Missing permissions to remove role in {guild.name}.")
-                                                        break
-                                                    except Exception as e:
-                                                        print(f"Twitchy Cog: Error removing role from {member.name}: {e}")
-                                                        traceback.print_exc()
-
-                                    streamer_status["live_status"] = False
-                                    await self.config.guild(guild).streamer_status_data.set_raw(streamer_username_lower, value=streamer_status)
-
-            except Exception as e:
-                print(f"Twitchy Cog: An error occurred in live check loop: {e}")
-                traceback.print_exc()
-            
-            await asyncio.sleep(60) # Check every 60 seconds
-
-    @commands.group()
-    async def twitchy_schedule(self, ctx):
-        """Manage Twitch schedule settings and generation."""
-        pass
-
-    @twitchy_schedule.command(name="setchannel")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def schedule_set_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel for posting the weekly Twitch schedule."""
-        await self.config.guild(ctx.guild).schedule_channel_id.set(channel.id)
-        await ctx.send(f"✅ Twitch schedule will now be posted in {channel.mention}.")
-
-    @twitchy_schedule.command(name="setpingrole")
-    @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def schedule_set_ping_role(self, ctx, role: discord.Role = None):
-        """
-        Set a role to ping when the schedule is posted.
-        Provide no role to remove the ping role.
-        """
-        if role:
-            await self.config.guild(ctx.guild).schedule_ping_role_id.set(role.id)
-            await ctx.send(f"✅ '{role.name}' will be pinged when the schedule is posted.")
-        else:
-            await ctx.send("✅ Schedule ping role removed.")
-
-    @twitchy_schedule.command(name="settemplate")
-    @commands.is_owner()
-    async def schedule_set_template(self, ctx, url: str = None):
-        """
-        Set a custom image URL to use as the schedule template.
-        Provide no URL to revert to the default template.
-        """
-        await self.config.custom_template_url.set(url)
-        if url:
-            await ctx.send(f"✅ Custom schedule template URL set to: {url}\nAttempting to download...")
-        else:
-            await ctx.send("✅ Reverted to default schedule template.\nAttempting to download default...")
-        
-        # Force re-download of resources
-        await self.ensure_schedule_resources_task
-        self.ensure_schedule_resources_task = self.loop.create_task(self.ensure_schedule_resources())
-        await ctx.send("🔄 Schedule resources refresh initiated. Check console for status.")
-
-    @twitchy_schedule.command(name="setfont")
-    @commands.is_owner()
-    async def schedule_set_font(self, ctx, url: str = None):
-        """
-        Set a custom font URL (TTF file) for the schedule image.
-        Provide no URL to revert to the default font.
-        """
-        await self.config.custom_font_url.set(url)
-        if url:
-            await ctx.send(f"✅ Custom schedule font URL set to: {url}\nAttempting to download...")
-        else:
-            await ctx.send("✅ Reverted to default schedule font.\nAttempting to download default...")
-        
-        # Force re-download of resources
-        await self.ensure_schedule_resources_task
-        self.ensure_schedule_resources_task = self.loop.create_task(self.ensure_schedule_resources())
-        await ctx.send("🔄 Schedule resources refresh initiated. Check console for status.")
+        return success_template and success_font
 
     async def fetch_twitch_schedule(self, broadcaster_id: str):
         headers = await self.get_twitch_headers()
-        if not headers:
-            print("Twitchy Cog: Could not fetch schedule, no valid Twitch API headers.")
-            return None
-
-        schedule_url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
-        
-        try:
-            async with self.session.get(schedule_url, headers=headers) as response:
-                response.raise_for_status()
-                data = await response.json()
-                return data.get("data", {}).get("segments")
-        except aiohttp.ClientResponseError as e:
-            print(f"Twitchy Cog: Failed to fetch Twitch schedule (HTTP {e.status}): {e.message}")
-            return None
-        except Exception as e:
-            print(f"Twitchy Cog: An unexpected error occurred fetching schedule: {e}")
-            traceback.print_exc()
-            return None
+        params = {"broadcaster_id": broadcaster_id}
+        async with self.session.get("https://api.twitch.tv/helix/schedule", headers=headers, params=params) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            return data["data"]
 
     async def generate_schedule_image(self, schedule_data: list, start_date: datetime.datetime, guild_name: str, guild_icon_url: str = None):
-        if not self.template_image or not self.font:
-            print("Twitchy Cog: Cannot generate schedule image: template or font not loaded.")
+        if not self.template_path.exists() or not self.font_path.exists():
+            if not await self.ensure_schedule_resources():
+                self.log.error("Failed to ensure schedule resources are available for image generation.")
+                return None
+
+        try:
+            template_img = Image.open(self.template_path).convert("RGBA")
+            draw = ImageDraw.Draw(template_img)
+
+            # Load font
+            try:
+                font_large = ImageFont.truetype(str(self.font_path), 40)
+                font_medium = ImageFont.truetype(str(self.font_path), 30)
+                font_small = ImageFont.truetype(str(self.font_path), 25)
+            except IOError:
+                self.log.error(f"Could not load font from {self.font_path}. Using default Pillow font.")
+                font_large = ImageFont.load_default()
+                font_medium = ImageFont.load_default()
+                font_small = ImageFont.load_default()
+
+            # Add guild name and icon (example placement)
+            draw.text((50, 50), f"{guild_name} Twitch Schedule", fill=(255, 255, 255), font=font_large)
+            if guild_icon_url:
+                try:
+                    async with self.session.get(guild_icon_url) as resp:
+                        resp.raise_for_status()
+                        icon_data = await resp.read()
+                        icon_img = Image.open(io.BytesIO(icon_data)).convert("RGBA")
+                        icon_img = icon_img.resize((60, 60))
+                        template_img.paste(icon_img, (template_img.width - 100, 40), icon_img)
+                except Exception as e:
+                    self.log.warning(f"Failed to fetch guild icon: {e}")
+
+            # Schedule details (example layout, needs adjustment for actual design)
+            y_offset = 150
+            for i, segment in enumerate(schedule_data[:await self.config.guild(self.bot.get_guild(schedule_data[0]['broadcaster_id'])).schedule_event_count() if schedule_data else 5]): # Use config limit
+                segment_start_time_utc = dateutil.parser.isoparse(segment["start_time"]).replace(tzinfo=datetime.timezone.utc)
+                # Ensure the guild timezone is correctly loaded from config
+                guild_id = segment['broadcaster_id'] # Assuming broadcaster_id can be used to get guild config
+                # Need to map broadcaster_id to guild_id to get guild_config
+                # This is tricky as a streamer can be tracked in multiple guilds.
+                # For image generation, if a specific timezone is needed, it must be passed in.
+                # For now, let's use the start_date's timezone or assume UTC conversion if it's for one guild.
+                # A more robust solution would be to pass the guild_id or guild_tz directly.
+                # For now, we use start_date's tzinfo for segment display.
+                
+                # Use the timezone provided in start_date, which will come from guild_config.schedule_timezone()
+                segment_start_time_local = segment_start_time_utc.astimezone(start_date.tzinfo) 
+
+                title = segment.get("title", "No Title")
+                category = segment.get("category", {}).get("name", "N/A")
+                start_time_str = segment_start_time_local.strftime("%a, %b %d - %H:%M") # e.g., Mon, Jan 01 - 18:00
+
+                draw.text((50, y_offset), f"{start_time_str} - {title}", fill=(255, 255, 255), font=font_medium)
+                draw.text((70, y_offset + 30), f"Category: {category}", fill=(200, 200, 200), font=font_small)
+                y_offset += 80 # Spacing for next event
+
+            # Convert to BytesIO
+            byte_arr = io.BytesIO()
+            template_img.save(byte_arr, format="PNG")
+            byte_arr.seek(0)
+            return byte_arr
+
+        except Exception as e:
+            self.log.exception(f"Error generating schedule image: {e}")
             return None
 
-        # Create a blank image with the same dimensions as the template
-        img = self.template_image.copy()
-        draw = ImageDraw.Draw(img)
 
-        # Basic text drawing parameters
-        text_color = (255, 255, 255) # White
-        title_font = ImageFont.truetype(str(self.font_path), 48) if self.font_path.exists() else self.font
-        segment_font = ImageFont.truetype(str(self.font_path), 20) if self.font_path.exists() else self.font
-        
-        # Add guild name/title
-        title_text = f"{guild_name}'s Weekly Schedule"
-        title_bbox = draw.textbbox((0, 0), title_text, font=title_font)
-        title_width = title_bbox[2] - title_bbox[0]
-        title_x = (img.width - title_width) / 2
-        draw.text((title_x, 50), title_text, fill=text_color, font=title_font)
+    async def post_schedule(self, channel: discord.TextChannel, broadcaster_id: str, ping_role: discord.Role = None, start_date: datetime.datetime = None):
+        """Fetches and posts the Twitch schedule to a Discord channel."""
+        try:
+            schedule_data_full = await self.fetch_twitch_schedule(broadcaster_id)
+            if not schedule_data_full or not schedule_data_full.get("segments"):
+                return await channel.send("Could not fetch schedule or schedule is empty for this streamer.")
 
-        # Add guild icon (if available)
-        if guild_icon_url:
+            guild_config = self.config.guild(channel.guild)
+            timezone_str = await guild_config.schedule_timezone()
             try:
-                async with self.session.get(guild_icon_url) as response:
-                    response.raise_for_status()
-                    icon_data = await response.read()
-                    icon_img = Image.open(io.BytesIO(icon_data)).convert("RGBA")
-                    icon_img = icon_img.resize((100, 100)) # Resize icon
-                    img.paste(icon_img, (int(img.width - 120), 20), icon_img) # Top right corner
-            except Exception as e:
-                print(f"Twitchy Cog: Could not load guild icon: {e}")
+                guild_tz = pytz.timezone(timezone_str)
+            except pytz.UnknownTimeZoneError:
+                self.log.warning(f"Unknown timezone: {timezone_str}. Falling back to UTC for schedule display.")
+                guild_tz = pytz.utc # Fallback
 
-        # Organize schedule by day of the week
-        daily_schedule = {i: [] for i in range(7)} # 0=Monday, 6=Sunday
-        
-        for segment in schedule_data:
-            # Parse start time and convert to local timezone
-            start_time_utc = dateutil.parser.isoparse(segment["start_time"]).replace(tzinfo=datetime.timezone.utc)
-            # Assuming bot is running in a consistent timezone for image generation,
-            # or pass guild's timezone here if available. For now, use local.
-            start_time_local = start_time_utc.astimezone(datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo)
+            # Filter segments for the relevant period (e.g., next 7 days from start_date or current date)
+            if not start_date:
+                start_date = datetime.datetime.now(guild_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+
+            end_date = start_date + timedelta(days=await guild_config.schedule_update_days_in_advance())
             
-            day_of_week = start_time_local.weekday() # Monday is 0, Sunday is 6
-            daily_schedule[day_of_week].append(segment)
-        
-        # Sort segments within each day by time
-        for day in daily_schedule:
-            daily_schedule[day].sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
+            filtered_schedule = []
+            for segment in schedule_data_full["segments"]:
+                segment_start_time_utc = dateutil.parser.isoparse(segment["start_time"]).replace(tzinfo=datetime.timezone.utc)
+                segment_start_time_local = segment_start_time_utc.astimezone(guild_tz)
+                if start_date <= segment_start_time_local < end_date:
+                    filtered_schedule.append(segment)
+            
+            if not filtered_schedule:
+                return await channel.send(f"No schedule events found for the next {await guild_config.schedule_update_days_in_advance()} days.")
 
-        # Define drawing area for schedule content (adjust these coordinates based on your template)
-        content_start_x = 50
-        content_start_y = 150
-        line_height = 25
-        day_spacing = 150 # Horizontal space between days
 
-        days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        
-        # Draw schedule for each day
-        for i, day_name in enumerate(days_of_week):
-            current_x = content_start_x + (i * day_spacing)
-            current_y = content_start_y
+            filtered_schedule.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
 
-            # Draw day name
-            draw.text((current_x, current_y), day_name, fill=text_color, font=segment_font)
-            current_y += line_height # Move down for segments
+            # Ensure image resources are ready
+            image_buffer = await self.generate_schedule_image(
+                filtered_schedule,
+                start_date.astimezone(guild_tz), # Pass timezone-aware start_date
+                channel.guild.name,
+                channel.guild.icon.url if channel.guild.icon else None
+            )
 
-            if not daily_schedule[i]:
-                draw.text((current_x, current_y), "No streams", fill=text_color, font=segment_font)
-                continue
+            if image_buffer:
+                file = discord.File(image_buffer, filename="twitch_schedule.png")
+                content = f"{ping_role.mention}" if ping_role else "Here's the upcoming Twitch schedule:"
+                await channel.send(content=content, file=file)
+            else:
+                await channel.send("Failed to generate the schedule image.")
 
-            for segment in daily_schedule[i]:
-                start_time_utc = dateutil.parser.isoparse(segment["start_time"]).replace(tzinfo=datetime.timezone.utc)
-                start_time_local = start_time_utc.astimezone(datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo)
-                
-                stream_title = segment.get("title", "No Title")
-                category_name = segment.get("category", {}).get("name", "N/A")
-                
-                time_str = start_time_local.strftime("%I:%M %p")
-                
-                segment_text = f"{time_str} - {stream_title} ({category_name})"
-                draw.text((current_x, current_y), segment_text, fill=text_color, font=segment_font)
-                current_y += line_height
+        except aiohttp.ClientResponseError as e:
+            self.log.error(f"HTTP error fetching Twitch schedule: {e.status} - {e.message}")
+            await channel.send(f"❌ Failed to fetch schedule from Twitch! HTTP Error: {e.status}")
+        except Exception as e:
+            self.log.exception(f"Error posting Twitch schedule: {e}")
+            await channel.send("❌ An unexpected error occurred while posting the schedule.")
 
-        # Save the image to a bytes buffer
-        byte_arr = io.BytesIO()
-        img.save(byte_arr, format='PNG')
-        byte_arr.seek(0)
-        return byte_arr
 
     async def update_all_guild_schedules_loop(self):
         await self.bot.wait_until_ready()
-        # Run once on startup after resources are ensured
-        await self.ensure_schedule_resources_task
-        await self.update_all_guild_schedules()
-
-        while True:
-            # Calculate sleep time until next Monday 00:00 local time
-            now = datetime.datetime.now(datetime.timezone.utc).astimezone() # Local timezone
-            
-            # Find next Monday
-            days_until_monday = (0 - now.weekday() + 7) % 7 # 0 is Monday
-            if days_until_monday == 0 and now.time() > datetime.time(0, 0, 0): # If it's Monday but after midnight
-                days_until_monday = 7 # Go to next Monday
-
-            next_monday = now + timedelta(days=days_until_monday)
-            next_monday = next_monday.replace(hour=0, minute=0, second=0, microsecond=0)
-            
-            time_to_sleep = (next_monday - now).total_seconds()
-            
-            if time_to_sleep < 0: # Should not happen if logic is correct, but as a safeguard
-                time_to_sleep = 0 # Run immediately
-
-            print(f"Twitchy Cog: Next full schedule update in {time_to_sleep / 3600:.2f} hours (on {next_monday.strftime('%Y-%m-%d %H:%M %Z')}).")
-            await asyncio.sleep(time_to_sleep)
-            
-            await self.update_all_guild_schedules()
-
-    async def update_all_guild_schedules(self):
-        print("Twitchy Cog: Initiating full schedule update for all guilds.")
-        for guild_id in await self.config.all_guilds():
-            guild_config = await self.config.guild_from_id(guild_id).all()
-            guild = self.bot.get_guild(guild_id)
-            
-            if not guild:
-                continue # Guild no longer exists
-
-            broadcaster_id = None
-            # Find a broadcaster ID from the monitored streamers to fetch schedule
-            # For simplicity, just taking the first one if available.
-            # A more robust solution might allow setting a specific broadcaster for schedule.
-            streamers = guild_config.get("streamers", [])
-            if streamers:
-                # Get user info for the first streamer to get broadcaster_id
-                user_info = await self.get_user_info([streamers[0]])
-                broadcaster_id = user_info.get(streamers[0].lower(), {}).get("id")
-
-            schedule_channel_id = guild_config.get("schedule_channel_id")
-            ping_role_id = guild_config.get("schedule_ping_role_id")
-
-            schedule_channel = guild.get_channel(schedule_channel_id) if schedule_channel_id else None
-            ping_role = guild.get_role(ping_role_id) if ping_role_id else None
-
-            if not schedule_channel or not broadcaster_id:
-                if not schedule_channel:
-                    print(f"Twitchy Cog: Skipping schedule update for guild {guild.name}: No schedule channel set.")
-                if not broadcaster_id:
-                    print(f"Twitchy Cog: Skipping schedule update for guild {guild.name}: No broadcaster ID found from monitored streamers.")
-                continue
-
-            await self.post_schedule(schedule_channel, broadcaster_id, ping_role)
-        print("Twitchy Cog: Full schedule update completed.")
-
-    async def post_schedule(self, channel: discord.TextChannel, broadcaster_id: str, ping_role: discord.Role = None, start_date: datetime.datetime = None):
-        """Fetches, generates, and posts the Twitch schedule."""
-        if not self.template_image or not self.font:
-            await channel.send("❌ Schedule resources (template/font) are not loaded. Please ensure they are available and try again.")
-            return
-
-        schedule = await self.fetch_twitch_schedule(broadcaster_id)
-        
-        if schedule is None:
-            await channel.send("❌ Failed to fetch schedule from Twitch! Check the bot's console for errors.")
-            return
-
-        # Filter schedule for the current week (Monday to Sunday)
-        now = datetime.datetime.now(datetime.timezone.utc).astimezone()
-        if start_date: # For testing, use provided start_date
-            start_of_period = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_period = start_of_period + timedelta(days=6, hours=23, minutes=59, seconds=59)
-        else: # For regular updates, use current week
-            start_of_week = now - timedelta(days=now.weekday()) # Go back to Monday
-            start_of_period = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_period = start_of_period + timedelta(days=6, hours=23, minutes=59, seconds=59)
-
-        filtered_schedule = []
-        for seg in schedule:
-            seg_start_time_utc = dateutil.parser.isoparse(seg["start_time"]).replace(tzinfo=datetime.timezone.utc)
-            seg_start_time_local = seg_start_time_utc.astimezone(now.tzinfo) # Use local timezone of bot
-            
-            if start_of_period <= seg_start_time_local <= end_of_period:
-                filtered_schedule.append(seg)
-        filtered_schedule.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
-
-        if not filtered_schedule:
-            await channel.send("ℹ️ No Twitch schedule segments found for the current week.")
-            return
-
-        image_buffer = await self.generate_schedule_image(filtered_schedule, start_of_period, channel.guild.name, channel.guild.icon.url if channel.guild.icon else None)
-
-        if image_buffer:
-            message_content = f"Here's the Twitch schedule for the week of {start_of_period.strftime('%Y-%m-%d')}!"
-            if ping_role:
-                message_content = f"{ping_role.mention} {message_content}"
-            
+        while self:
             try:
-                discord_file = discord.File(image_buffer, filename="twitch_schedule.png")
-                await channel.send(content=message_content, file=discord_file)
-            except discord.Forbidden:
-                print(f"Twitchy Cog: Missing permissions to send files in {channel.name} ({channel.guild.name}).")
+                # Calculate sleep until next scheduled update time (e.g., next Monday 00:00)
+                # This should ideally be configurable per guild, but for now, we'll use a fixed logic.
+                # Get all guilds that have schedule_channel_id set
+                all_guild_data = await self.config.all_guilds()
+                
+                next_update_times = []
+                for guild_id, data in all_guild_data.items():
+                    if data.get("schedule_channel_id") and data.get("schedule_twitch_username"):
+                        guild_tz_str = data.get("schedule_timezone", "UTC") # Get timezone from config
+                        try:
+                            guild_tz = pytz.timezone(guild_tz_str)
+                        except pytz.UnknownTimeZoneError:
+                            self.log.warning(f"Unknown timezone {guild_tz_str} for guild {guild_id}. Using UTC.")
+                            guild_tz = pytz.utc
+                        
+                        schedule_update_time_str = data.get("schedule_update_time", "00:00")
+                        try:
+                            hour, minute = map(int, schedule_update_time_str.split(':'))
+                        except ValueError:
+                            self.log.error(f"Invalid schedule_update_time '{schedule_update_time_str}' for guild {guild_id}. Using 00:00.")
+                            hour, minute = 0, 0
+
+                        now_local = datetime.datetime.now(guild_tz)
+                        target_time_today = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        
+                        # If target time has passed for today, set for tomorrow
+                        if now_local >= target_time_today:
+                            target_time_today += timedelta(days=1)
+                        next_update_times.append(target_time_today)
+                
+                if not next_update_times:
+                    self.log.debug("No guilds configured for automatic schedule updates. Sleeping for 1 hour.")
+                    await asyncio.sleep(3600)
+                    continue
+
+                # Find the earliest next update time
+                earliest_next_update = min(next_update_times)
+                sleep_duration = (earliest_next_update - datetime.datetime.now(earliest_next_update.tzinfo)).total_seconds()
+                
+                if sleep_duration <= 0: # Should not happen if logic above is correct, but for safety
+                    sleep_duration = 60 # Try again in 1 minute if somehow past time
+
+                self.log.info(f"Next full schedule update in {int(sleep_duration)} seconds at {earliest_next_update.isoformat()}.")
+                await asyncio.sleep(sleep_duration)
+
+                # Time to update schedules
+                for guild_id, data in all_guild_data.items():
+                    if data.get("schedule_channel_id") and data.get("schedule_twitch_username"):
+                        guild = self.bot.get_guild(guild_id)
+                        if not guild:
+                            continue
+                        channel = guild.get_channel(data["schedule_channel_id"])
+                        if not channel:
+                            self.log.warning(f"Schedule channel {data['schedule_channel_id']} not found for guild {guild_id}.")
+                            continue
+                        
+                        broadcaster_username = data["schedule_twitch_username"]
+                        ping_role_id = data.get("schedule_ping_role_id")
+                        ping_role = guild.get_role(ping_role_id) if ping_role_id else None
+
+                        try:
+                            twitch_user_info = await self.get_user_info([broadcaster_username])
+                            if not twitch_user_info:
+                                self.log.warning(f"Could not find Twitch user {broadcaster_username} for guild {guild_id}'s schedule.")
+                                await channel.send(f"❌ Failed to update schedule: Twitch user `{broadcaster_username}` not found.")
+                                continue
+                            broadcaster_id = twitch_user_info[0]["id"]
+                            await self.post_schedule(channel, broadcaster_id, ping_role)
+                        except Exception as e:
+                            self.log.error(f"Error updating schedule for guild {guild_id}: {e}")
+                            await channel.send("❌ Failed to update schedule due to an unexpected error.")
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                print(f"Twitchy Cog: Error sending schedule image: {e}")
-                traceback.print_exc()
-        else:
-            await channel.send("❌ Failed to generate schedule image.")
-    
-    @twitchy_schedule.command(name="test")
+                self.log.exception(f"Unhandled error in schedule update loop: {e}")
+                await asyncio.sleep(300) # Wait 5 minutes after unhandled error
+
+    @commands.group()
     @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
-    async def schedule_test(self, ctx):
-        """Test generating and posting a schedule for the current week."""
-        # Find a broadcaster ID from the monitored streamers
-        broadcaster_id = None
-        streamers = await self.config.guild(ctx.guild).streamers()
-        if streamers:
-            user_info = await self.get_user_info([streamers[0]])
-            broadcaster_id = user_info.get(streamers[0].lower(), {}).get("id")
+    async def twitchy_schedule(self, ctx):
+        """Commands for managing Twitch schedule display."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
 
-        if not broadcaster_id:
-            await ctx.send("❌ No streamers configured or could not get broadcaster ID. Please add a streamer first using `[p]twitchy addstreamer`.")
-            return
+    @twitchy_schedule.command(name="setchannel")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_channel(self, ctx, channel: discord.TextChannel):
+        """Sets the Discord channel where the Twitch schedule will be posted."""
+        await self.config.guild(ctx.guild).schedule_channel_id.set(channel.id)
+        await ctx.send(f"Twitch schedule will now be posted in {channel.mention}.")
 
-        guild_tz = pytz.timezone("Europe/London") # Example: use a default timezone for testing if not configured per guild
+    @twitchy_schedule.command(name="setstreamer")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_streamer(self, ctx, twitch_username: str):
+        """Sets the Twitch streamer whose schedule will be displayed for this guild."""
+        try:
+            # Verify streamer exists on Twitch
+            twitch_users = await self.get_user_info([twitch_username.lower()])
+            if not twitch_users:
+                return await ctx.send(f"Error: Could not find Twitch user `{twitch_username}`.")
+            
+            await self.config.guild(ctx.guild).schedule_twitch_username.set(twitch_username.lower())
+            await ctx.send(f"Schedule display streamer set to `{twitch_username}`.")
+        except Exception as e:
+            self.log.error(f"Error setting schedule streamer: {e}")
+            await ctx.send(f"Error communicating with Twitch API: {e}")
 
-        await ctx.send("🔄 Generating test schedule. This may take a moment...")
+    @twitchy_schedule.command(name="settimezone")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_timezone(self, ctx, timezone_str: str):
+        """
+        Sets the timezone for displaying the schedule (e.g., "Europe/London", "America/New_York").
+        Valid timezones can be found at: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+        """
+        try:
+            pytz.timezone(timezone_str) # Validate timezone string
+            await self.config.guild(ctx.guild).schedule_timezone.set(timezone_str)
+            await ctx.send(f"Schedule display timezone set to `{timezone_str}`.")
+        except pytz.UnknownTimeZoneError:
+            await ctx.send(f"Error: `{timezone_str}` is not a valid timezone. Please use a valid timezone string (e.g., 'America/New_York').")
+        except Exception as e:
+            self.log.error(f"Error setting schedule timezone: {e}")
+            await ctx.send(f"An unexpected error occurred: {e}")
 
-        if not self.template_image or not self.font:
-            await ctx.send("❌ Schedule resources (template/font) are not loaded. Please ensure they are available.")
-            await self.ensure_schedule_resources() # Attempt to load them
-            if not self.template_image or not self.font:
-                await ctx.send("❌ Failed to load resources even after attempting refresh. Check console for errors.")
-                return
+    @twitchy_schedule.command(name="setdays")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_days(self, ctx, days: int):
+        """Sets how many days of the schedule to display (e.g., 7 for a week)."""
+        if days < 1 or days > 30: # Limit to a reasonable range
+            return await ctx.send("Please provide a number of days between 1 and 30.")
+        await self.config.guild(ctx.guild).schedule_update_days_in_advance.set(days)
+        await ctx.send(f"Schedule will display {days} days in advance.")
 
-        schedule = await self.fetch_twitch_schedule(broadcaster_id)
+    @twitchy_schedule.command(name="settime")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_time(self, ctx, time_str: str):
+        """Sets the 24-hour time (HH:MM) when the schedule automatically updates (e.g., "00:00")."""
+        if not re.match(r"^(2[0-3]|[01]?[0-9]):([0-5]?[0-9])$", time_str):
+            return await ctx.send("Please provide a time in HH:MM (24-hour) format, e.g., `00:00` or `14:30`.")
+        await self.config.guild(ctx.guild).schedule_update_time.set(time_str)
+        await ctx.send(f"Schedule auto-update time set to `{time_str}` local time.")
+
+    @twitchy_schedule.command(name="setpingrole")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_ping_role(self, ctx, role: discord.Role = None):
+        """
+        Sets a role to ping when the schedule updates.
+        Pass no role to clear the setting.
+        """
+        if role:
+            await self.config.guild(ctx.guild).schedule_ping_role_id.set(role.id)
+            await ctx.send(f"Schedule update ping role set to `{role.name}`.")
+        else:
+            await self.config.guild(ctx.guild).schedule_ping_role_id.set(None)
+            await ctx.send("Schedule update ping role cleared.")
+
+    @twitchy_schedule.command(name="seteventcount")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_set_event_count(self, ctx, count: int):
+        """Sets the maximum number of schedule events to show in the image."""
+        if count < 1 or count > 20: # Limit to a reasonable range
+            return await ctx.send("Please provide an event count between 1 and 20.")
+        await self.config.guild(ctx.guild).schedule_event_count.set(count)
+        await ctx.send(f"Schedule image will display up to {count} events.")
+
+    @twitchy_schedule.command(name="show")
+    async def schedule_show(self, ctx):
+        """Displays the current Twitch schedule for the configured streamer."""
+        guild_config = self.config.guild(ctx.guild)
+        broadcaster_username = await guild_config.schedule_twitch_username()
+        schedule_channel_id = await guild_config.schedule_channel_id()
+
+        if not broadcaster_username:
+            return await ctx.send("No streamer set for schedule display. Use `[p]twitchy schedule setstreamer <username>`.")
+        if not schedule_channel_id:
+            return await ctx.send("No schedule channel set. Use `[p]twitchy schedule setchannel <channel>`.")
         
-        if schedule is not None:
-            # Filter schedule for the current week (Monday to Sunday)
-            now = datetime.datetime.now(datetime.timezone.utc).astimezone(guild_tz)
-            start_of_period = now - timedelta(days=now.weekday()) # Go back to Monday
-            start_of_period = start_of_period.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_of_period = start_of_period + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        twitch_user_info = await self.get_user_info([broadcaster_username])
+        if not twitch_user_info:
+            return await ctx.send(f"Could not find Twitch user `{broadcaster_username}`. Please check the username.")
+        broadcaster_id = twitch_user_info[0]["id"]
 
+        ping_role_id = await guild_config.schedule_ping_role_id()
+        ping_role = ctx.guild.get_role(ping_role_id) if ping_role_id else None
+
+        # Pass the current channel for immediate display
+        await self.post_schedule(ctx.channel, broadcaster_id, ping_role)
+        await ctx.send("✅ Schedule posted!")
+
+    @twitchy_schedule.command(name="test")
+    @commands.has_permissions(manage_guild=True)
+    async def schedule_test(self, ctx):
+        """Tests schedule fetching and image generation."""
+        await ctx.send("🔄 Testing schedule fetching and image generation...")
+        
+        guild_config = self.config.guild(ctx.guild)
+        broadcaster_username = await guild_config.schedule_twitch_username()
+        
+        if not broadcaster_username:
+            return await ctx.send("No streamer set for schedule display. Use `[p]twitchy schedule setstreamer <username>` to configure for testing.")
+
+        try:
+            twitch_user_info = await self.get_user_info([broadcaster_username])
+            if not twitch_user_info:
+                return await ctx.send(f"Could not find Twitch user `{broadcaster_username}`. Please check the username.")
+            broadcaster_id = twitch_user_info[0]["id"]
+            
+            # Use current guild's timezone for testing
+            timezone_str = await guild_config.schedule_timezone()
+            try:
+                guild_tz = pytz.timezone(timezone_str)
+            except pytz.UnknownTimeZoneError:
+                guild_tz = pytz.utc # Fallback for test
+
+            # For test, get schedule for next X days starting from today
+            start_of_period = datetime.datetime.now(guild_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Fetch schedule data directly
+            schedule_data_full = await self.fetch_twitch_schedule(broadcaster_id)
+            if not schedule_data_full or not schedule_data_full.get("segments"):
+                return await ctx.send("❌ Failed to fetch schedule or schedule is empty from Twitch! Check the bot's console for errors.")
+
+            end_of_period = start_of_period + timedelta(days=await guild_config.schedule_update_days_in_advance())
+            
             filtered_schedule = []
-            for seg in schedule:
+            for seg in schedule_data_full["segments"]:
                 seg_start_time_utc = dateutil.parser.isoparse(seg["start_time"]).replace(tzinfo=datetime.timezone.utc)
                 seg_start_time_local = seg_start_time_utc.astimezone(guild_tz)
-                if start_of_period <= seg_start_time_local <= end_of_period:
+                if start_of_period <= seg_start_time_local < end_of_period:
                     filtered_schedule.append(seg)
             filtered_schedule.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
 
             # Send to current context channel for testing
             await self.post_schedule(ctx.channel, broadcaster_id, start_date=start_of_period)
             await ctx.send("✅ Test complete!")
-        else:
-            await ctx.send("❌ Failed to fetch schedule from Twitch! Check the bot's console for errors.")
+        except Exception as e:
+            self.log.exception("Error during schedule test command:")
+            await ctx.send(f"❌ Failed to fetch schedule from Twitch! An unexpected error occurred: {e}")
 
     @twitchy_schedule.command(name="reload")
     async def schedule_reload_resources(self, ctx):
@@ -930,4 +959,4 @@ class Twitchy(commands.Cog):
         if success:
             await ctx.send("✅ Successfully redownloaded schedule resources.")
         else:
-            await ctx.send("❌ Failed to redownload all schedule resources. Check console for errors.")
+            await ctx.send("❌ Failed to redownload schedule resources. Check bot console for details.")
