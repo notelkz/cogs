@@ -999,7 +999,7 @@ class Twitchy(commands.Cog):
         `[p]twitchy schedule test`: Forces a schedule update and posts it as a test.
         `[p]twitchy schedule reload`: Force redownload of schedule template image and font files.
         """
-        if ctx.subcommand is None:
+        if getattr(ctx, 'subcommand', None) is None:
             await ctx.send_help(ctx.command)
 
 
