@@ -63,9 +63,9 @@ class Twitchy(commands.Cog):
         self.config.register_global(**default_global)
         self.config.register_guild(**default_guild)
 
-        # Ensure 'streamers' is a Group and 'streamer_status_data' is a Dict at the guild level
-        self.config.init_custom("GUILD", "streamers", {"name": str}) # name is just a placeholder, actual structure is {"twitch_username": {"discord_user_id": None, ...}}
-        self.config.init_custom("GUILD", "streamer_status_data", {}) # No specific key needed for dict initialization
+        # Removed these lines as they were causing TypeError and are not needed
+        # self.config.init_custom("GUILD", "streamers", {"name": str})
+        # self.config.init_custom("GUILD", "streamer_status_data", {})
 
         self.check_streams_task = self.bot.loop.create_task(self.check_streams_loop())
         self.update_schedule_task = self.bot.loop.create_task(self.schedule_update_loop())
@@ -672,7 +672,7 @@ class Twitchy(commands.Cog):
         for username, data in streamers.items():
             discord_user_id = data.get("discord_user_id")
             discord_user = ctx.guild.get_member(discord_user_id) if discord_user_id else None
-            linked_status = f"(Linked to {discord_user.display_name})" if discord_user else "(Not linked to Discord user)"
+            linked_status = f"(Linked to {discord_user.display_name})" if discord_user else "(Not linked to a Discord user.)"
             current_status = data.get("current_status", "unknown")
             msg += f"- `{username}` ({current_status}) {linked_status}\n"
 
@@ -724,7 +724,7 @@ class Twitchy(commands.Cog):
         await ctx.send(f"✅ Stream announcement message set to: `{message}`")
 
     # Schedule Commands (subgroup of twitchy)
-    @twitchy.group() # THIS WAS THE FIX! Changed from @commands.group()
+    @twitchy.group()
     @commands.guild_only()
     async def schedule(self, ctx):
         """Commands for managing Twitch schedule display."""
