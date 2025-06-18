@@ -5,6 +5,7 @@ from redbot.core import commands, Config
 from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.menus import start_adding_reactions
 from redbot.core.utils.predicates import MessagePredicate, ReactionPredicate
+import time # <--- ADD THIS LINE
 
 class Twitchy(commands.Cog):
     """
@@ -20,7 +21,7 @@ class Twitchy(commands.Cog):
             "twitch_client_id": None,
             "twitch_client_secret": None,
             "twitch_access_token": None, # Will be generated from client ID/secret
-            "twitch_token_expires_at": 0,
+            "twitch_token_expires_at": 0, # <--- THIS WAS THE FIRST SPOT AFFECTED
             "streamers": {}, # Stores streamer configurations: {"twitch_id": {"username": "", "discord_channels": [], "ping_roles": []}}
             "live_role_id": None, # Role for auto-assigned "Live" status
             "linked_users": {} # Stores {"discord_id": "twitch_username"} for live role
@@ -58,7 +59,7 @@ class Twitchy(commands.Cog):
 
         # Check if current token is valid and not expired
         expires_at = await self.config.twitch_token_expires_at()
-        if expires_at > asyncio.time() + 60: # Token valid for at least 60 more seconds
+        if expires_at > time.time() + 60: # <--- THIS WAS THE SECOND SPOT AFFECTED (use time.time() here)
             return await self.config.twitch_access_token()
 
         token_url = "https://id.twitch.tv/oauth2/token"
@@ -77,7 +78,7 @@ class Twitchy(commands.Cog):
 
                 if access_token:
                     await self.config.twitch_access_token.set(access_token)
-                    await self.config.twitch_token_expires_at.set(asyncio.time() + expires_in)
+                    await self.config.twitch_token_expires_at.set(time.time() + expires_in) # <--- ALSO HERE
                     print("Twitchy: Successfully obtained new Twitch access token.")
                     return access_token
                 else:
