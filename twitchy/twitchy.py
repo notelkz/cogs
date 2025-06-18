@@ -16,7 +16,7 @@ class StreamButtons(discord.ui.View):
 
 class Twitchy(commands.Cog):
     """
-    Automatically announces when Twitch streams go live and manages 'Live' roles.
+    Automatically announces when Twitch streams go live and manages 'Live' roles based on Discord activity.
     """
 
     def __init__(self, bot):
@@ -30,11 +30,17 @@ class Twitchy(commands.Cog):
             "twitch_access_token": None,
             "twitch_token_expires_at": 0,
             "streamers": {}, # Stores {"twitch_id": {"username": "", "discord_channel_id": int, "ping_role_ids": [int], "last_announced_stream_id": str, "is_live": bool}}
-            "live_role_id": None, # Role for auto-assigned "Live" status
-            "linked_users": {}, # Stores {"discord_id": "twitch_username"} for live role
+            "live_role_id": None, # Role for auto-assigned "Live" status based on Discord activity
+        }
+
+        # Per-guild config for the live role, as roles are guild-specific
+        default_guild = {
+            "live_role_id": None, # Guild-specific live role
         }
 
         self.config.register_global(**default_global)
+        self.config.register_guild(**default_guild)
+
 
         self.session = aiohttp.ClientSession() # For making HTTP requests to Twitch API
         self.twitch_api_base_url = "https://api.twitch.tv/helix/"
@@ -42,12 +48,8 @@ class Twitchy(commands.Cog):
 
     async def red_delete_data_for_user(self, *, requester, user_id):
         """
-        No data is stored by Twitchy that is specific to a user.
-        However, check if user is linked to a Twitch account and remove that.
+        No data is stored by Twitchy that is specific to a user that would require deletion.
         """
-        async with self.config.linked_users() as linked_users:
-            if str(user_id) in linked_users:
-                del linked_users[str(user_id)]
         return
 
     def cog_unload(self):
@@ -196,21 +198,14 @@ class Twitchy(commands.Cog):
             description=f"**{stream_data['title']}**\nPlaying: `{stream_data['game_name']}`",
             color=discord.Color.purple()
         )
-        embed.set_thumbnail(url=stream_data["profile_image_url"] if "profile_image_url" in stream_data else None) # Need to fetch user info for this
+        # Fetch profile image for embed author icon
+        user_info = await self.get_twitch_user_info(user_id=stream_data["user_id"])
+        profile_image_url = user_info["profile_image_url"] if user_info and "profile_image_url" in user_info else None
+        
+        embed.set_author(name=stream_data['user_name'], url=stream_url, icon_url=profile_image_url)
         embed.set_image(url=thumbnail_url)
         embed.set_footer(text="Twitchy Stream Alerts")
         embed.timestamp = discord.utils.utcnow()
-
-        # Fetch profile image for embed thumbnail if not already present in stream_data
-        if "profile_image_url" not in stream_data:
-            user_info = await self.get_twitch_user_info(user_id=stream_data["user_id"])
-            if user_info and "profile_image_url" in user_info:
-                embed.set_author(name=stream_data['user_name'], url=stream_url, icon_url=user_info["profile_image_url"])
-            else:
-                embed.set_author(name=stream_data['user_name'], url=stream_url)
-        else:
-             embed.set_author(name=stream_data['user_name'], url=stream_url, icon_url=stream_data["profile_image_url"])
-
 
         view = StreamButtons(watch_url, subscribe_url)
 
@@ -222,29 +217,8 @@ class Twitchy(commands.Cog):
         except Exception as e:
             print(f"Twitchy: Failed to send announcement for {stream_data['user_login']}: {e}")
 
-    async def update_live_role_for_user(self, member: discord.Member, twitch_username: str, is_live: bool):
-        """Adds or removes the designated 'Live' role for a Discord member."""
-        live_role_id = await self.config.live_role_id()
-        if not live_role_id:
-            return # No live role configured
-
-        role = member.guild.get_role(live_role_id)
-        if not role:
-            print(f"Twitchy: Configured live role ID {live_role_id} not found in guild {member.guild.name}.")
-            await self.config.live_role_id.set(None) # Clear invalid role
-            return
-
-        try:
-            if is_live and role not in member.roles:
-                await member.add_roles(role, reason=f"Twitchy: {twitch_username} is live.")
-                print(f"Twitchy: Added live role to {member.display_name} for {twitch_username}.")
-            elif not is_live and role in member.roles:
-                await member.remove_roles(role, reason=f"Twitchy: {twitch_username} went offline.")
-                print(f"Twitchy: Removed live role from {member.display_name} for {twitch_username}.")
-        except discord.Forbidden:
-            print(f"Twitchy: Missing permissions to manage roles for {member.display_name} in {member.guild.name}.")
-        except Exception as e:
-            print(f"Twitchy: Error managing live role for {member.display_name}: {e}")
+    # Removed update_live_role_for_user and all linked_users logic from here
+    # The new live role logic is in on_presence_update
 
     async def check_streams_loop(self):
         await self.bot.wait_until_ready()
@@ -256,24 +230,6 @@ class Twitchy(commands.Cog):
                     continue
 
                 twitch_ids_to_check = list(streamers_config.keys())
-                
-                # Fetch detailed user info for all configured streamers in batch for profile images
-                user_info_map = {}
-                # Twitch API user endpoint only supports 100 IDs at a time.
-                # If you have more than 100 streamers, you'll need to paginate this.
-                if twitch_ids_to_check:
-                    for i in range(0, len(twitch_ids_to_check), 100):
-                        batch_ids = twitch_ids_to_check[i:i+100]
-                        users_data = await self.get_twitch_user_info(user_id=batch_ids) # Corrected to pass list of IDs
-                        if users_data:
-                            for user in users_data.get("data", []): # Iterate through `data` if present
-                                user_info_map[user["id"]] = user
-                            # The get_twitch_user_info method only returns one user, this needs adjustment
-                            # Correction: My get_twitch_user_info currently only fetches one.
-                            # For batch fetching, we need a dedicated function like get_twitch_users_by_ids.
-                            # For now, let's assume it only gets info for one. We'll adjust this if performance is an issue.
-                            # For now, let's just make sure profile image is fetched per stream.
-
                 live_streams = await self.get_twitch_streams_info(twitch_ids_to_check)
                 live_stream_ids = {stream["user_id"] for stream in live_streams}
 
@@ -288,10 +244,6 @@ class Twitchy(commands.Cog):
                         
                         # --- Handle Going Live ---
                         if is_currently_live and not was_live:
-                            # Add profile image URL to stream data for embed
-                            if twitch_id in user_info_map:
-                                current_stream_data["profile_image_url"] = user_info_map[twitch_id].get("profile_image_url")
-                            
                             # Announce stream
                             if streamer_data.get("last_announced_stream_id") != current_stream_data["id"]:
                                 await self.send_stream_announcement(streamer_data, current_stream_data)
@@ -308,20 +260,6 @@ class Twitchy(commands.Cog):
                             streamer_data["last_announced_stream_id"] = None # Reset for next stream
                             print(f"Twitchy: {username} went offline.")
 
-                        # --- Manage Live Role for Linked Users ---
-                        # Iterate through linked users to find if any are this streamer
-                        linked_users_data = await self.config.linked_users()
-                        for discord_id, linked_twitch_username in linked_users_data.items():
-                            if linked_twitch_username.lower() == username.lower():
-                                member = self.bot.get_guild(self.bot.get_channel(streamer_data["discord_channel_id"]).guild.id).get_member(int(discord_id)) # Get member from guild of announcement channel
-                                if member:
-                                    await self.update_live_role_for_user(member, username, is_currently_live)
-                                else:
-                                    print(f"Twitchy: Linked Discord user {discord_id} not found in guild for {username}'s channel. Unlinking.")
-                                    del linked_users_data[discord_id] # Clean up broken link
-                                    await self.config.linked_users.set(linked_users_data)
-                                break # Found the linked user, move to next streamer
-
             except asyncio.CancelledError:
                 print("Twitchy: Stream checking loop cancelled.")
                 break
@@ -329,6 +267,47 @@ class Twitchy(commands.Cog):
                 print(f"Twitchy: An error occurred in check_streams_loop: {e}")
 
             await asyncio.sleep(60) # Check every 60 seconds
+
+    @commands.Cog.listener()
+    async def on_presence_update(self, before: discord.Member, after: discord.Member):
+        """
+        Listens for Discord presence updates to assign/remove 'Live' roles.
+        """
+        if after.bot: # Ignore bots
+            return
+
+        guild = after.guild
+        if not guild: # Ignore DMs
+            return
+
+        live_role_id = await self.config.guild(guild).live_role_id()
+        if not live_role_id: # No live role configured for this guild
+            return
+
+        live_role = guild.get_role(live_role_id)
+        if not live_role: # Role not found, clear config
+            await self.config.guild(guild).live_role_id.set(None)
+            print(f"Twitchy: Live role ID {live_role_id} not found in guild {guild.name}. Config cleared.")
+            return
+
+        # Check if the member is currently streaming
+        is_streaming_now = any(isinstance(activity, discord.Streaming) for activity in after.activities)
+        was_streaming_before = any(isinstance(activity, discord.Streaming) for activity in before.activities)
+
+        try:
+            if is_streaming_now and live_role not in after.roles:
+                # User started streaming and doesn't have the role
+                await after.add_roles(live_role, reason="Twitchy: User is streaming on Discord.")
+                print(f"Twitchy: Added '{live_role.name}' role to {after.display_name} in {guild.name}.")
+            elif not is_streaming_now and live_role in after.roles:
+                # User stopped streaming and has the role
+                await after.remove_roles(live_role, reason="Twitchy: User stopped streaming on Discord.")
+                print(f"Twitchy: Removed '{live_role.name}' role from {after.display_name} in {guild.name}.")
+        except discord.Forbidden:
+            print(f"Twitchy: Missing permissions to manage roles for {after.display_name} in {guild.name}.")
+        except Exception as e:
+            print(f"Twitchy: An error occurred while managing live role for {after.display_name}: {e}")
+
 
     @commands.group(name="twitchy")
     @commands.is_owner()
@@ -522,95 +501,21 @@ class Twitchy(commands.Cog):
                 embed = discord.Embed(color=discord.Color.blue()) # New embed for next page
 
     @twitchy.command(name="setliverole")
+    @commands.guild_only() # Make this command only usable in a guild
     async def twitchy_setliverole(self, ctx, role: discord.Role):
         """
-        Sets the role that will be assigned to Discord members when their linked Twitch stream goes live.
+        Sets the role that will be assigned to Discord members in this guild
+        when Discord detects they are streaming on Twitch/YouTube.
         Usage: [p]twitchy setliverole <role_name_or_id>
         Example: [p]twitchy setliverole @Live
         """
-        await self.config.live_role_id.set(role.id)
+        await self.config.guild(ctx.guild).live_role_id.set(role.id)
         await ctx.send(
-            f"The '{role.name}' role has been set as the 'Live' role. "
-            "Use `[p]twitchy linkuser` to link Discord users to their Twitch accounts for this feature."
+            f"The '{role.name}' role has been set as the 'Live' role for this server. "
+            "Users who are visibly streaming on Discord will now automatically get this role."
         )
 
-    @twitchy.command(name="linkuser")
-    async def twitchy_linkuser(self, ctx, discord_user: discord.Member, twitch_username: str):
-        """
-        Links a Discord user to a Twitch username for 'Live' role management.
-        Usage: [p]twitchy linkuser <@DiscordUser> <twitch_username>
-        Example: [p]twitchy linkuser @YourFriendTheir TwitchUsername
-        """
-        twitch_username = twitch_username.lower()
-
-        if not await self.config.live_role_id():
-            return await ctx.send("No 'Live' role has been set. Please use `[p]twitchy setliverole` first.")
-
-        # Check if Twitch user exists
-        twitch_user_info = await self.get_twitch_user_info(username=twitch_username)
-        if not twitch_user_info:
-            return await ctx.send(f"Could not find Twitch user `{twitch_username}`. Please ensure the username is correct.")
-        
-        actual_twitch_username = twitch_user_info["login"] # Use canonical username
-
-        async with self.config.linked_users() as linked_users:
-            # Check if this Discord user is already linked
-            if str(discord_user.id) in linked_users:
-                if linked_users[str(discord_user.id)].lower() == actual_twitch_username:
-                    return await ctx.send(f"{discord_user.display_name} is already linked to `{actual_twitch_username}`.")
-                else:
-                    return await ctx.send(
-                        f"{discord_user.display_name} is already linked to `{linked_users[str(discord_user.id)]}`. "
-                        f"Please `[p]twitchy unlinkuser {discord_user.mention}` first if you want to change it."
-                    )
-            
-            # Check if this Twitch username is already linked to another Discord user
-            for d_id, t_user in linked_users.items():
-                if t_user.lower() == actual_twitch_username:
-                    existing_member = ctx.guild.get_member(int(d_id))
-                    if existing_member:
-                        return await ctx.send(
-                            f"`{actual_twitch_username}` is already linked to {existing_member.mention}. "
-                            "A Twitch account can only be linked to one Discord user at a time."
-                        )
-                    else:
-                        # Clean up stale link if Discord user no longer exists
-                        del linked_users[d_id]
-                        await self.config.linked_users.set(linked_users)
-
-
-            linked_users[str(discord_user.id)] = actual_twitch_username
-        
-        await ctx.send(f"Successfully linked {discord_user.display_name} to Twitch user `{actual_twitch_username}`. "
-                       "They will now automatically get the 'Live' role when they stream.")
-
-    @twitchy.command(name="unlinkuser")
-    async def twitchy_unlinkuser(self, ctx, discord_user: discord.Member):
-        """
-        Unlinks a Discord user from their Twitch account.
-        Usage: [p]twitchy unlinkuser <@DiscordUser>
-        Example: [p]twitchy unlinkuser @YourFriend
-        """
-        async with self.config.linked_users() as linked_users:
-            if str(discord_user.id) not in linked_users:
-                return await ctx.send(f"{discord_user.display_name} is not currently linked to any Twitch account.")
-            
-            twitch_username = linked_users[str(discord_user.id)]
-            del linked_users[str(discord_user.id)]
-        
-        # Remove live role immediately if they have it
-        live_role_id = await self.config.live_role_id()
-        if live_role_id:
-            role = ctx.guild.get_role(live_role_id)
-            if role and role in discord_user.roles:
-                try:
-                    await discord_user.remove_roles(role, reason="Twitchy: Unlinked Twitch account.")
-                except discord.Forbidden:
-                    await ctx.send(f"Warning: Could not remove the 'Live' role from {discord_user.display_name} due to permissions.")
-                except Exception as e:
-                    await ctx.send(f"Warning: An error occurred while removing 'Live' role from {discord_user.display_name}: {e}")
-
-        await ctx.send(f"Successfully unlinked {discord_user.display_name} from `{twitch_username}`.")
+    # Removed linkuser and unlinkuser commands as they are no longer needed for this functionality
 
     @twitchy.command(name="check")
     async def twitchy_check(self, ctx, twitch_username: str = None):
@@ -644,7 +549,6 @@ class Twitchy(commands.Cog):
         
         checked_count = 0
         announced_count = 0
-        role_updated_count = 0
 
         async with self.config.streamers() as streamers_to_update:
             for twitch_id in twitch_ids_to_check:
@@ -662,10 +566,6 @@ class Twitchy(commands.Cog):
                 # If live and either was offline OR (if specific check) force announce even if already announced
                 if is_currently_live:
                     if not was_live or (target_twitch_id == twitch_id and streamer_data.get("last_announced_stream_id") != current_stream_data["id"]):
-                        user_info = await self.get_twitch_user_info(user_id=twitch_id)
-                        if user_info and "profile_image_url" in user_info:
-                            current_stream_data["profile_image_url"] = user_info["profile_image_url"] # Add profile image to stream data
-                        
                         await self.send_stream_announcement(streamer_data, current_stream_data)
                         streamer_data["last_announced_stream_id"] = current_stream_data["id"]
                         announced_count += 1
@@ -676,30 +576,10 @@ class Twitchy(commands.Cog):
                         streamer_data["is_live"] = False
                         streamer_data["last_announced_stream_id"] = None # Reset for next stream
 
-                # Manage Live Role for Linked Users
-                linked_users_data = await self.config.linked_users()
-                for discord_id, linked_twitch_username in linked_users_data.items():
-                    if linked_twitch_username.lower() == username.lower():
-                        # Get guild from announcement channel, then get member
-                        channel_id = streamer_data.get("discord_channel_id")
-                        channel = self.bot.get_channel(channel_id)
-                        if channel and channel.guild:
-                            member = channel.guild.get_member(int(discord_id))
-                            if member:
-                                if await self.update_live_role_for_user(member, username, is_currently_live):
-                                    role_updated_count += 1
-                            else:
-                                print(f"Twitchy: Linked Discord user {discord_id} not found in guild {channel.guild.name} for {username}'s channel. Unlinking.")
-                                del linked_users_data[discord_id] # Clean up broken link
-                                await self.config.linked_users.set(linked_users_data)
-                        break
-
         status_msg = f"Finished checking {checked_count} streamer(s).\n"
         if announced_count > 0:
-            status_msg += f"Announced {announced_count} new/forced live stream(s).\n"
-        if role_updated_count > 0:
-            status_msg += f"Updated 'Live' role for {role_updated_count} linked user(s).\n"
-        if announced_count == 0 and role_updated_count == 0:
-            status_msg += "No new announcements or role updates needed."
+            status_msg += f"Announced {announced_count} new/forced live stream(s)."
+        else:
+            status_msg += "No new announcements were needed."
 
         await ctx.send(status_msg)
