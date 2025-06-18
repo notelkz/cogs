@@ -465,9 +465,13 @@ class Twitchy(commands.Cog):
         
         params = {}
         if start_time:
-            params["start_time"] = start_time.isoformat() + "Z" # Twitch API expects Z for UTC
+            # Convert to UTC and format correctly as YYYY-MM-DDTHH:MM:SSZ
+            start_time_utc = start_time.astimezone(pytz.utc)
+            params["start_time"] = start_time_utc.isoformat(timespec='seconds').replace("+00:00", "Z")
         if end_time:
-            params["end_time"] = end_time.isoformat() + "Z"
+            # Convert to UTC and format correctly as YYYY-MM-DDTHH:MM:SSZ
+            end_time_utc = end_time.astimezone(pytz.utc)
+            params["end_time"] = end_time_utc.isoformat(timespec='seconds').replace("+00:00", "Z")
 
         try:
             async with self.session.get(url, headers=self.twitch_headers, params=params) as resp:
@@ -479,7 +483,7 @@ class Twitchy(commands.Cog):
                 print("Twitchy Cog: Invalid Twitch token for schedule. Attempting to refresh token.")
                 await self.get_twitch_access_token()
                 return await self.get_twitch_schedule_data(twitch_username, start_time, end_time) # Retry
-            print(f"Twitchy Cog: HTTP error getting schedule data for {twitch_username}: {e}")
+            print(f"Twitchy Cog: HTTP error getting schedule data for {twitch_username}: {e.status}, message='{e.message}', url={e.request_info.url}")
             return None
         except aiohttp.ClientError as e:
             print(f"Twitchy Cog: Network error getting schedule data for {twitch_username}: {e}")
@@ -595,64 +599,6 @@ class Twitchy(commands.Cog):
                     if not twitch_username or not channel_id:
                         continue # Skip if not fully configured
 
-                    guild_tz = await self.get_guild_timezone(guild)
-                    
-                    # Parse the configured update time (e.g., "00:00")
-                    update_hour, update_minute = map(int, update_time_str.split(':'))
-                    
-                    # Create a datetime object for today at the specified update time in the guild's timezone
-                    today_update_time = guild_tz.localize(
-                        datetime.datetime(now.year, now.month, now.day, update_hour, update_minute)
-                    )
-                    
-                    # Convert today's update time to UTC
-                    today_update_time_utc = today_update_time.astimezone(pytz.utc)
-
-                    # Determine if it's past the update time for today
-                    if now >= today_update_time_utc:
-                        # If it's already past, schedule for tomorrow
-                        next_update_time_utc = today_update_time_utc + timedelta(days=1)
-                    else:
-                        next_update_time_utc = today_update_time_utc
-
-                    # If this is the time to trigger the update for this guild
-                    # We can't do exact equality due to loop timing, so check if it's "close enough"
-                    # For simplicity, we'll rely on the sleep at the end of the loop and re-check next iteration.
-                    # A better way would be to calculate sleep duration to the nearest update time.
-                    
-                    # For demonstration, we'll just check if current UTC time has passed the scheduled UTC time for today,
-                    # and if we haven't already updated for this 'day' (based on last update timestamp).
-                    # This requires tracking last update time per guild. For simplicity of the example,
-                    # we will just re-fetch every loop, but a real cog should have logic to prevent
-                    # updating too often based on a timestamp.
-
-                    # To prevent immediate re-update after bot restart if time has passed, 
-                    # a persistent 'last_schedule_update_timestamp' per guild would be ideal.
-                    # For this example, let's just make it trigger once per day after the time.
-                    
-                    # Placeholder for more robust daily check
-                    # (A full implementation would involve checking a stored last_update_date for each guild)
-                    # For now, let's simplify and make the loop sleep for a fixed interval.
-                    pass # Actual update logic will be in the main loop structure below
-
-                # Main sleep for the loop
-                await asyncio.sleep(3600) # Check every hour
-
-                # Actual logic to trigger updates for guilds that need it
-                for guild in self.bot.guilds:
-                    if guild.unavailable:
-                        continue
-                    
-                    guild_settings = await self.config.guild(guild).all()
-                    update_time_str = guild_settings["schedule_update_time"]
-                    twitch_username = guild_settings["schedule_twitch_username"]
-                    channel_id = guild_settings["schedule_channel_id"]
-                    notify_role_id = guild_settings["schedule_notify_role_id"]
-                    days_in_advance = guild_settings["schedule_update_days_in_advance"]
-
-                    if not twitch_username or not channel_id:
-                        continue
-
                     channel = guild.get_channel(channel_id)
                     if not channel:
                         print(f"Twitchy Cog: Schedule channel for guild {guild.name} not found. Resetting config.")
@@ -665,18 +611,19 @@ class Twitchy(commands.Cog):
                     update_hour, update_minute = map(int, update_time_str.split(':'))
                     scheduled_local_time_today = now_local.replace(hour=update_hour, minute=update_minute, second=0, microsecond=0)
 
-                    # Only update if it's passed the scheduled time *today* and we haven't updated for this 'day' yet
-                    # This needs a persistent timestamp to prevent multiple updates in one day.
-                    # For this example, we'll assume the hourly check is enough for demonstration.
-                    # A better way: store last_updated_date for schedule. If now.date() > last_updated_date and now_local >= scheduled_local_time_today: update.
-
-                    # For now, let's just make it run if current hour/minute matches the schedule update.
-                    # This is not robust for daily updates but demonstrates the fetching part.
+                    # Logic to trigger updates for guilds that need it
+                    # This is a simplified check. For robust daily updates, store a 'last_updated_date' per guild.
+                    # If now_local.date() > last_updated_date and now_local >= scheduled_local_time_today: update.
+                    
+                    # For demonstration, we'll just make it run if current hour/minute matches the schedule update.
+                    # This will trigger multiple times a day if the bot is running, but
+                    # is sufficient to test the fetching logic.
                     # A real implementation needs to track 'last updated day' to avoid re-triggering.
                     if now_local.hour == update_hour and now_local.minute >= update_minute - 5 and now_local.minute <= update_minute + 5: # +/- 5 min window
                         # Calculate start and end for fetching schedule
                         start_time_fetch = now_local.replace(hour=0, minute=0, second=0, microsecond=0) # Start of today
-                        end_time_fetch = start_time_fetch + timedelta(days=days_in_advance) # Days in advance from today
+                        days_in_advance = guild_settings["schedule_update_days_in_advance"]
+                        end_time_fetch = start_time_fetch + timedelta(days=days_in_advance - 1, hours=23, minutes=59, seconds=59) # End of period
 
                         schedule = await self.get_twitch_schedule_data(twitch_username, start_time=start_time_fetch, end_time=end_time_fetch)
 
@@ -875,7 +822,11 @@ class Twitchy(commands.Cog):
                 await ctx.send(f"ℹ️ **{twitch_username}** is currently OFFLINE.")
             
             # Trigger background loop logic for immediate update
-            await self.background_loop()
+            # This will cause the background loop to check immediately, potentially redundantly
+            # but ensures the state is updated and messages sent/deleted.
+            self.bot.loop.create_task(self.background_loop()) # Re-scheduling the loop might be better handled.
+                                                           # For a quick immediate check without restarting the main loop,
+                                                           # one might temporarily set a flag for faster next iteration.
             await ctx.send("✅ Check complete. Announcement state updated if necessary.")
 
         else:
@@ -892,7 +843,7 @@ class Twitchy(commands.Cog):
                 await ctx.send("ℹ️ No monitored streamers are currently LIVE.")
 
             # Trigger background loop logic for immediate update for all
-            await self.background_loop()
+            self.bot.loop.create_task(self.background_loop()) # See comment above for better handling.
             await ctx.send("✅ Check complete. Announcement states updated for all monitored streamers if necessary.")
 
 
