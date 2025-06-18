@@ -1,17 +1,10 @@
 {
-    "author": ["Your Discord Name (e.g., YourUsername#1234)"],
-    "bot_version": "3.5.2",
-    "description": "Automatically announces when Twitch streams go live and manages 'Live' roles.",
-    "end_user_data_statement": "This cog stores Twitch channel names, Discord channel IDs, role IDs, and Twitch API credentials to function. This data is not shared with third parties.",
-    "hidden": false,
-    "install_msg": "Thanks for installing Twitchy! Use [p]twitchy setup to configure your Twitch API keys and streamers.",
-    "min_bot_version": "3.5.0",
-    "min_python_version": "3.8",
     "name": "Twitchy",
-    "permissions": ["manage_channels", "manage_roles", "embed_links"],
-    "required_cogs": {},
-    "requirements": ["aiohttp"],
-    "short": "Twitch Stream Announcer",
-    "tags": ["twitch", "stream", "announcement", "live", "utility"],
-    "type": "COG"
+    "author": ["YourName"],
+    "min_bot_version": "3.5.0",
+    "min_python_version": [3, 10, 0],  // <-- Make sure this is a list of integers
+    "description": "...",
+    "tags": ["twitch", "stream", "live", "schedule"],
+    "requirements": ["aiohttp", "Pillow", "pytz", "python-dateutil", "orjson", "uvloop", "pyyaml"],
+    "hidden": false
 }
