@@ -723,7 +723,7 @@ class Twitchy(commands.Cog):
         Use `[p]twitchy schedule` to manage Twitch schedule announcements.
         Use `[p]twitchy setup` for initial API key configuration.
         """
-        if ctx.subcommand is None: # Safely check for subcommand
+        if getattr(ctx, 'subcommand', None) is None: # Corrected line: Safely check for subcommand
             await ctx.send_help(ctx.command)
 
     @twitchy.command(name="setup")
