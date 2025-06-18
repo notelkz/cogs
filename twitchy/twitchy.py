@@ -15,6 +15,7 @@ import re
 import dateutil.parser
 import traceback
 from PIL import Image, ImageDraw, ImageFont
+import logging # Added this import
 
 # Define a custom view for the buttons
 class StreamButtons(discord.ui.View):
@@ -32,6 +33,7 @@ class Twitchy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
+        self.log = logging.getLogger("red.Twitchy") # Initialized the logger
 
         # Default global settings (for new bot users or after config reset)
         default_global = {
@@ -62,10 +64,6 @@ class Twitchy(commands.Cog):
 
         self.config.register_global(**default_global)
         self.config.register_guild(**default_guild)
-
-        # Removed these lines as they were causing TypeError and are not needed
-        # self.config.init_custom("GUILD", "streamers", {"name": str})
-        # self.config.init_custom("GUILD", "streamer_status_data", {})
 
         self.check_streams_task = self.bot.loop.create_task(self.check_streams_loop())
         self.update_schedule_task = self.bot.loop.create_task(self.schedule_update_loop())
@@ -406,7 +404,8 @@ class Twitchy(commands.Cog):
         self.data_path.mkdir(parents=True, exist_ok=True)
 
         font_url = "https://github.com/google/fonts/raw/main/apache/robotoslab/RobotoSlab-Regular.ttf"
-        template_url = "https://raw.githubusercontent.com/notelkz/Red-DiscordBot-Cogs/main/twitchy/schedule_template.png"
+        # Corrected URL for the template image
+        template_url = "https://raw.githubusercontent.com/notelkz/Red-DiscordBot-Cogs/main/twitchy/data/schedule_template.png"
 
         tasks = []
         if not self.font_path.exists():
