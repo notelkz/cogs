@@ -749,7 +749,7 @@ class Twitchy(commands.Cog):
             start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
         else:
             start_of_week = start_date.astimezone(guild_tz).replace(hour=0, minute=0, second=0, microsecond=0) # Ensure it's in the target timezone
-        
+
         date_text = start_of_week.strftime("%B %d")
         width, _ = img.size
         right_margin = 100
@@ -760,19 +760,19 @@ class Twitchy(commands.Cog):
         
         date_bbox = date_font.getbbox(date_text)
         date_width = date_bbox[2] - date_bbox[0]
-        
+
         week_of_x = width - right_margin - week_of_width
         date_x = width - right_margin - date_width
-        
+
         draw.text((week_of_x, 100), week_of_text, font=title_font, fill=(255, 255, 255))
         draw.text((date_x, 180), date_text, font=date_font, fill=(255, 255, 255))
-        
+
         day_x_pos = 125 # Consistent X for day/time
         initial_y = 350 # Starting Y for the first event row
         row_height = 150
         day_offset = -45 # Offset for day/time text relative to row start
         game_offset = 15 # Offset for game title relative to row start
-        
+
         for i, segment in enumerate(schedule):
             if i >= actual_events:
                 break
@@ -780,18 +780,18 @@ class Twitchy(commands.Cog):
             bar_y = initial_y + (i * row_height)
             day_text_y = bar_y + day_offset
             game_text_y = bar_y + game_offset
-            
+
             start_time_utc = dateutil.parser.isoparse(segment["start_time"])
             if start_time_utc.tzinfo is None:
                 start_time_utc = start_time_utc.replace(tzinfo=datetime.timezone.utc)
             start_time_local = start_time_utc.astimezone(guild_tz)
-            
+
             day_time = start_time_local.strftime("%A // %I:%M%p").upper()
             title = segment["title"]
             
             draw.text((day_x_pos, day_text_y), day_time, font=schedule_font, fill=(255, 255, 255))
             draw.text((day_x_pos, game_text_y), title, font=schedule_font, fill=(255, 255, 255))
-        
+
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         buf.seek(0)
@@ -804,18 +804,16 @@ class Twitchy(commands.Cog):
             try:
                 for guild in self.bot.guilds:
                     guild_config = await self.config.guild(guild).all()
-                    
                     update_days = guild_config["schedule_update_days"]
                     update_time_str = guild_config["schedule_update_time"]
                     channel_id = guild_config["schedule_channel_id"]
                     twitch_username = guild_config["schedule_twitch_username"]
-                    
+
                     if not update_days or not update_time_str or not channel_id or not twitch_username:
                         continue # Skip if schedule settings are incomplete for this guild
 
                     guild_tz = await self.get_guild_timezone(guild)
                     now = datetime.datetime.now(guild_tz)
-                    
                     current_day_of_week = now.weekday() # Monday is 0, Sunday is 6
                     current_time_fmt = now.strftime("%H:%M")
 
@@ -838,20 +836,18 @@ class Twitchy(commands.Cog):
                                     seg_start_time_local = seg_start_time_utc.astimezone(guild_tz)
                                     if start_of_this_week <= seg_start_time_local <= end_of_this_week:
                                         filtered_schedule.append(seg)
-                                
                                 await self.post_schedule(channel, filtered_schedule, start_date=start_of_this_week)
                                 self.log.info(f"Twitchy: Scheduled update posted for {guild.name} ({twitch_username}).")
                             else:
                                 self.log.warning(f"Twitchy: Failed to fetch schedule for {twitch_username} in {guild.name} during automated update.")
                         else:
                             self.log.warning(f"Twitchy: Schedule channel {channel_id} not found in guild {guild.name} for automated update.")
-                        await asyncio.sleep(61) # Sleep slightly longer to avoid multiple triggers within the same minute
+                await asyncio.sleep(61) # Sleep slightly longer to avoid multiple triggers within the same minute
             except asyncio.CancelledError:
                 self.log.info("Twitchy: Schedule update loop cancelled.")
                 break
             except Exception as e:
                 self.log.error(f"Twitchy: An error occurred in schedule_update_loop: {e}", exc_info=True)
-
             await asyncio.sleep(60) # Check every minute
 
     async def post_schedule(self, channel: discord.TextChannel, schedule: list, start_date: datetime.datetime = None):
@@ -859,7 +855,7 @@ class Twitchy(commands.Cog):
         try:
             notify_role_id = await self.config.guild(channel.guild).schedule_notify_role_id()
             notify_role = channel.guild.get_role(notify_role_id) if notify_role_id else None
-            
+
             warning_content = "⚠️ Updating schedule - Previous schedule messages will be deleted in 10 seconds..."
             if notify_role:
                 warning_content = f"{notify_role.mention}\n{warning_content}"
@@ -887,15 +883,14 @@ class Twitchy(commands.Cog):
                 except Exception as e:
                     self.log.error(f"Twitchy: Error deleting old pinned message {previous_schedule_msg_id} in {channel.name}: {e}")
                 await self.config.guild(channel.guild).schedule_message_id.set(None) # Clear ID regardless
-
+            
             # Also delete other recent bot messages to clean up embeds
             bot_messages = []
             async for message in channel.history(limit=30):
                 if message.author == self.bot.user:
                     bot_messages.append(message)
-                    if len(bot_messages) >= 10: # Limit to 10 recent bot messages
-                        break
-            
+                if len(bot_messages) >= 10: # Limit to 10 recent bot messages
+                    break
             for message in bot_messages:
                 try:
                     await message.delete()
@@ -916,503 +911,307 @@ class Twitchy(commands.Cog):
                     schedule_message = await channel.send(
                         file=discord.File(image_buf, filename="schedule.png")
                     )
-                    await schedule_message.pin()
                     await self.config.guild(channel.guild).schedule_message_id.set(schedule_message.id)
-                    self.log.info(f"Twitchy: Posted and pinned new schedule image in {channel.name}.")
+                    self.log.info(f"Twitchy: Posted schedule image in {channel.name}.")
                 except discord.Forbidden:
-                    self.log.warning(f"Twitchy: Missing permissions to send files or pin messages in {channel.name}.")
+                    self.log.warning(f"Twitchy: Missing permissions to send schedule image in {channel.name}.")
                 except Exception as e:
-                    self.log.error(f"Twitchy: Error sending/pinning schedule image in {channel.name}: {e}", exc_info=True)
+                    self.log.error(f"Twitchy: Error sending schedule image in {channel.name}: {e}", exc_info=True)
             else:
-                self.log.error(f"Twitchy: Failed to generate schedule image for {channel.guild.name}.")
-                await channel.send("❌ Failed to generate the schedule image. Check bot logs for details.")
+                await channel.send("❌ Failed to generate schedule image. Check bot console for errors.")
 
-            # Send individual embeds for each event
-            event_count_limit = await self.config.guild(channel.guild).schedule_event_count()
-            guild_tz = await self.get_guild_timezone(channel.guild)
-
+            # Send detailed schedule as embeds
             if schedule:
+                guild_tz = await self.get_guild_timezone(channel.guild)
+                # Sort schedule by start time
+                schedule.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]).astimezone(guild_tz))
+
                 for i, segment in enumerate(schedule):
-                    if i >= event_count_limit:
-                        break
-
-                    start_time_utc = dateutil.parser.isoparse(segment["start_time"]).replace(tzinfo=datetime.timezone.utc)
-                    start_time_local = start_time_utc.astimezone(guild_tz)
-                    
-                    title = segment["title"]
-                    category = segment.get("category", {})
-                    game_name = category.get("name", "No Category")
-                    
-                    boxart_url = None
-                    if category and category.get("id"):
-                        cat_info = await self.get_category_info(category["id"])
-                        if cat_info and cat_info.get("box_art_url"):
-                            boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
-
-                    unix_ts = int(start_time_utc.timestamp()) # Unix timestamp for Discord's built-in time formatting
-                    time_str = f"<t:{unix_ts}:F>" # Full date and time
-
-                    end_time_iso = segment.get("end_time")
-                    duration_str = "Unknown"
-                    if end_time_iso:
-                        end_dt_utc = datetime.datetime.fromisoformat(end_time_iso.replace("Z", "+00:00")).replace(tzinfo=datetime.timezone.utc)
-                        duration = end_dt_utc - start_time_utc
-                        total_minutes = int(duration.total_seconds() // 60)
-                        hours, minutes = divmod(total_minutes, 60)
-                        duration_parts = []
-                        if hours > 0:
-                            duration_parts.append(f"{hours}h")
-                        if minutes > 0:
-                            duration_parts.append(f"{minutes}m")
-                        duration_str = " ".join(duration_parts) if duration_parts else "Less than 1m"
-
-                    twitch_username = segment.get("broadcaster_name")
-                    twitch_url = f"https://twitch.tv/{twitch_username}"
-                    
                     embed = discord.Embed(
-                        title=title,
-                        url=twitch_url,
-                        description=f"**[Watch Live Here]({twitch_url})**",
-                        color=discord.Color.purple(),
-                        timestamp=start_time_local # Use local time for embed timestamp
+                        title=f"📅 {segment['title']}",
+                        description=f"**Streamer:** {segment['broadcaster_name']}",
+                        color=discord.Color.dark_purple()
                     )
-                    embed.add_field(name="🕒 Start Time", value=time_str, inline=True)
-                    embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
-                    embed.add_field(name="🎮 Game", value=game_name, inline=True)
-                    embed.set_footer(text=f"Scheduled Stream • {twitch_username}")
-                    
-                    if boxart_url:
-                        embed.set_thumbnail(url=boxart_url)
+                    start_time_utc = dateutil.parser.isoparse(segment["start_time"])
+                    if start_time_utc.tzinfo is None:
+                        start_time_utc = start_time_utc.replace(tzinfo=datetime.timezone.utc)
+                    start_time_local = start_time_utc.astimezone(guild_tz)
+                    end_time_utc = dateutil.parser.isoparse(segment["end_time"])
+                    if end_time_utc.tzinfo is None:
+                        end_time_utc = end_time_utc.replace(tzinfo=datetime.timezone.utc)
+                    end_time_local = end_time_utc.astimezone(guild_tz)
 
+                    embed.add_field(name="Time", value=f"{discord.utils.format_dt(start_time_local, style='f')} (Ends {discord.utils.format_dt(end_time_local, style='t')})", inline=False)
+                    
+                    category_id = segment.get("category", {}).get("id")
+                    if category_id:
+                        category_info = await self.get_category_info(category_id)
+                        if category_info:
+                            embed.add_field(name="Category", value=category_info["name"], inline=True)
+                            if "box_art_url" in category_info:
+                                embed.set_thumbnail(url=category_info["box_art_url"].replace("{width}", "144").replace("{height}", "192"))
+                    
+                    if segment.get("is_canceled"):
+                        embed.add_field(name="Status", value="Canceled", inline=True)
+                        embed.color = discord.Color.red()
+                    elif segment.get("is_recurring"):
+                        embed.add_field(name="Recurring", value="Yes", inline=True)
+                    
+                    if segment.get("vacation"):
+                        vacation_start = dateutil.parser.isoparse(segment["vacation"]["start_time"]).astimezone(guild_tz)
+                        vacation_end = dateutil.parser.isoparse(segment["vacation"]["end_time"]).astimezone(guild_tz)
+                        embed.add_field(name="Vacation", value=f"From {discord.utils.format_dt(vacation_start, style='d')} to {discord.utils.format_dt(vacation_end, style='d')}", inline=False)
+
+                    embed.set_footer(text="Twitchy Schedule")
+                    embed.timestamp = discord.utils.utcnow()
+                    
                     try:
                         await channel.send(embed=embed)
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(1) # Small delay between embeds
                     except discord.Forbidden:
                         self.log.warning(f"Twitchy: Missing permissions to send schedule embed in {channel.name}.")
-                        break # Stop sending embeds if permissions are missing
+                        break
                     except Exception as e:
                         self.log.error(f"Twitchy: Error sending schedule embed in {channel.name}: {e}", exc_info=True)
                         break
             else:
-                embed = discord.Embed(
-                    title="No Upcoming Streams",
-                    description="The streamer has no schedule set or no upcoming streams this week. Check back later!",
-                    color=discord.Color.purple()
-                )
-                try:
-                    await channel.send(embed=embed)
-                except discord.Forbidden:
-                    self.log.warning(f"Twitchy: Missing permissions to send 'no streams' embed in {channel.name}.")
-
+                await channel.send("ℹ️ No upcoming schedule found for this week.")
         except Exception as e:
             self.log.error(f"Twitchy: An error occurred in post_schedule: {e}", exc_info=True)
 
 
-    @twitchy.group(name="schedule", aliases=["sched"])
+    @twitchy.group(name="schedule")
     @commands.guild_only()
     @commands.admin_or_permissions(manage_guild=True)
     async def twitchy_schedule(self, ctx):
-        """Manages Twitch streaming schedule announcements for this guild."""
-        if ctx.invoked_subcommand is None:
-            embed = discord.Embed(
-                title="Twitchy Schedule Commands",
-                color=discord.Color.purple(),
-                description=(
-                    f"`{ctx.clean_prefix}twitchy schedule setup` - Interactive setup process\n"
-                    f"`{ctx.clean_prefix}twitchy schedule force [next|YYYY-MM-DD]` - Force an immediate schedule update for current/next week or specific date.\n"
-                    f"`{ctx.clean_prefix}twitchy schedule notify [@role/none]` - Set or clear notification role for schedule updates\n"
-                    f"`{ctx.clean_prefix}twitchy schedule events [number]` - Set number of events to show on the image (1-10)\n"
-                    f"`{ctx.clean_prefix}twitchy schedule timezone [zone]` - Set the timezone for schedule display (e.g., `Europe/London`)\n"
-                    f"`{ctx.clean_prefix}twitchy schedule list` - Show upcoming schedule in text-only format\n"
-                    f"`{ctx.clean_prefix}twitchy schedule settings` - Show current schedule settings\n"
-                    f"`{ctx.clean_prefix}twitchy schedule test [#channel]` - Test post schedule to a channel\n"
-                    f"`{ctx.clean_prefix}twitchy schedule reload` - Redownload template image and font files\n"
-                )
-            )
-            await ctx.send(embed=embed)
-
-    @twitchy_schedule.command(name="force")
-    async def schedule_force_update(self, ctx, date_or_option: str = None):
         """
-        Force an immediate schedule update for the current week, next week, or a specific week.
-        Usage:
-        `[p]twitchy schedule force` (current week)
-        `[p]twitchy schedule force next` (next week)
-        `[p]twitchy schedule force YYYY-MM-DD` (specific week starting on this date)
+        Manages the Twitch schedule announcement feature for this server.
+
+        **Subcommands:**
+        `[p]twitchy schedule setchannel <#channel>`: Sets the channel where the schedule image and details will be posted.
+        `[p]twitchy schedule setstreamer <twitch_username>`: Sets the Twitch username whose schedule will be fetched.
+        `[p]twitchy schedule settimezone <timezone_name>`: Sets the timezone for schedule display (e.g., `Europe/London`).
+        `[p]twitchy schedule setupdatedays <day1> [day2]...`: Sets the days of the week (e.g., `Monday Sunday`) for automatic schedule updates.
+        `[p]twitchy schedule setupdatetime <HH:MM>`: Sets the time for automatic schedule updates (e.g., `10:00`).
+        `[p]twitchy schedule setnotifyrole <role>`: Sets a role to ping when the schedule is updated.
+        `[p]twitchy schedule seteventcount <number>`: Sets how many events to show on the schedule image (default 5).
+        `[p]twitchy schedule show`: Shows the current schedule for the configured streamer.
+        `[p]twitchy schedule test`: Forces a schedule update and posts it as a test.
+        `[p]twitchy schedule reload`: Force redownload of schedule template image and font files.
         """
-        channel_id = await self.config.guild(ctx.guild).schedule_channel_id()
-        twitch_username = await self.config.guild(ctx.guild).schedule_twitch_username()
-        guild_tz = await self.get_guild_timezone(ctx.guild)
-        
-        if not channel_id or not twitch_username:
-            await ctx.send("❌ Please run `[p]twitchy schedule setup` first!")
-            return
-            
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel:
-            await ctx.send("❌ The configured schedule channel was not found! Please update it with `[p]twitchy schedule setup`.")
-            return
-            
-        await ctx.send("🔄 Forcing schedule update...")
-
-        start_date = None
-        end_date = None
-        
-        today_local = datetime.datetime.now(guild_tz)
-        current_weekday = today_local.weekday() # Monday 0, Sunday 6
-
-        if date_or_option and date_or_option.lower() == "next":
-            # Calculate next week's start (next Monday)
-            days_until_next_monday = (7 - current_weekday) % 7 # If Monday, 0 days to next Monday
-            if days_until_next_monday == 0: # If today is Monday, next Monday is 7 days away
-                days_until_next_monday = 7
-            start_date = today_local + timedelta(days=days_until_next_monday)
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
-            
-        elif date_or_option:
-            try:
-                # Parse specific date and find its Monday
-                parsed_date = datetime.datetime.strptime(date_or_option, "%Y-%m-%d").replace(tzinfo=guild_tz)
-                start_date = parsed_date - timedelta(days=parsed_date.weekday()) # Go back to Monday
-                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
-            except ValueError:
-                await ctx.send("❌ Invalid date format. Please use `YYYY-MM-DD` or `next`.")
-                return
-        else: # Current week
-            start_date = today_local - timedelta(days=current_weekday)
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
-
-        schedule = await self.get_twitch_schedule_data(twitch_username, start_time=start_date)
-
-        if schedule is not None:
-            # Filter schedule to only include segments within the calculated week range
-            filtered_schedule = []
-            for seg in schedule:
-                seg_start_time_utc = dateutil.parser.isoparse(seg["start_time"]).replace(tzinfo=datetime.timezone.utc)
-                seg_start_time_local = seg_start_time_utc.astimezone(guild_tz)
-                if start_date <= seg_start_time_local <= end_date:
-                    filtered_schedule.append(seg)
-            
-            # Sort the filtered schedule by start time
-            filtered_schedule.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
-
-            await self.post_schedule(channel, filtered_schedule, start_date=start_date)
-            await ctx.send("✅ Schedule updated!")
-        else:
-            await ctx.send("❌ Failed to fetch schedule from Twitch! Check the bot's console for errors or ensure the Twitch schedule is set up.")
+        if ctx.subcommand is None:
+            await ctx.send_help(ctx.command)
 
 
-    @twitchy_schedule.command(name="setup")
-    async def schedule_setup(self, ctx):
-        """Interactive setup process for Twitch schedule announcements."""
-        try:
-            await ctx.send("Starting schedule setup process... Please answer the following questions. (Type `cancel` at any point to stop)")
-            
-            # Channel
-            await ctx.send("Which channel should I post the schedule in? (Mention the channel, e.g., #schedule)")
-            try:
-                msg = await self.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    timeout=60.0
-                )
-                if msg.content.lower() == "cancel": return await ctx.send("Setup cancelled.")
-                if not msg.channel_mentions:
-                    await ctx.send("❌ No channel mentioned. Setup cancelled.")
-                    return
-                channel = msg.channel_mentions[0]
-                await self.config.guild(ctx.guild).schedule_channel_id.set(channel.id)
-            except asyncio.TimeoutError:
-                await ctx.send("Setup timed out. Please try again.")
-                return
+    @twitchy_schedule.command(name="setchannel")
+    async def schedule_set_channel(self, ctx, channel: discord.TextChannel):
+        """
+        Sets the channel where the Twitch schedule image and details will be posted.
+        Usage: [p]twitchy schedule setchannel <#channel>
+        Example: [p]twitchy schedule setchannel #stream-schedule
+        """
+        await self.config.guild(ctx.guild).schedule_channel_id.set(channel.id)
+        await ctx.send(f"✅ Schedule announcements will now be posted in {channel.mention}.")
 
-            # Twitch Username
-            await ctx.send("What's the Twitch username whose schedule you want to display?")
-            try:
-                msg = await self.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    timeout=60.0
-                )
-                if msg.content.lower() == "cancel": return await ctx.send("Setup cancelled.")
-                username = msg.content.strip()
-                # Validate Twitch username by fetching user info
-                user_info = await self.get_twitch_user_info(username=username)
-                if not user_info:
-                    await ctx.send(f"❌ Could not find Twitch user `{username}`. Please ensure the username is correct. Setup cancelled.")
-                    return
-                await self.config.guild(ctx.guild).schedule_twitch_username.set(username)
-            except asyncio.TimeoutError:
-                await ctx.send("Setup timed out. Please try again.")
-                return
+    @twitchy_schedule.command(name="setstreamer")
+    async def schedule_set_streamer(self, ctx, twitch_username: str):
+        """
+        Sets the Twitch username whose schedule will be fetched and displayed.
+        Usage: [p]twitchy schedule setstreamer <twitch_username>
+        Example: [p]twitchy schedule setstreamer mycoolstreamer
+        """
+        twitch_username = twitch_username.lower()
+        await ctx.send(f"Checking Twitch for user `{twitch_username}`...")
+        twitch_user_info = await self.get_twitch_user_info(username=twitch_username)
 
-            # Update Days
-            await ctx.send("Which days should I update the schedule? (Send numbers: 0=Monday, 6=Sunday, separate with spaces, e.g., `0 6` for Mon/Sun)")
-            try:
-                msg = await self.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    timeout=60.0
-                )
-                if msg.content.lower() == "cancel": return await ctx.send("Setup cancelled.")
-                try:
-                    days = [int(x) for x in msg.content.split()]
-                    if not all(0 <= x <= 6 for x in days):
-                        await ctx.send("❌ Invalid days. Must be numbers between 0 and 6. Setup cancelled.")
-                        return
-                    await self.config.guild(ctx.guild).schedule_update_days.set(days)
-                except ValueError:
-                    await ctx.send("❌ Invalid input. Must be numbers. Setup cancelled.")
-                    return
-            except asyncio.TimeoutError:
-                await ctx.send("Setup timed out. Please try again.")
-                return
-
-            # Update Time
-            await ctx.send("What time should I update the schedule? (Use 24-hour format, e.g., `14:00` for 2 PM)")
-            try:
-                msg = await self.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    timeout=60.0
-                )
-                if msg.content.lower() == "cancel": return await ctx.send("Setup cancelled.")
-                time_str = msg.content.strip()
-                if not re.match(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$", time_str):
-                    await ctx.send("❌ Invalid time format. Must be HH:MM. Setup cancelled.")
-                    return
-                await self.config.guild(ctx.guild).schedule_update_time.set(time_str)
-            except asyncio.TimeoutError:
-                await ctx.send("Setup timed out. Please try again.")
-                return
-            
-            # Timezone
-            await ctx.send(
-                "Finally, what timezone should the schedule be displayed in for this server? "
-                "Examples: `Europe/London`, `America/New_York`, `Asia/Tokyo`.\n"
-                "You can find a list here: <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>\n"
-                "(Type `skip` to use default: Europe/London)"
+        if not twitch_user_info:
+            return await ctx.send(
+                f"❌ Could not find Twitch user `{twitch_username}`. "
+                "Please ensure the username is correct."
             )
-            try:
-                msg = await self.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    timeout=90.0
-                )
-                if msg.content.lower() == "cancel": return await ctx.send("Setup cancelled.")
-                if msg.content.lower() == "skip":
-                    await ctx.send("Using default timezone: `Europe/London`.")
-                else:
-                    try:
-                        pytz.timezone(msg.content.strip())
-                        await self.config.guild(ctx.guild).schedule_timezone.set(msg.content.strip())
-                        await ctx.send(f"Timezone set to: `{msg.content.strip()}`.")
-                    except pytz.UnknownTimeZoneError:
-                        await ctx.send("❌ Unknown timezone. Using default: `Europe/London`. You can change it later with `[p]twitchy schedule timezone`.")
-                        await self.config.guild(ctx.guild).schedule_timezone.set("Europe/London")
-            except asyncio.TimeoutError:
-                await ctx.send("Setup timed out. Using default timezone: `Europe/London`.")
-                await self.config.guild(ctx.guild).schedule_timezone.set("Europe/London")
+        
+        await self.config.guild(ctx.guild).schedule_twitch_username.set(twitch_username)
+        await ctx.send(f"✅ Twitch schedule will now be fetched for `{twitch_username}`.")
 
-            await ctx.send("✅ Schedule setup complete! The schedule will be updated on the specified days and time.")
-            
-        except Exception as e:
-            self.log.error(f"Twitchy: An error occurred during schedule setup: {e}", exc_info=True)
-            await ctx.send(f"❌ An error occurred during setup: `{str(e)}`")
-
-    @twitchy_schedule.command(name="notify")
-    async def schedule_set_notify_role(self, ctx, role: discord.Role = None):
-        """Set or clear the role to notify for schedule updates."""
-        if role is None:
-            await self.config.guild(ctx.guild).schedule_notify_role_id.set(None)
-            await ctx.send("✅ Schedule notification role cleared!")
-        else:
-            await self.config.guild(ctx.guild).schedule_notify_role_id.set(role.id)
-            await ctx.send(f"✅ Schedule notification role set to {role.mention}!")
-
-    @twitchy_schedule.command(name="events")
-    async def schedule_set_event_count(self, ctx, count: int):
-        """Set the number of events to show on the schedule image (1-10)."""
-        if not 1 <= count <= 10:
-            await ctx.send("❌ Event count must be between 1 and 10!")
-            return
-        await self.config.guild(ctx.guild).schedule_event_count.set(count)
-        await ctx.send(f"✅ Event count set to {count}!")
-
-    @twitchy_schedule.command(name="timezone")
+    @twitchy_schedule.command(name="settimezone")
     async def schedule_set_timezone(self, ctx, timezone_name: str):
         """
-        Set the timezone for displaying the schedule.
-        Usage: [p]twitchy schedule timezone <Timezone Name>
-        Example: [p]twitchy schedule timezone Europe/London
-        Find a list here: <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>
+        Sets the timezone for displaying schedule times.
+        This should be a valid timezone name (e.g., `Europe/London`, `America/New_York`).
+        A full list can be found here: <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>
+        Usage: [p]twitchy schedule settimezone <timezone_name>
+        Example: [p]twitchy schedule settimezone Europe/London
         """
         try:
-            pytz.timezone(timezone_name) # Validate timezone
-            await self.config.guild(ctx.guild).schedule_timezone.set(timezone_name)
-            await ctx.send(f"✅ Schedule timezone for this server set to `{timezone_name}`.")
+            pytz.timezone(timezone_name)
         except pytz.UnknownTimeZoneError:
-            await ctx.send("❌ Invalid timezone name. Please provide a valid timezone from the IANA Time Zone Database (e.g., `Europe/London`).")
-
-
-    @twitchy_schedule.command(name="list")
-    async def schedule_list_text(self, ctx, date_or_option: str = None):
-        """
-        Shows the upcoming schedule in a text-only format.
-        Usage:
-        `[p]twitchy schedule list` (current week)
-        `[p]twitchy schedule list next` (next week)
-        `[p]twitchy schedule list YYYY-MM-DD` (specific week starting on this date)
-        """
-        twitch_username = await self.config.guild(ctx.guild).schedule_twitch_username()
-        if not twitch_username:
-            return await ctx.send("❌ A Twitch username is not set for schedule. Please run `[p]twitchy schedule setup`.")
-
-        guild_tz = await self.get_guild_timezone(ctx.guild)
+            return await ctx.send(f"❌ Invalid timezone: `{timezone_name}`. Please provide a valid timezone name (e.g., `Europe/London`).")
         
-        start_date = None
-        end_date = None
-        
-        today_local = datetime.datetime.now(guild_tz)
-        current_weekday = today_local.weekday()
+        await self.config.guild(ctx.guild).schedule_timezone.set(timezone_name)
+        await ctx.send(f"✅ Schedule display timezone set to `{timezone_name}`.")
 
-        if date_or_option and date_or_option.lower() == "next":
-            days_until_next_monday = (7 - current_weekday) % 7
-            if days_until_next_monday == 0:
-                days_until_next_monday = 7
-            start_date = today_local + timedelta(days=days_until_next_monday)
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
-            
-        elif date_or_option:
-            try:
-                parsed_date = datetime.datetime.strptime(date_or_option, "%Y-%m-%d").replace(tzinfo=guild_tz)
-                start_date = parsed_date - timedelta(days=parsed_date.weekday())
-                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
-            except ValueError:
-                await ctx.send("❌ Invalid date format. Please use `YYYY-MM-DD` or `next`.")
+    @twitchy_schedule.command(name="setupdatedays")
+    async def schedule_set_update_days(self, ctx, *days: str):
+        """
+        Sets the days of the week for automatic schedule updates.
+        Provide days as full names (e.g., `Monday`, `Tuesday`, `Sunday`).
+        Usage: [p]twitchy schedule setupdatedays <day1> [day2]...
+        Example: [p]twitchy schedule setupdatedays Monday Wednesday Friday
+        """
+        day_map = {
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6
+        }
+        
+        valid_days = []
+        invalid_days = []
+        for day in days:
+            if day.lower() in day_map:
+                valid_days.append(day_map[day.lower()])
+            else:
+                invalid_days.append(day)
+        
+        if invalid_days:
+            await ctx.send(f"❌ Invalid day(s) provided: `{humanize_list(invalid_days)}`. Please use full day names (e.g., `Monday`).")
+            if not valid_days:
                 return
+        
+        await self.config.guild(ctx.guild).schedule_update_days.set(valid_days)
+        
+        if valid_days:
+            display_days = humanize_list([list(day_map.keys())[list(day_map.values()).index(d)].capitalize() for d in valid_days])
+            await ctx.send(f"✅ Automatic schedule update days set to: {display_days}.")
         else:
-            start_date = today_local - timedelta(days=current_weekday)
-            start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_date = start_date + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            await ctx.send("✅ Automatic schedule update days cleared. No days configured for updates.")
 
-        await ctx.send("🔄 Fetching schedule in text format...")
-        schedule = await self.get_twitch_schedule_data(twitch_username, start_time=start_date)
-
-        if schedule is None:
-            return await ctx.send("❌ Failed to fetch schedule from Twitch!")
+    @twitchy_schedule.command(name="setupdatetime")
+    async def schedule_set_update_time(self, ctx, time_str: str):
+        """
+        Sets the time for automatic schedule updates in HH:MM 24-hour format.
+        Usage: [p]twitchy schedule setupdatetime <HH:MM>
+        Example: [p]twitchy schedule setupdatetime 10:00
+        """
+        if not re.match(r"^(?:2[0-3]|[01]?[0-9]):[0-5][0-9]$", time_str):
+            return await ctx.send("❌ Invalid time format. Please use HH:MM (24-hour) format (e.g., `10:00`, `23:30`).")
         
-        # Filter and sort
-        filtered_schedule = []
-        for seg in schedule:
-            seg_start_time_utc = dateutil.parser.isoparse(seg["start_time"]).replace(tzinfo=datetime.timezone.utc)
-            seg_start_time_local = seg_start_time_utc.astimezone(guild_tz)
-            if start_date <= seg_start_time_local <= end_date:
-                filtered_schedule.append(seg)
-        filtered_schedule.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
+        await self.config.guild(ctx.guild).schedule_update_time.set(time_str)
+        await ctx.send(f"✅ Automatic schedule update time set to `{time_str}`.")
 
-        if not filtered_schedule:
-            return await ctx.send(f"No upcoming streams found for `{twitch_username}` this week ({start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}).")
+    @twitchy_schedule.command(name="setnotifyrole")
+    async def schedule_set_notify_role(self, ctx, role: discord.Role = None):
+        """
+        Sets a role to be mentioned when the schedule is automatically updated.
+        Set to `None` to disable.
+        Usage: [p]twitchy schedule setnotifyrole [role]
+        Example: [p]twitchy schedule setnotifyrole @ScheduleUpdates
+        Example: [p]twitchy schedule setnotifyrole None
+        """
+        if role:
+            await self.config.guild(ctx.guild).schedule_notify_role_id.set(role.id)
+            await ctx.send(f"✅ The role {role.mention} will now be notified when the schedule updates.")
+        else:
+            await self.config.guild(ctx.guild).schedule_notify_role_id.set(None)
+            await ctx.send("✅ Schedule update notification role cleared.")
 
-        description_lines = [f"__**Twitch Schedule for {twitch_username}**__\n"]
-        description_lines.append(f"**Week of {start_date.strftime('%Y-%m-%d')} ({guild_tz.tzname(start_date)})**\n")
-
-        for segment in filtered_schedule:
-            start_time_utc = dateutil.parser.isoparse(segment["start_time"]).replace(tzinfo=datetime.timezone.utc)
-            start_time_local = start_time_utc.astimezone(guild_tz)
-            
-            title = segment["title"]
-            game_name = segment.get("category", {}).get("name", "No Category")
-            
-            end_time_iso = segment.get("end_time")
-            duration_str = "Unknown"
-            if end_time_iso:
-                end_dt_utc = datetime.datetime.fromisoformat(end_time_iso.replace("Z", "+00:00")).replace(tzinfo=datetime.timezone.utc)
-                duration = end_dt_utc - start_time_utc
-                total_minutes = int(duration.total_seconds() // 60)
-                hours, minutes = divmod(total_minutes, 60)
-                duration_parts = []
-                if hours > 0:
-                    duration_parts.append(f"{hours}h")
-                if minutes > 0:
-                    duration_parts.append(f"{minutes}m")
-                duration_str = " ".join(duration_parts) if duration_parts else "Less than 1m"
-
-            description_lines.append(
-                f"**• {start_time_local.strftime('%A, %B %d at %I:%M %p')}**\n"
-                f"  `Title:` {title}\n"
-                f"  `Game:` {game_name}\n"
-                f"  `Duration:` {duration_str}\n"
-            )
+    @twitchy_schedule.command(name="seteventcount")
+    async def schedule_set_event_count(self, ctx, count: int):
+        """
+        Sets the number of upcoming events to display on the generated schedule image.
+        Default is 5.
+        Usage: [p]twitchy schedule seteventcount <number>
+        Example: [p]twitchy schedule seteventcount 7
+        """
+        if not 1 <= count <= 10:
+            return await ctx.send("❌ Please provide a number between 1 and 10 for the event count.")
         
-        output = "\n".join(description_lines)
-        for page in pagify(output, ["\n"], page_length=1900):
-            embed = discord.Embed(
-                description=page,
-                color=discord.Color.purple()
-            )
-            await ctx.send(embed=embed)
+        await self.config.guild(ctx.guild).schedule_event_count.set(count)
+        await ctx.send(f"✅ Schedule image will now display {count} upcoming events.")
 
-
-    @twitchy_schedule.command(name="settings")
-    async def schedule_show_settings(self, ctx):
-        """Show current schedule settings for this guild."""
+    @twitchy_schedule.command(name="show")
+    async def schedule_show(self, ctx):
+        """
+        Shows the current Twitch schedule for the configured streamer.
+        Usage: [p]twitchy schedule show
+        """
         guild_config = await self.config.guild(ctx.guild).all()
-        
-        channel_id = guild_config["schedule_channel_id"]
         twitch_username = guild_config["schedule_twitch_username"]
-        update_days = guild_config["schedule_update_days"]
-        update_time = guild_config["schedule_update_time"]
-        notify_role_id = guild_config["schedule_notify_role_id"]
-        event_count = guild_config["schedule_event_count"]
-        timezone = guild_config["schedule_timezone"]
-        
-        channel = ctx.guild.get_channel(channel_id) if channel_id else None
-        notify_role = ctx.guild.get_role(notify_role_id) if notify_role_id else None
-        
-        days_map = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        update_days_str = ", ".join(days_map[day] for day in update_days) if update_days else "Not set"
-        
-        embed = discord.Embed(
-            title="Twitch Schedule Settings",
-            color=discord.Color.purple()
-        )
-        embed.add_field(name="Announcement Channel", value=channel.mention if channel else "Not set", inline=True)
-        embed.add_field(name="Twitch Username", value=twitch_username or "Not set", inline=True)
-        embed.add_field(name="Update Time (24h)", value=update_time or "Not set", inline=True)
-        embed.add_field(name="Update Days", value=update_days_str, inline=True)
-        embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
-        embed.add_field(name="Events on Image", value=str(event_count), inline=True)
-        embed.add_field(name="Display Timezone", value=timezone, inline=True)
-        
-        await ctx.send(embed=embed)
+        channel_id = guild_config["schedule_channel_id"]
 
-    @twitchy_schedule.command(name="test")
-    async def schedule_test_post(self, ctx, channel: discord.TextChannel = None):
-        """Test post schedule to a specific channel (or current channel)."""
-        if channel is None:
-            channel = ctx.channel
-            
-        twitch_username = await self.config.guild(ctx.guild).schedule_twitch_username()
         if not twitch_username:
-            await ctx.send("❌ A Twitch username is not set for schedule. Please run `[p]twitchy schedule setup` first.")
-            return
-            
-        await ctx.send(f"🔄 Testing schedule post for `{twitch_username}` to {channel.mention}...")
+            return await ctx.send("❌ No Twitch username is configured for the schedule. Use `[p]twitchy schedule setstreamer` first.")
+        if not channel_id:
+            return await ctx.send("❌ No channel is configured for the schedule. Use `[p]twitchy schedule setchannel` first.")
         
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await self.config.guild(ctx.guild).schedule_channel_id.set(None) # Clear invalid channel
+            return await ctx.send(f"❌ The configured schedule channel (`{channel_id}`) no longer exists. Please set a new one.")
+
+        await ctx.send(f"🔄 Fetching schedule for `{twitch_username}`. Please wait...")
+
         guild_tz = await self.get_guild_timezone(ctx.guild)
-        today_local = datetime.datetime.now(guild_tz)
-        start_of_this_week = today_local - timedelta(days=today_local.weekday())
+        now = datetime.datetime.now(guild_tz)
+        # Get schedule for the current week (or future if no start/end provided)
+        start_of_this_week = now - timedelta(days=now.weekday()) # Monday
         start_of_this_week = start_of_this_week.replace(hour=0, minute=0, second=0, microsecond=0)
         end_of_this_week = start_of_this_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
 
         schedule = await self.get_twitch_schedule_data(twitch_username, start_time=start_of_this_week)
+
+        if schedule is not None:
+            filtered_schedule = []
+            for seg in schedule:
+                seg_start_time_utc = dateutil.parser.isoparse(seg["start_time"]).replace(tzinfo=datetime.timezone.utc)
+                seg_start_time_local = seg_start_time_utc.astimezone(guild_tz)
+                if start_of_this_week <= seg_start_time_local <= end_of_this_week:
+                    filtered_schedule.append(seg)
+            
+            await self.post_schedule(channel, filtered_schedule, start_date=start_of_this_week)
+            await ctx.send("✅ Schedule updated and posted!")
+        else:
+            await ctx.send("❌ Failed to fetch schedule from Twitch! Check the bot's console for errors.")
+
+    @twitchy_schedule.command(name="test")
+    async def schedule_test(self, ctx):
+        """
+        Tests the schedule update function by forcing a schedule fetch and post.
+        This will post a new schedule image and embeds to the configured channel.
+        Usage: [p]twitchy schedule test
+        """
+        guild_config = await self.config.guild(ctx.guild).all()
+        twitch_username = guild_config["schedule_twitch_username"]
+        channel_id = guild_config["schedule_channel_id"]
+
+        if not twitch_username:
+            return await ctx.send("❌ No Twitch username is configured for the schedule. Use `[p]twitchy schedule setstreamer` first.")
+        if not channel_id:
+            return await ctx.send("❌ No channel is configured for the schedule. Use `[p]twitchy schedule setchannel` first.")
         
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await self.config.guild(ctx.guild).schedule_channel_id.set(None) # Clear invalid channel
+            return await ctx.send(f"❌ The configured schedule channel (`{channel_id}`) no longer exists. Please set a new one.")
+
+        await ctx.send(f"🔄 Forcing schedule update and post for `{twitch_username}` in {channel.mention}. Please wait...")
+
+        guild_tz = await self.get_guild_timezone(ctx.guild)
+        now = datetime.datetime.now(guild_tz)
+        
+        # Get schedule for the current week (or future if no start/end provided)
+        # Determine the start of the current week (Sunday)
+        # Red's default week starts on Monday, but the template starts on Sunday.
+        # Adjusted to calculate start_of_this_week based on Sunday as the start for the image display
+        today = datetime.datetime.now(guild_tz)
+        days_since_sunday = today.weekday() + 1
+        if days_since_sunday == 7: # If today is Sunday
+            days_since_sunday = 0
+        start_of_this_week = today - timedelta(days=days_since_sunday)
+        start_of_this_week = start_of_this_week.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        end_of_this_week = start_of_this_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+
+        schedule = await self.get_twitch_schedule_data(twitch_username, start_time=start_of_this_week)
+
         if schedule is not None:
             filtered_schedule = []
             for seg in schedule:
@@ -1441,6 +1240,6 @@ class Twitchy(commands.Cog):
         success = await self.ensure_schedule_resources()
         
         if success:
-            await ctx.send("✅ Successfully redownloaded schedule resources!")
+            await ctx.send("✅ Successfully redownloaded schedule resources.")
         else:
-            await ctx.send("❌ Failed to redownload some schedule resources. Check bot logs for details.")
+            await ctx.send("❌ Failed to redownload schedule resources. Check bot's console for errors.")
