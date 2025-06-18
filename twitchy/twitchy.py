@@ -53,7 +53,9 @@ class Twitchy(commands.Cog):
             "schedule_update_days_in_advance": 7, # How many days of schedule to fetch/display
             "schedule_update_time": "00:00", # Time of day to update schedule (HH:MM 24hr format)
             "schedule_notify_role_id": None, # Role to ping when schedule updates
-            "schedule_event_count": 5 # Number of events to show in schedule by default
+            "schedule_event_count": 5, # Number of events to show in schedule by default
+            "custom_font_url": None, # URL for a custom font file (.ttf)
+            "custom_template_image_url": None # URL for a custom template image (.png, .jpg)
         }
         self.config.register_guild(**default_guild)
 
@@ -420,26 +422,55 @@ class Twitchy(commands.Cog):
                 print(f"Twitchy Cog: An error occurred in background loop: {traceback.format_exc()}")
                 await asyncio.sleep(60) # Wait before retrying to prevent rapid error looping
 
-    async def ensure_schedule_resources(self):
-        """Ensures font and template image files for schedule generation are present."""
-        if not self.font_path.exists():
-            font_url = "https://github.com/google/fonts/raw/main/apache/robotoslab/RobotoSlab-Regular.ttf" # Or another suitable font
-            try:
-                async with self.session.get(font_url) as resp:
-                    resp.raise_for_status()
-                    font_data = await resp.read()
-                    with open(self.font_path, "wb") as f:
-                        f.write(font_data)
-                print("Twitchy Cog: Downloaded Roboto-Regular.ttf font.")
-            except aiohttp.ClientError as e:
-                print(f"Twitchy Cog: Failed to download font: {e}")
+    async def _download_file(self, url: str, destination_path):
+        """Helper to download a file from a URL to a specified path."""
+        try:
+            async with self.session.get(url) as resp:
+                resp.raise_for_status()
+                file_data = await resp.read()
+                with open(destination_path, "wb") as f:
+                    f.write(file_data)
+                return True
+        except aiohttp.ClientError as e:
+            print(f"Twitchy Cog: Failed to download file from {url}: {e}")
+            return False
+        except Exception as e:
+            print(f"Twitchy Cog: An unexpected error occurred downloading from {url}: {e}")
+            return False
+
+    async def ensure_schedule_resources(self, guild=None):
+        """Ensures font and template image files for schedule generation are present, prioritizing custom URLs."""
+        if guild:
+            guild_settings = await self.config.guild(guild).all()
+            custom_font_url = guild_settings["custom_font_url"]
+            custom_template_image_url = guild_settings["custom_template_image_url"]
+        else: # Fallback for global context, though schedule is guild-specific
+            custom_font_url = None
+            custom_template_image_url = None
+
+        font_downloaded = False
+        if custom_font_url and not self.font_path.exists():
+            print(f"Twitchy Cog: Attempting to download custom font from {custom_font_url}")
+            font_downloaded = await self._download_file(custom_font_url, self.font_path)
+            if not font_downloaded:
+                print("Twitchy Cog: Failed to download custom font, falling back to default.")
+
+        if not self.font_path.exists() or not font_downloaded:
+            font_url = "https://github.com/google/fonts/raw/main/apache/robotoslab/RobotoSlab-Regular.ttf"
+            print("Twitchy Cog: Downloading default Roboto-Regular.ttf font.")
+            font_downloaded = await self._download_file(font_url, self.font_path)
+            if not font_downloaded:
+                print("Twitchy Cog: Failed to download default font.")
                 return False
         
-        if not self.template_path.exists():
-            # You would need to provide a default template image or instruct users to set one up.
-            # For demonstration, let's assume a simple placeholder or a URL for a default.
-            # A real bot would likely have a base image or require user setup.
-            # For now, let's create a very basic dummy image if it doesn't exist
+        image_downloaded = False
+        if custom_template_image_url and not self.template_path.exists():
+            print(f"Twitchy Cog: Attempting to download custom template image from {custom_template_image_url}")
+            image_downloaded = await self._download_file(custom_template_image_url, self.template_path)
+            if not image_downloaded:
+                print("Twitchy Cog: Failed to download custom template image, falling back to placeholder.")
+
+        if not self.template_path.exists() or not image_downloaded:
             try:
                 img = Image.new('RGB', (800, 600), color = (73, 109, 137))
                 d = ImageDraw.Draw(img)
@@ -451,6 +482,7 @@ class Twitchy(commands.Cog):
                 print(f"Twitchy Cog: Failed to create placeholder template image: {e}")
                 return False
         return True
+
 
     async def get_twitch_schedule_data(self, twitch_username, start_time=None, end_time=None):
         if not twitch_username:
@@ -508,8 +540,8 @@ class Twitchy(commands.Cog):
             return
 
         try:
-            # Ensure resources are downloaded
-            if not await self.ensure_schedule_resources():
+            # Ensure resources are downloaded (pass guild to prioritize custom URLs)
+            if not await self.ensure_schedule_resources(guild=channel.guild):
                 await channel.send("❌ Could not generate schedule image: missing font or template.")
                 return
 
@@ -852,7 +884,7 @@ class Twitchy(commands.Cog):
     @commands.guild_only()
     @commands.admin_or_permissions(manage_roles=True)
     async def twitchy_roles(self, ctx):
-        """Manage Discord roles for users streaming on Twitch/Discord."""
+        """Manages Discord roles for users streaming on Twitch/Discord."""
         if getattr(ctx, 'subcommand', None) is None:
             await ctx.send_help(ctx.command)
 
@@ -898,6 +930,10 @@ class Twitchy(commands.Cog):
         - `setupdatedays <number_of_days>`: Sets how many days of the schedule to display (default 7).
         - `setnotifyrole <@role>`: Sets a role to mention when the schedule updates.
         - `seteventcount <number>`: Sets the maximum number of schedule events to display.
+        - `setfont <url>`: Sets a custom font file (.ttf) for schedule image generation.
+        - `setimage <url>`: Sets a custom template image (.png/.jpg) for schedule image generation.
+        - `resetfont`: Resets the custom font to default.
+        - `resetimage`: Resets the custom template image to default.
         - `show`: Manually posts the current week's schedule.
         - `test`: Tests schedule generation with current settings.
         - `reload`: Forces redownload of schedule template/font resources.
@@ -1031,6 +1067,101 @@ class Twitchy(commands.Cog):
         await self.config.guild(ctx.guild).schedule_event_count.set(count)
         await ctx.send(f"✅ Schedule image will now display up to **{count}** events.")
 
+    @twitchy_schedule.command(name="setfont")
+    async def schedule_set_font(self, ctx, font_url: str):
+        """
+        Sets a custom font file (.ttf) for schedule image generation from a URL.
+        The bot will attempt to download this font.
+        """
+        if not font_url.startswith("http"):
+            return await ctx.send("❌ Invalid URL. Please provide a full URL starting with `http://` or `https://`.")
+        if not font_url.lower().endswith(".ttf"):
+            await ctx.send("⚠️ Warning: The provided URL does not end with '.ttf'. Ensure it's a valid TTF font file.")
+        
+        # Attempt to download and test the font
+        temp_font_path = data_manager.cog_data_path(self) / "temp_custom_font.ttf"
+        await ctx.send("🔄 Attempting to download and test font...")
+        if await self._download_file(font_url, temp_font_path):
+            try:
+                ImageFont.truetype(str(temp_font_path), 20) # Try to load it to validate
+                await self.config.guild(ctx.guild).custom_font_url.set(font_url)
+                # Remove the temporary file, it will be downloaded to font_path on next resource ensure
+                if temp_font_path.exists():
+                    os.remove(temp_font_path)
+                # Force immediate re-download to the correct self.font_path
+                if self.font_path.exists():
+                    os.remove(self.font_path)
+                await self.ensure_schedule_resources(guild=ctx.guild)
+                await ctx.send(f"✅ Custom font set from {font_url}. Schedule images will now use this font.")
+            except IOError:
+                await ctx.send("❌ Failed to load font from the provided URL. It might be corrupted or not a valid TTF file.")
+                if temp_font_path.exists():
+                    os.remove(temp_font_path)
+            except Exception as e:
+                await ctx.send(f"❌ An unexpected error occurred while testing the font: {e}")
+                if temp_font_path.exists():
+                    os.remove(temp_font_path)
+        else:
+            await ctx.send("❌ Failed to download font from the provided URL. Please check the URL and try again.")
+    
+    @twitchy_schedule.command(name="setimage")
+    async def schedule_set_image(self, ctx, image_url: str):
+        """
+        Sets a custom template image (.png or .jpg) for schedule image generation from a URL.
+        The bot will attempt to download this image.
+        """
+        if not image_url.startswith("http"):
+            return await ctx.send("❌ Invalid URL. Please provide a full URL starting with `http://` or `https://`.")
+        
+        # Basic check for common image extensions
+        if not (image_url.lower().endswith(".png") or image_url.lower().endswith(".jpg") or image_url.lower().endswith(".jpeg")):
+            await ctx.send("⚠️ Warning: The provided URL does not end with .png or .jpg/.jpeg. Ensure it's a valid image file.")
+
+        # Attempt to download and test the image
+        temp_image_path = data_manager.cog_data_path(self) / "temp_custom_image.png" # Save as PNG for PIL compatibility
+        await ctx.send("🔄 Attempting to download and test image...")
+        if await self._download_file(image_url, temp_image_path):
+            try:
+                Image.open(temp_image_path).verify() # Try to open and verify it's an image
+                Image.open(temp_image_path).close() # Close after verifying
+                await self.config.guild(ctx.guild).custom_template_image_url.set(image_url)
+                # Remove the temporary file, it will be downloaded to template_path on next resource ensure
+                if temp_image_path.exists():
+                    os.remove(temp_image_path)
+                # Force immediate re-download to the correct self.template_path
+                if self.template_path.exists():
+                    os.remove(self.template_path)
+                await self.ensure_schedule_resources(guild=ctx.guild)
+                await ctx.send(f"✅ Custom template image set from {image_url}. Schedule images will now use this template.")
+            except IOError:
+                await ctx.send("❌ Failed to load image from the provided URL. It might be corrupted or not a valid image file.")
+                if temp_image_path.exists():
+                    os.remove(temp_image_path)
+            except Exception as e:
+                await ctx.send(f"❌ An unexpected error occurred while testing the image: {e}")
+                if temp_image_path.exists():
+                    os.remove(temp_image_path)
+        else:
+            await ctx.send("❌ Failed to download image from the provided URL. Please check the URL and try again.")
+
+    @twitchy_schedule.command(name="resetfont")
+    async def schedule_reset_font(self, ctx):
+        """Resets the custom font for schedule image generation to the default."""
+        await self.config.guild(ctx.guild).custom_font_url.set(None)
+        if self.font_path.exists():
+            os.remove(self.font_path) # Delete current custom font file
+        await self.ensure_schedule_resources(guild=ctx.guild) # Re-download default
+        await ctx.send("✅ Custom font has been reset to the default.")
+
+    @twitchy_schedule.command(name="resetimage")
+    async def schedule_reset_image(self, ctx):
+        """Resets the custom template image for schedule image generation to the default placeholder."""
+        await self.config.guild(ctx.guild).custom_template_image_url.set(None)
+        if self.template_path.exists():
+            os.remove(self.template_path) # Delete current custom image file
+        await self.ensure_schedule_resources(guild=ctx.guild) # Re-create default placeholder
+        await ctx.send("✅ Custom template image has been reset to the default placeholder.")
+
     @twitchy_schedule.command(name="show")
     async def schedule_show(self, ctx):
         """Manually posts the current week's Twitch schedule to the configured channel."""
@@ -1125,7 +1256,7 @@ class Twitchy(commands.Cog):
         if self.template_path.exists():
             os.remove(self.template_path)
         
-        success = await self.ensure_schedule_resources()
+        success = await self.ensure_schedule_resources(guild=ctx.guild)
         
         if success:
             await ctx.send("✅ Successfully redownloaded schedule resources.")
