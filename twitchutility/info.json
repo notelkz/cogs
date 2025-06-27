@@ -1,0 +1,11 @@
+{
+    "name": "TwitchUtility",
+    "author": ["elkz"],
+    "short": "Comprehensive Twitch management for streamers.",
+    "description": "A versatile cog that provides both live stream notifications and automated schedule posting from Twitch. It monitors a specified Twitch channel, sends customizable go-live alerts with role pings, and automatically generates/posts an image of your Twitch schedule to Discord.",
+    "tags": ["twitch", "stream", "notification", "go live", "announcer", "schedule", "automation", "image"],
+    "requirements": ["aiohttp", "Pillow", "pytz", "python-dateutil"],
+    "hidden": false,
+    "disabled_by_default": false,
+    "end_user_data_statement": "This cog stores Discord guild IDs, channel IDs, role IDs, a Twitch user ID, a Twitch username, and preferences for both live notifications (last stream status, message template) and schedule updates (days, time, image asset URLs, last update date, display timezone, event count). Twitch API credentials (Client ID and Client Secret) are stored securely as bot credentials. No personal identifiable information about Discord users is stored beyond what is provided by Discord itself (e.g., role names)."
+}
