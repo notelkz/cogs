@@ -336,6 +336,5 @@ class GameCounter(commands.Cog):
         # log.info("GameCounter loop waiting for bot readiness.") # If you enabled logging
 
 # This function is what RedBot calls to load your cog.
-async def setup(bot: Red):
-    """Adds the GameCounter cog to the bot."""
+async def setup(bot: Red): # <- This is at the very start of the line
     await bot.add_cog(GameCounter(bot))
