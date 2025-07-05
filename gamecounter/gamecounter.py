@@ -9,7 +9,7 @@ from redbot.core.utils.menus import DEFAULT_CONTROLS # Might not be strictly nee
 from redbot.core.utils.chat_formatting import humanize_list # Might not be strictly needed for this cog's current commands
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
-from redbot.core.tasks import loop # Explicitly import loop from tasks (Correct for Red 3.x)
+from discord.ext import tasks # *** IMPORTANT CHANGE: Importing loop from discord.ext.tasks ***
 
 # Optional: If you want logging for debugging the cog
 # Uncomment these lines to enable basic logging
@@ -27,7 +27,7 @@ class GameCounter(commands.Cog):
         self.session = aiohttp.ClientSession()
         # Unique identifier for this cog's configuration
         self.config = Config.get_conf(
-            self, identifier=123456789012345, force_registration=True # Changed identifier for better uniqueness
+            self, identifier=123456789012345, force_registration=True
         )
         self.config.register_global(
             api_url=None,
@@ -106,7 +106,7 @@ class GameCounter(commands.Cog):
                 f"Could not find a guild with ID `{guild_id}`. "
                 "Please ensure the bot is in that guild and the ID is correct."
             )
-
+        
         view = ConfirmView(ctx.author, disable_on_timeout=True)
         view.message = await ctx.send(
             f"Are you sure you want to set the counting guild to **{guild.name}** (`{guild.id}`)?\n"
@@ -200,8 +200,8 @@ class GameCounter(commands.Cog):
                 role = guild.get_role(role_id) if guild and guild.get_role(role_id) else None
                 role_display = role.name if role else f"ID: {role_id_str}"
                 status_msg += f"  - Discord Role: `{role_display}` -> Django Game: **{game_name}**\n"
-        else:
-            status_msg += "\n\nNo game role mappings configured."
+            else:
+                status_msg += "\n\nNo game role mappings configured."
 
         await ctx.send(status_msg)
 
@@ -335,7 +335,7 @@ class GameCounter(commands.Cog):
 
     # --- Task Loop ---
     # The `loop` decorator manages the interval and automatic restarting.
-    @loop(minutes=None) # Start with None, actual interval will be set dynamically from config.
+    @tasks.loop(minutes=None) # *** IMPORTANT CHANGE: Using tasks.loop from discord.ext ***
     async def counter_loop(self):
         """Main loop that periodically updates game counts."""
         await self.bot.wait_until_ready() # Ensure bot is logged in and ready before running.
@@ -348,14 +348,14 @@ class GameCounter(commands.Cog):
             # log.warning("GameCounter interval is not set in config. Loop cannot run. Please set it via `[p]gamecounter setinterval`.")
             await asyncio.sleep(60) # Wait 1 minute before checking config again.
             return
-
+        
         # Dynamically change the loop interval if it's different from the configured value.
         # This allows updating the interval without reloading the cog.
         if self.counter_loop.minutes != interval:
             self.counter_loop.change_interval(minutes=interval)
             # If you enabled logging, uncomment this:
             # log.debug(f"GameCounter loop interval changed to {interval} minutes.")
-
+        
         # Execute the actual update logic.
         await self._run_update()
 
