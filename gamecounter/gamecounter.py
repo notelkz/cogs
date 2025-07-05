@@ -294,3 +294,5 @@ class GameCounter(commands.Cog):
 async def setup(bot: Red):
     """Adds the GameCounter cog to the bot."""
     await bot.add_cog(GameCounter(bot))
+def setup(bot):
+    bot.add_cog(GameCounter(bot))
