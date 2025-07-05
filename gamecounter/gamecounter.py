@@ -149,7 +149,7 @@ class GameCounter(commands.Cog):
         """
         Adds a mapping using a Discord role's name as the Django GameCategory name.
 
-        Use `[p]gamecounter addmultiplemappingsbyname` for multiple roles.
+        Use `[p]addmultiplemappingsbyname` for multiple roles.
         The Discord role name will be used directly as the `django_game_name`.
         """
         if not discord_role.guild == ctx.guild:
@@ -200,14 +200,17 @@ class GameCounter(commands.Cog):
         self.counter_loop.restart()
 
     # --- NEW COMMAND FOR MULTIPLE ROLES (PREFIX-ONLY) ---
-    @gamecounter_settings.command(name="addmultiplemappingsbyname", hidden=False) # Not hidden for user to see it
+    # This is now a top-level command, not a subcommand of gamecounter_settings.
+    # It must use @commands.command() instead of @gamecounter_settings.command()
+    # It will not be available as a slash command.
+    @commands.command(name="addmultiplemappingsbyname", hidden=False) 
     @commands.is_owner()
     async def add_multiple_mappings_by_name(self, ctx: commands.Context, *discord_roles: discord.Role):
         """
         Adds multiple mappings using Discord roles' names as Django GameCategory names.
 
         This is a prefix-only command. Provide multiple roles separated by spaces
-        (e.g., `[p]gc addmultiplemappingsbyname @Role1 "Role 2" 123456789`).
+        (e.g., `[p]addmultiplemappingsbyname @Role1 "Role 2" 123456789`).
         """
         if not discord_roles:
             return await ctx.send("Please provide at least one Discord role to map.")
@@ -224,12 +227,10 @@ class GameCounter(commands.Cog):
             role_id = discord_role.id
             django_game_name = discord_role.name
 
-            # Check for existing mapping for this role ID
             if str(role_id) in current_mappings and current_mappings[str(role_id)] == django_game_name:
                 skipped_mappings.append(f"`{discord_role.name}` (already mapped with same name)")
                 continue
 
-            # Check if this role ID is already mapped to a *different* name
             if str(role_id) in current_mappings and current_mappings[str(role_id)] != django_game_name:
                 view = ConfirmView(ctx.author)
                 view.message = await ctx.send(
@@ -243,7 +244,6 @@ class GameCounter(commands.Cog):
                     skipped_mappings.append(f"`{discord_role.name}` (update cancelled)")
                     continue
 
-            # Check for name collision with a *different* role ID
             for existing_role_id_str, existing_game_name in current_mappings.items():
                 if existing_game_name == django_game_name and int(existing_role_id_str) != role_id:
                     existing_role = ctx.guild.get_role(int(existing_role_id_str))
