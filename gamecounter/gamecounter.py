@@ -1,13 +1,21 @@
+# gamecounter.py
+
 import discord
 import asyncio
 import json
 import aiohttp
 from redbot.core import commands, Config, app_commands
-from redbot.core.utils.menus import DEFAULT_CONTROLS 
-from redbot.core.utils.chat_formatting import humanize_list 
+from redbot.core.utils.menus import DEFAULT_CONTROLS # Might not be strictly needed for this cog's current commands
+from redbot.core.utils.chat_formatting import humanize_list # Might not be strictly needed for this cog's current commands
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
-from redbot.core.tasks import loop 
+from redbot.core.tasks import loop # Explicitly import loop from tasks
+
+# Optional: If you want logging for debugging the cog
+# Uncomment these lines to enable basic logging
+# import logging
+# log = logging.getLogger("red.Elkz.gamecounter")
+# Ensure your RedBot logging configuration (via `[p]set logging level debug`) allows DEBUG level for this cog
 
 class GameCounter(commands.Cog):
     """
@@ -17,23 +25,28 @@ class GameCounter(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         self.session = aiohttp.ClientSession()
+        # Unique identifier for this cog's configuration
         self.config = Config.get_conf(
-            self, identifier=123456789012345, force_registration=True 
+            self, identifier=123456789012345, force_registration=True # Changed identifier for better uniqueness
         )
         self.config.register_global(
             api_url=None,
             api_key=None,
-            interval=15,  
-            guild_id=None, 
-            game_role_mappings={} 
+            interval=15,  # Default interval in minutes
+            guild_id=None, # The specific guild ID to count roles in
+            game_role_mappings={} # Dictionary: { "discord_role_id_str": "Django_Game_Name_str" }
         )
+        # Start the loop only if the bot is ready. It will also be started by the on_ready listener.
+        # This prevents potential issues if the cog loads before the bot is fully initialized.
         if self.bot.is_ready():
             self.counter_loop.start()
 
     def cog_unload(self):
         """Called when the cog is unloaded."""
+        # It's crucial to clean up any running tasks and close the aiohttp session.
         if self.counter_loop.is_running():
             self.counter_loop.cancel()
+        # Use asyncio.create_task to ensure the session is closed even if the cog is unloaded quickly.
         asyncio.create_task(self.session.close())
 
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
@@ -62,6 +75,7 @@ class GameCounter(commands.Cog):
     @app_commands.describe(key="The secret API key for your Django endpoint.")
     async def set_api_key(self, ctx: commands.Context, key: str):
         """Sets the secret API key for your Django endpoint."""
+        # For security, avoid echoing the key back directly.
         await self.config.api_key.set(key)
         await ctx.send("Django API Key has been set.")
 
@@ -73,10 +87,12 @@ class GameCounter(commands.Cog):
         if minutes < 1:
             return await ctx.send("Interval must be at least 1 minute.")
         await self.config.interval.set(minutes)
+        # Restart the loop to apply the new interval immediately
+        # This will also trigger an immediate run.
         if self.counter_loop.is_running():
             self.counter_loop.restart()
         else:
-            self.counter_loop.start() 
+            self.counter_loop.start() # Start if it was stopped
         await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
 
     @gamecounter_settings.command(name="setguild")
@@ -101,9 +117,11 @@ class GameCounter(commands.Cog):
         if view.result:
             await self.config.guild_id.set(guild_id)
             await ctx.send(f"Counting guild set to **{guild.name}** (`{guild.id}`).")
+            # Trigger an immediate run if the guild changed
             self.counter_loop.restart()
         else:
             await ctx.send("Guild setting cancelled.")
+
 
     @gamecounter_settings.command(name="addmapping")
     @commands.is_owner()
@@ -117,9 +135,10 @@ class GameCounter(commands.Cog):
         The `django_game_name` must exactly match the 'Name' field in your Django GameCategory.
         """
         current_mappings = await self.config.game_role_mappings()
-        current_mappings[str(discord_role_id)] = django_game_name 
+        current_mappings[str(discord_role_id)] = django_game_name # Store role ID as string for JSON key consistency
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
+        # Trigger an immediate update after adding a mapping
         self.counter_loop.restart()
 
     @gamecounter_settings.command(name="removemapping")
@@ -132,6 +151,7 @@ class GameCounter(commands.Cog):
             del current_mappings[str(discord_role_id)]
             await self.config.game_role_mappings.set(current_mappings)
             await ctx.send(f"Mapping for Discord Role ID `{discord_role_id}` removed.")
+            # Trigger an immediate update after removing a mapping
             self.counter_loop.restart()
         else:
             await ctx.send(f"No mapping found for Discord Role ID `{discord_role_id}`.")
@@ -143,6 +163,7 @@ class GameCounter(commands.Cog):
         if not mappings:
             return await ctx.send("No game role mappings configured.")
 
+        # Try to get the guild if set, for better role name display
         guild_id = await self.config.guild_id()
         guild = self.bot.get_guild(guild_id) if guild_id else None
 
@@ -194,23 +215,35 @@ class GameCounter(commands.Cog):
             await ctx.send("Game count update forced successfully!")
         except Exception as e:
             await ctx.send(f"An error occurred during force update: `{e}`")
+            # If you enabled logging, uncomment this:
+            # log.exception("Error during forced game count update") 
 
     async def _get_game_counts(self, guild: discord.Guild):
         """Counts members per configured game role."""
         game_counts = {}
         role_mappings = await self.config.game_role_mappings()
 
+        # Ensure guild members are cached/fetched.
+        # This is crucial for accurate counting, especially in large guilds.
+        # `guild.chunk()` is a network operation and should only be called if necessary.
         if not guild.chunked:
-            await guild.chunk() 
+            # If you enabled logging, uncomment this:
+            # log.debug(f"Chunking guild {guild.name}...")
+            await guild.chunk() # Ensures all members are loaded into cache
 
         for role_id_str, game_name in role_mappings.items():
             role_id = int(role_id_str)
             role = guild.get_role(role_id)
             if role:
+                # `len(role.members)` is the most efficient way to get members with that role
                 member_count = len(role.members)
                 game_counts[game_name] = member_count
+                # If you enabled logging, uncomment this:
+                # log.debug(f"Counted {member_count} for role {role.name} ({game_name})")
             else:
-                pass 
+                # If you enabled logging, uncomment this:
+                # log.warning(f"Configured Discord role with ID {role_id_str} not found in guild {guild.name}. Skipping.")
+                pass # Role not found in guild, skip it
 
         return game_counts
 
@@ -220,6 +253,8 @@ class GameCounter(commands.Cog):
         api_key = await self.config.api_key()
 
         if not api_url or not api_key:
+            # If you enabled logging, uncomment this:
+            # log.error("Django API URL or API Key is not set in GameCounter cog config. Cannot send data.")
             return False
 
         headers = {
@@ -230,69 +265,109 @@ class GameCounter(commands.Cog):
 
         try:
             async with self.session.post(api_url, headers=headers, json=payload) as response:
-                response.raise_for_status() 
+                response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+                response_json = await response.json()
+                # If you enabled logging, uncomment this:
+                # log.info(f"Successfully sent game counts to Django: {response_json}")
                 return True
         except aiohttp.ClientError as e:
+            # If you enabled logging, uncomment this:
+            # log.error(f"Failed to send game counts to Django API: {e}")
             return False
         except Exception as e:
+            # If you enabled logging, uncomment this:
+            # log.exception(f"An unexpected error occurred while sending data: {e}")
             return False
 
     async def _run_update(self):
         """Fetches counts and sends them to Django."""
         guild_id = await self.config.guild_id()
         if not guild_id:
+            # If you enabled logging, uncomment this:
+            # log.warning("No guild ID configured for GameCounter. Skipping update.")
             return
 
         guild = self.bot.get_guild(guild_id)
         if not guild:
+            # If you enabled logging, uncomment this:
+            # log.error(f"Guild with ID {guild_id} not found. Bot might not be in it or cache not ready.")
             return
 
+        # Ensure members are loaded for accurate counting
         if not guild.chunked:
-            await guild.chunk() 
+            await guild.chunk() # Ensures all members are loaded into cache
 
         game_counts = await self._get_game_counts(guild)
         if game_counts:
             success = await self._send_counts_to_django(game_counts)
             if not success:
+                # If you enabled logging, uncomment this:
+                # log.error("Failed to update game counts on Django site. Check Django server logs for details.")
                 pass
         else:
+            # If you enabled logging, uncomment this:
+            # log.info("No game counts to send based on current mappings/roles.")
             pass
+
+    # --- Listeners to react to Discord events (optional, for more immediate updates) ---
+    # These listeners will automatically re-trigger the counter loop when relevant changes occur.
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Triggers an update if a member's roles change in the configured guild."""
         guild_id = await self.config.guild_id()
         if after.guild.id == guild_id and before.roles != after.roles:
+            # Restarting the loop triggers an immediate run and resets the timer.
+            # For very large, active guilds, consider a more sophisticated debouncing/rate-limiting
+            # mechanism to avoid excessive API calls if many role changes happen rapidly.
             self.counter_loop.restart()
+            # If you enabled logging, uncomment this:
+            # log.debug(f"Roles changed for {after.name} in guild {after.guild.name}, restarting counter loop.")
 
     @commands.Cog.listener()
     async def on_ready(self):
         """Ensures the loop starts when the bot is fully ready."""
+        # This listener ensures the loop starts even if the cog loads before the bot is fully ready.
         if not self.counter_loop.is_running():
+            # If you enabled logging, uncomment this:
+            # log.info("GameCounter loop starting via on_ready listener.")
             self.counter_loop.start()
 
-    @loop(minutes=None) 
+    # --- Task Loop ---
+    # The `loop` decorator manages the interval and automatic restarting.
+    @loop(minutes=None) # Start with None, actual interval will be set dynamically from config.
     async def counter_loop(self):
         """Main loop that periodically updates game counts."""
-        await self.bot.wait_until_ready() 
+        await self.bot.wait_until_ready() # Ensure bot is logged in and ready before running.
 
+        # Get the configured interval from settings
         interval = await self.config.interval()
         if interval is None:
-            await asyncio.sleep(60) 
+            # If interval is not set, log a warning and wait a bit before retrying.
+            # If you enabled logging, uncomment this:
+            # log.warning("GameCounter interval is not set in config. Loop cannot run. Please set it via `[p]gamecounter setinterval`.")
+            await asyncio.sleep(60) # Wait 1 minute before checking config again.
             return
         
+        # Dynamically change the loop interval if it's different from the configured value.
+        # This allows updating the interval without reloading the cog.
         if self.counter_loop.minutes != interval:
             self.counter_loop.change_interval(minutes=interval)
+            # If you enabled logging, uncomment this:
+            # log.debug(f"GameCounter loop interval changed to {interval} minutes.")
         
+        # Execute the actual update logic.
         await self._run_update()
 
     @counter_loop.before_loop
     async def before_counter_loop(self):
         """Hook that runs before the first iteration of the loop."""
         await self.bot.wait_until_ready()
+        # If you enabled logging, uncomment this:
+        # log.info("GameCounter loop waiting for bot readiness before starting.")
 
+# This is the crucial function that RedBot calls to load your cog.
+# It MUST be at the very root level (no indentation) of your gamecounter.py file.
 async def setup(bot: Red):
     """Adds the GameCounter cog to the bot."""
     await bot.add_cog(GameCounter(bot))
-def setup(bot):
-    bot.add_cog(GameCounter(bot))
