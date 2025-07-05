@@ -1,0 +1,9 @@
+{
+    "name": "GameCounter",
+    "author": ["Elkz"],
+    "description": "Periodically counts users with specific Discord roles and sends the data to a Django website API.",
+    "short": "Discord Game Player Counter",
+    "tags": ["utility", "discord", "api", "website"],
+    "requirements": ["aiohttp"],
+    "end_user_data_statement": "This cog does not store any user data. It only counts users based on their roles and sends anonymous counts to a configured website."
+}
