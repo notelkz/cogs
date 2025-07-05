@@ -31,6 +31,7 @@ class TwitchSchedule(commands.Cog):
             "event_count": 5,            # Number of events to show on the image and as embeds
             "timezone": None,            # Kept for potential future use or if existing functionality uses it
             "custom_template_url": None,
+            "custom_font_url": None,     # New: Custom font URL
             "log_channel_id": None       # Channel for error reporting/logging
         }
         self.config.register_guild(**default_guild)
@@ -41,8 +42,8 @@ class TwitchSchedule(commands.Cog):
         self.access_token = None
 
         self.cache_dir = os.path.join(os.path.dirname(__file__), "cache")
-        self.font_path = os.path.join(self.cache_dir, "P22.ttf")
-        self.template_path = os.path.join(self.cache_dir, "schedule.png")
+        self.font_path = os.path.join(self.cache_dir, "P22.ttf") # Default font filename
+        self.template_path = os.path.join(self.cache_dir, "schedule.png") # Default template filename
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir)
 
@@ -101,23 +102,26 @@ class TwitchSchedule(commands.Cog):
             return False
 
     async def ensure_resources(self, guild: discord.Guild):
-        font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
+        # Determine font URL
+        custom_font_url = await self.config.guild(guild).custom_font_url()
+        font_url_to_use = custom_font_url if custom_font_url else "https://zerolivesleft.net/notelkz/P22.ttf"
         
+        # Determine template URL
         custom_template_url = await self.config.guild(guild).custom_template_url()
-        template_url = custom_template_url if custom_template_url else "https://zerolivesleft.net/notelkz/schedule.png"
+        template_url_to_use = custom_template_url if custom_template_url else "https://zerolivesleft.net/notelkz/schedule.png"
         
         font_downloaded = True
         template_downloaded = True
 
         if not os.path.exists(self.font_path):
-            font_downloaded = await self.download_file(font_url, self.font_path)
+            font_downloaded = await self.download_file(font_url_to_use, self.font_path)
             if not font_downloaded:
-                await self._log_error(guild, "Failed to download default font file.")
+                await self._log_error(guild, f"Failed to download font file from {font_url_to_use}. Check URL if custom.")
 
         if not os.path.exists(self.template_path):
-            template_downloaded = await self.download_file(template_url, self.template_path)
+            template_downloaded = await self.download_file(template_url_to_use, self.template_path)
             if not template_downloaded:
-                await self._log_error(guild, f"Failed to download schedule template from {template_url}. Check URL if custom.")
+                await self._log_error(guild, f"Failed to download schedule template from {template_url_to_use}. Check URL if custom.")
 
         return os.path.exists(self.font_path) and os.path.exists(self.template_path)
 
@@ -152,22 +156,11 @@ class TwitchSchedule(commands.Cog):
                 data = await resp.json()
                 segments = data.get("data", {}).get("segments", [])
                 
-                # Fetch schedule for the current week AND the next week to ensure we always get the 'next' stream
-                # even if it falls just outside the current week's image timeframe.
-                # This will be filtered down later in post_schedule.
-                
-                # Default filter for get_schedule is already the current week
-                # For `post_schedule` we might need a broader range to find the absolute "next" stream.
-                # Let's keep `get_schedule` as it is for the "current week" context and introduce
-                # `get_schedule_for_range` for flexible fetching.
-                
                 filtered_segments = []
                 for seg in segments:
                     start_time = dateutil.parser.isoparse(seg["start_time"])
                     if start_time.tzinfo is None:
                         start_time = start_time.replace(tzinfo=datetime.timezone.utc)
-                    # We are not filtering by end_of_week here to get ALL current/future segments from Twitch
-                    # The filtering for 'current week for image' vs 'next upcoming' will happen in post_schedule.
                     seg["broadcaster_name"] = broadcaster_name
                     filtered_segments.append(seg)
                         
@@ -196,8 +189,6 @@ class TwitchSchedule(commands.Cog):
                 broadcaster_id = user_data["data"][0]["id"]
                 broadcaster_name = user_data["data"][0]["login"]
         async with aiohttp.ClientSession() as session:
-            # Twitch schedule API has no direct date range filter, it returns up to 100 segments
-            # So we fetch all and filter locally.
             url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
             async with session.get(url, headers=headers) as resp:
                 if resp.status == 404:
@@ -396,11 +387,12 @@ class TwitchSchedule(commands.Cog):
                         try:
                             # Fetch a broader range of schedules to ensure we catch the very next one,
                             # even if the main image is for the current week.
-                            start_of_current_week = self.get_next_sunday() - timedelta(days=7) # To get this week's Sunday
-                            end_of_next_week = self.get_next_sunday() + timedelta(days=13) # End of next week's Saturday
+                            today_utc = datetime.datetime.now(datetime.timezone.utc)
+                            # Look 2 weeks into the future
+                            end_of_range = today_utc + timedelta(days=14) 
                             
                             all_upcoming_segments = await self.get_schedule_for_range(
-                                twitch_username, start_of_current_week, end_of_next_week
+                                twitch_username, today_utc.astimezone(london_tz), end_of_range.astimezone(london_tz)
                             )
 
                             if all_upcoming_segments is not None:
@@ -430,7 +422,7 @@ class TwitchSchedule(commands.Cog):
                 except Exception:
                     pass # Fallback if logging fails
 
-    async def post_schedule(self, channel: discord.TextChannel, all_segments: list, dry_run: bool = False):
+    async def post_schedule(self, channel: discord.TextChannel, all_segments: list, dry_run: bool = False, start_date_for_image=None):
         try:
             twitch_username = await self.config.guild(channel.guild).twitch_username()
             event_count = await self.config.guild(channel.guild).event_count()
@@ -476,20 +468,31 @@ class TwitchSchedule(commands.Cog):
                         break
 
             async with channel.typing():
-                # --- Generate and Post Main Schedule Image (for current week) ---
-                start_of_current_week = self.get_next_sunday() - timedelta(days=7) # Get current week's Sunday
-                end_of_current_week = self.get_end_of_week()
+                # --- Generate and Post Main Schedule Image (for relevant week) ---
+                # Determine the start of the week for the image
+                if start_date_for_image is None:
+                    # Default: current week's Sunday
+                    today_london = datetime.datetime.now(london_tz)
+                    days_since_sunday = today_london.weekday() + 1
+                    if days_since_sunday == 7: # If today is Sunday, it's the start of the current week
+                        days_since_sunday = 0
+                    start_of_week_image = today_london - timedelta(days=days_since_sunday)
+                    start_of_week_image = start_of_week_image.replace(hour=0, minute=0, second=0, microsecond=0)
+                else:
+                    start_of_week_image = start_date_for_image
                 
+                end_of_week_image = start_of_week_image + timedelta(days=6, hours=23, minutes=59, seconds=59)
+
                 schedule_for_image = [
                     s for s in future_segments
-                    if start_of_current_week <= dateutil.parser.isoparse(s["start_time"]).astimezone(london_tz) <= end_of_current_week
+                    if start_of_week_image <= dateutil.parser.isoparse(s["start_time"]).astimezone(london_tz) <= end_of_week_image
                 ]
                 
                 main_schedule_message = None
                 if schedule_for_image:
                     if dry_run:
                         await channel.send("🧪 Dry run: Generating weekly schedule image...")
-                    image_buf = await self.generate_schedule_image(schedule_for_image, channel.guild, start_date=start_of_current_week)
+                    image_buf = await self.generate_schedule_image(schedule_for_image, channel.guild, start_date=start_of_week_image)
                     if image_buf:
                         main_schedule_message = await channel.send(
                             file=discord.File(image_buf, filename="schedule.png")
@@ -506,9 +509,10 @@ class TwitchSchedule(commands.Cog):
                 next_stream_segment = None
                 if future_segments:
                     next_stream_segment = future_segments[0]
-                    # Ensure we don't duplicate it later if it's the first in the `event_count` list
-                    if next_stream_segment in schedule_for_image:
-                        schedule_for_image.remove(next_stream_segment) # Remove from the list for individual embeds
+                    # Create a copy of future_segments to iterate for individual embeds later
+                    streams_for_individual_embeds = list(future_segments)
+                    if next_stream_segment in streams_for_individual_embeds:
+                        streams_for_individual_embeds.remove(next_stream_segment) # Ensure no duplicate next stream embed
 
                 if next_stream_segment:
                     start_time = datetime.datetime.fromisoformat(next_stream_segment["start_time"].replace("Z", "+00:00"))
@@ -555,16 +559,16 @@ class TwitchSchedule(commands.Cog):
                         next_embed.color = discord.Color.dark_grey()
                     
                     await channel.send(embed=next_embed)
-                    # If this is the only stream, or first important message, pin it
-                    if main_schedule_message is None: # Only if image wasn't posted
-                        main_schedule_message = next_embed # Use this as the message to pin
 
                 # --- Post remaining individual stream embeds ---
-                # Use a slice to ensure we don't exceed event_count (minus 1 if next_stream_segment was unique)
-                streams_for_individual_embeds = [s for s in future_segments if s != next_stream_segment][:event_count - (1 if next_stream_segment else 0)]
+                # Use a slice to ensure we don't exceed event_count (minus 1 if next_stream_segment was unique and already counted)
+                # Max number of *additional* embeds after the 'next up' one.
+                max_additional_embeds = event_count - (1 if next_stream_segment else 0)
+                streams_for_individual_embeds_slice = streams_for_individual_embeds[:max_additional_embeds]
 
-                if not streams_for_individual_embeds and not next_stream_segment and not schedule_for_image:
-                    # Only send this if no streams were found at all
+
+                if not streams_for_individual_embeds_slice and not next_stream_segment and not schedule_for_image:
+                    # Only send this if no streams were found at all (and no "next up" embed was sent)
                     embed = discord.Embed(
                         title="No Upcoming Streams",
                         description="There are currently no streams scheduled on Twitch for this or the next week.",
@@ -575,7 +579,7 @@ class TwitchSchedule(commands.Cog):
                         embed.color = discord.Color.dark_grey()
                     await channel.send(embed=embed)
                 else:
-                    for segment in streams_for_individual_embeds:
+                    for segment in streams_for_individual_embeds_slice:
                         start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
                         title = segment["title"]
                         category = segment.get("category", {})
@@ -640,8 +644,8 @@ class TwitchSchedule(commands.Cog):
                             await main_schedule_message.pin()
                             await self.config.guild(channel.guild).schedule_message_id.set(main_schedule_message.id)
                         else: # If main_schedule_message was an embed, it's not a direct message object to pin.
-                             # Try to get the last message sent by bot.
-                            async for msg in channel.history(limit=10):
+                             # Try to get the first message sent by bot after cleanup to pin.
+                            async for msg in channel.history(limit=10, oldest_first=True):
                                 if msg.author == self.bot.user:
                                     await msg.pin()
                                     await self.config.guild(channel.guild).schedule_message_id.set(msg.id)
@@ -675,6 +679,7 @@ class TwitchSchedule(commands.Cog):
                     f"`{ctx.clean_prefix}tsched settings` - Show all current settings.\n"
                     f"`{ctx.clean_prefix}tsched test #channel` - Test post schedule to a channel.\n"
                     f"`{ctx.clean_prefix}tsched reload [url]` - Redownload template image and font files (optional: set custom template URL).\n"
+                    f"`{ctx.clean_prefix}tsched setfont [url/none]` - Set or clear custom font URL for the schedule image.\n" # New command
                     f"`{ctx.clean_prefix}tsched dryrun [#channel]` - Test post schedule without deleting/pinning messages.\n"
                     f"`{ctx.clean_prefix}tsched setlogchannel [#channel/none]` - Set channel for bot error logs.\n"
                 )
@@ -699,35 +704,31 @@ class TwitchSchedule(commands.Cog):
         async with ctx.channel.typing():
             await ctx.send("🔄 Forcing schedule update... This might take a moment.")
 
+            today_london = datetime.datetime.now(london_tz)
+            start_date_for_image_param = None
+            
             if option and option.lower() == "next":
-                # This option will generate the image specifically for the *next* week.
-                # However, the individual embeds will still show all current/future streams from Twitch.
-                today = datetime.datetime.now(london_tz)
-                days_until_next_sunday = (6 - today.weekday() + 7) % 7
+                # Calculate next week's Sunday for the image start date
+                days_until_next_sunday = (6 - today_london.weekday() + 7) % 7
                 if days_until_next_sunday == 0:
-                    days_until_next_sunday = 7
-                next_sunday_start = today + timedelta(days=days_until_next_sunday)
-                next_sunday_start = next_sunday_start.replace(hour=0, minute=0, second=0, microsecond=0)
-                next_saturday_end = next_sunday_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
-
-                # Fetch all relevant streams (current + next week)
-                all_segments = await self.get_schedule_for_range(twitch_username, today, next_saturday_end)
-                if all_segments is not None:
-                    await self.post_schedule(channel, all_segments, start_date_for_image=next_sunday_start)
-                else:
-                    await ctx.send("❌ Failed to fetch schedule from Twitch! Check bot logs for details.")
-                    await self._log_error(ctx.guild, f"Force update failed for {twitch_username}. No schedule fetched.")
+                    days_until_next_sunday = 7 # Ensures it's always the *next* Sunday
+                start_date_for_image_param = today_london + timedelta(days=days_until_next_sunday)
+                start_date_for_image_param = start_date_for_image_param.replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # Fetch streams up to the end of the next week for embeddings
+                end_of_fetch_range = start_date_for_image_param + timedelta(days=13) # 2 full weeks from now
             else:
-                # Default behavior: show current week's image and all future streams as embeds
-                today = datetime.datetime.now(london_tz)
-                end_of_next_week = today + timedelta(days=14) # Get enough streams to find the 'next'
-                all_segments = await self.get_schedule_for_range(twitch_username, today, end_of_next_week)
+                # Default behavior: image for current week, fetch streams for current + next week
+                end_of_fetch_range = today_london + timedelta(days=14) # Get enough streams to find the 'next'
 
-                if all_segments is not None:
-                    await self.post_schedule(channel, all_segments)
-                else:
-                    await ctx.send("❌ Failed to fetch schedule from Twitch! Check bot logs for details.")
-                    await self._log_error(ctx.guild, f"Force update failed for {twitch_username}. No schedule fetched.")
+
+            all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_fetch_range)
+
+            if all_segments is not None:
+                await self.post_schedule(channel, all_segments, start_date_for_image=start_date_for_image_param)
+            else:
+                await ctx.send("❌ Failed to fetch schedule from Twitch! Check bot logs for details.")
+                await self._log_error(ctx.guild, f"Force update failed for {twitch_username}. No schedule fetched.")
 
             if all_segments is not None: # Only confirm success if we actually got data
                 await ctx.send("✅ Schedule updated!")
@@ -896,6 +897,7 @@ class TwitchSchedule(commands.Cog):
         notify_role_id = await self.config.guild(ctx.guild).notify_role_id()
         event_count = await self.config.guild(ctx.guild).event_count()
         custom_template_url = await self.config.guild(ctx.guild).custom_template_url()
+        custom_font_url = await self.config.guild(ctx.guild).custom_font_url() # New
         log_channel_id = await self.config.guild(ctx.guild).log_channel_id()
         
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
@@ -916,6 +918,7 @@ class TwitchSchedule(commands.Cog):
         embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
         embed.add_field(name="Event Count (on image & embeds)", value=str(event_count), inline=True)
         embed.add_field(name="Custom Template URL", value=custom_template_url or "Not set (using default)", inline=True)
+        embed.add_field(name="Custom Font URL", value=custom_font_url or "Not set (using default)", inline=True) # New
         embed.add_field(name="Error Log Channel", value=log_channel.mention if log_channel else "Not set", inline=True)
         
         await ctx.send(embed=embed)
@@ -933,9 +936,9 @@ class TwitchSchedule(commands.Cog):
             
         async with ctx.channel.typing():
             await ctx.send("🔄 Testing schedule post... This will post the current schedule.")
-            today = datetime.datetime.now(london_tz)
-            end_of_next_week = today + timedelta(days=14) # Enough range to find 'next' streams
-            all_segments = await self.get_schedule_for_range(twitch_username, today, end_of_next_week)
+            today_london = datetime.datetime.now(london_tz)
+            end_of_fetch_range = today_london + timedelta(days=14) # Enough range to find 'next' streams
+            all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_fetch_range)
 
             if all_segments is not None:
                 await self.post_schedule(channel, all_segments)
@@ -950,6 +953,7 @@ class TwitchSchedule(commands.Cog):
         async with ctx.channel.typing():
             await ctx.send("🔄 Redownloading resources...")
             
+            # Clear existing files to force re-download
             if os.path.exists(self.font_path):
                 try:
                     os.remove(self.font_path)
@@ -961,32 +965,56 @@ class TwitchSchedule(commands.Cog):
                 except Exception as e:
                     await self._log_error(ctx.guild, f"Failed to remove existing template file: {e}")
             
-            font_url = "https://zerolivesleft.net/notelkz/P22.ttf"
-            default_template_url = "https://zerolivesleft.net/notelkz/schedule.png"
-            
+            # Update custom template URL if provided
             if template_url:
                 await self.config.guild(ctx.guild).custom_template_url.set(template_url)
-                await ctx.send(f"Attempting to download custom template from: {template_url}")
+                await ctx.send(f"Set custom template URL to: {template_url}")
             else:
                 await self.config.guild(ctx.guild).custom_template_url.set(None)
-                await ctx.send("Using default template URL.")
+                await ctx.send("Reverting to default template URL.")
             
-            font_success = await self.download_file(font_url, self.font_path)
-            template_success = await self.download_file(
-                template_url if template_url else default_template_url, self.template_path
-            )
+            # Now call ensure_resources to handle download based on current config
+            resources_ready = await self.ensure_resources(ctx.guild)
             
-            if font_success and template_success:
+            if resources_ready:
                 await ctx.send("✅ Successfully redownloaded resources!")
             else:
-                error_msg = "❌ Failed to redownload some resources. "
-                if not font_success:
-                    error_msg += "Font download failed. "
-                if not template_success:
-                    error_msg += "Template download failed. "
-                error_msg += "Please check the URLs and bot permissions."
-                await ctx.send(error_msg)
-                await self._log_error(ctx.guild, error_msg + f"\nFont URL: {font_url}, Template URL: {template_url if template_url else default_template_url}")
+                await ctx.send("❌ Failed to redownload some resources. Check logs for details.")
+
+    @twitchschedule.command(name="setfont")
+    async def set_font_url(self, ctx, font_url: str = None):
+        """Set or clear the custom font URL for the schedule image. Use 'none' to revert to default."""
+        async with ctx.channel.typing():
+            if font_url and font_url.lower() == "none":
+                font_url = None # Treat 'none' as clearing the URL
+
+            if font_url:
+                # Basic URL validation (can be more robust if needed)
+                if not (font_url.startswith("http://") or font_url.startswith("https://")):
+                    await ctx.send("❌ Invalid URL. Please provide a full HTTP or HTTPS URL.")
+                    return
+                await self.config.guild(ctx.guild).custom_font_url.set(font_url)
+                await ctx.send(f"Set custom font URL to: {font_url}. Attempting to download font...")
+            else:
+                await self.config.guild(ctx.guild).custom_font_url.set(None)
+                await ctx.send("Cleared custom font URL. Reverting to default font. Attempting to download default font...")
+            
+            # Clear existing font file to force re-download
+            if os.path.exists(self.font_path):
+                try:
+                    os.remove(self.font_path)
+                except Exception as e:
+                    await self._log_error(ctx.guild, f"Failed to remove existing font file during setfont: {e}")
+
+            # Now call ensure_resources to handle download based on current config
+            resources_ready = await self.ensure_resources(ctx.guild)
+
+            if resources_ready:
+                await ctx.send("✅ Font updated successfully!")
+            else:
+                await ctx.send("❌ Failed to download font. Please check the URL and bot permissions. Check logs for details.")
+                await self._log_error(ctx.guild, f"Font update failed via setfont command. URL: {font_url}")
+
 
     @twitchschedule.command(name="dryrun")
     async def dry_run_schedule(self, ctx, channel: discord.TextChannel = None):
@@ -1001,9 +1029,9 @@ class TwitchSchedule(commands.Cog):
             
         async with ctx.channel.typing():
             await ctx.send("🧪 Starting dry run... No messages will be deleted or pinned.")
-            today = datetime.datetime.now(london_tz)
-            end_of_next_week = today + timedelta(days=14) # Enough range to find 'next' streams
-            all_segments = await self.get_schedule_for_range(twitch_username, today, end_of_next_week)
+            today_london = datetime.datetime.now(london_tz)
+            end_of_fetch_range = today_london + timedelta(days=14) # Enough range to find 'next' streams
+            all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_fetch_range)
 
             if all_segments is not None:
                 await self.post_schedule(channel, all_segments, dry_run=True)
