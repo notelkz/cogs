@@ -5,8 +5,8 @@ import asyncio
 import json
 import aiohttp
 from redbot.core import commands, Config, app_commands
-from redbot.core.utils.menus import DEFAULT_CONTROLS # Might not be strictly needed for this cog's current commands
-from redbot.core.utils.chat_formatting import humanize_list # Might not be strictly needed for this cog's current commands
+from redbot.core.utils.menus import DEFAULT_CONTROLS 
+from redbot.core.utils.chat_formatting import humanize_list 
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
 from discord.ext import tasks # IMPORTANT CHANGE: Importing loop from discord.ext.tasks
@@ -107,7 +107,6 @@ class GameCounter(commands.Cog):
                 "Please ensure the bot is in that guild and the ID is correct."
             )
         
-        # --- FIX IS HERE: Removed 'disable_on_timeout=True' ---
         view = ConfirmView(ctx.author) 
         view.message = await ctx.send(
             f"Are you sure you want to set the counting guild to **{guild.name}** (`{guild.id}`)?\n"
@@ -136,11 +135,111 @@ class GameCounter(commands.Cog):
         The `django_game_name` must exactly match the 'Name' field in your Django GameCategory.
         """
         current_mappings = await self.config.game_role_mappings()
+        # Check if this role ID is already mapped to a *different* name
+        if str(discord_role_id) in current_mappings and current_mappings[str(discord_role_id)] != django_game_name:
+            view = ConfirmView(ctx.author)
+            view.message = await ctx.send(
+                f"Discord Role ID `{discord_role_id}` is already mapped to Django Game "
+                f"`{current_mappings[str(discord_role_id)]}`. Do you want to update it to "
+                f"`{django_game_name}`?",
+                view=view
+            )
+            await view.wait()
+            if not view.result:
+                return await ctx.send("Mapping update cancelled.")
+
         current_mappings[str(discord_role_id)] = django_game_name # Store role ID as string for JSON key consistency
         await self.config.game_role_mappings.set(current_mappings)
-        await ctx.send(f"Mapping added: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
+        await ctx.send(f"Mapping added/updated: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
         # Trigger an immediate update after adding a mapping
         self.counter_loop.restart()
+
+
+    @gamecounter_settings.command(name="addmappingbyname")
+    @commands.is_owner()
+    @app_commands.describe(
+        discord_roles="One or more Discord roles (mentions, IDs, or names). Their names will be used as the Django game names."
+    )
+    async def add_mapping_by_name(self, ctx: commands.Context, *discord_roles: discord.Role):
+        """
+        Adds one or more mappings using Discord roles' names as Django GameCategory names.
+
+        Provide multiple roles separated by spaces (e.g., `[p]gc addmappingbyname @Role1 "Role 2" 123456789`).
+        The Discord role name will be used directly as the `django_game_name`.
+        """
+        if not discord_roles:
+            return await ctx.send("Please provide at least one Discord role to map.")
+
+        current_mappings = await self.config.game_role_mappings()
+        successful_mappings = []
+        skipped_mappings = []
+        
+        for discord_role in discord_roles:
+            if not discord_role.guild == ctx.guild:
+                skipped_mappings.append(f"`{discord_role.name}` (from another server)")
+                continue
+
+            role_id = discord_role.id
+            django_game_name = discord_role.name # Use the role's name directly as the Django game name
+
+            # Check for existing mapping for this role ID
+            if str(role_id) in current_mappings and current_mappings[str(role_id)] == django_game_name:
+                skipped_mappings.append(f"`{discord_role.name}` (already mapped with same name)")
+                continue # Already mapped correctly, skip confirmation
+
+            # Check if this role ID is already mapped to a *different* name
+            if str(role_id) in current_mappings and current_mappings[str(role_id)] != django_game_name:
+                view = ConfirmView(ctx.author)
+                view.message = await ctx.send(
+                    f"Discord Role `{discord_role.name}` (`{role_id}`) is already mapped to Django Game "
+                    f"`{current_mappings[str(role_id)]}`. Do you want to update it to "
+                    f"`{django_game_name}`? (This will interrupt the current batch if cancelled.)",
+                    view=view
+                )
+                await view.wait()
+                if not view.result:
+                    skipped_mappings.append(f"`{discord_role.name}` (update cancelled)")
+                    continue
+
+            # Check for name collision with a *different* role ID
+            for existing_role_id_str, existing_game_name in current_mappings.items():
+                if existing_game_name == django_game_name and int(existing_role_id_str) != role_id:
+                    existing_role = ctx.guild.get_role(int(existing_role_id_str))
+                    existing_role_display = existing_role.name if existing_role else f"ID: {existing_role_id_str}"
+
+                    view = ConfirmView(ctx.author)
+                    view.message = await ctx.send(
+                        f"Warning: The Django game name `{django_game_name}` is already mapped "
+                        f"to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\n"
+                        f"Are you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?\n"
+                        "This is unusual and might lead to conflicting counts if both roles represent the same game."
+                        "Confirm to proceed. (This will interrupt the current batch if cancelled.)",
+                        view=view
+                    )
+                    await view.wait()
+                    if not view.result:
+                        skipped_mappings.append(f"`{discord_role.name}` (conflict cancelled)")
+                        continue
+                    break # Only need to warn once if a conflict is found for this role
+
+            current_mappings[str(role_id)] = django_game_name
+            successful_mappings.append(f"`{discord_role.name}` (`{role_id}`)")
+
+        await self.config.game_role_mappings.set(current_mappings)
+
+        response_msg = ""
+        if successful_mappings:
+            response_msg += "Successfully added/updated mappings for:\n" + humanize_list(successful_mappings) + "\n"
+        if skipped_mappings:
+            response_msg += "Skipped mappings for:\n" + humanize_list(skipped_mappings) + "\n"
+        
+        if not response_msg:
+            response_msg = "No mappings were added or updated."
+
+        await ctx.send(response_msg)
+        if successful_mappings:
+            self.counter_loop.restart()
+
 
     @gamecounter_settings.command(name="removemapping")
     @commands.is_owner()
