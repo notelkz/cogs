@@ -9,7 +9,7 @@ from redbot.core.utils.menus import DEFAULT_CONTROLS # Might not be strictly nee
 from redbot.core.utils.chat_formatting import humanize_list # Might not be strictly needed for this cog's current commands
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
-from discord.ext import tasks # *** IMPORTANT CHANGE: Importing loop from discord.ext.tasks ***
+from discord.ext import tasks # IMPORTANT CHANGE: Importing loop from discord.ext.tasks
 
 # Optional: If you want logging for debugging the cog
 # Uncomment these lines to enable basic logging
@@ -107,7 +107,8 @@ class GameCounter(commands.Cog):
                 "Please ensure the bot is in that guild and the ID is correct."
             )
         
-        view = ConfirmView(ctx.author, disable_on_timeout=True)
+        # --- FIX IS HERE: Removed 'disable_on_timeout=True' ---
+        view = ConfirmView(ctx.author) 
         view.message = await ctx.send(
             f"Are you sure you want to set the counting guild to **{guild.name}** (`{guild.id}`)?\n"
             "This will stop counting roles in any previously configured guild.",
@@ -335,7 +336,7 @@ class GameCounter(commands.Cog):
 
     # --- Task Loop ---
     # The `loop` decorator manages the interval and automatic restarting.
-    @tasks.loop(minutes=None) # *** IMPORTANT CHANGE: Using tasks.loop from discord.ext ***
+    @tasks.loop(minutes=None) # Using tasks.loop from discord.ext
     async def counter_loop(self):
         """Main loop that periodically updates game counts."""
         await self.bot.wait_until_ready() # Ensure bot is logged in and ready before running.
