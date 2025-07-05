@@ -22,26 +22,21 @@ class TwitchSchedule(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         default_guild = {
-            "channel_id": None,
+            "channel_id": None,          # The single channel for all schedule posts
             "twitch_username": None,
             "update_days": [],
             "update_time": None,
-            "schedule_message_id": None,
+            "schedule_message_id": None, # Used to pin the main image/first embed
             "notify_role_id": None,
-            "event_count": 5,
-            "timezone": None, # Kept for potential future use or if existing functionality uses it
+            "event_count": 5,            # Number of events to show on the image and as embeds
+            "timezone": None,            # Kept for potential future use or if existing functionality uses it
             "custom_template_url": None,
-            "log_channel_id": None,
-            "daily_upcoming_channel_id": None, # New: Channel for daily upcoming stream
-            "daily_upcoming_time": None,       # New: Time for daily update (e.g., "08:00")
-            "upcoming_message_id": None,       # New: Message ID for the daily upcoming stream post
-            "daily_upcoming_last_run_date": None # To prevent multiple runs on the same day
+            "log_channel_id": None       # Channel for error reporting/logging
         }
         self.config.register_guild(**default_guild)
         
-        # Initialize tasks
+        # Only one main task now, responsible for all updates
         self.task = self.bot.loop.create_task(self.schedule_update_loop())
-        self.daily_task = self.bot.loop.create_task(self.daily_upcoming_stream_loop())
 
         self.access_token = None
 
@@ -53,7 +48,6 @@ class TwitchSchedule(commands.Cog):
 
     def cog_unload(self):
         self.task.cancel()
-        self.daily_task.cancel()
 
     def get_next_sunday(self):
         today = datetime.datetime.now(london_tz)
@@ -158,22 +152,29 @@ class TwitchSchedule(commands.Cog):
                 data = await resp.json()
                 segments = data.get("data", {}).get("segments", [])
                 
-                end_of_week = self.get_end_of_week() # Filters to current week by default
+                # Fetch schedule for the current week AND the next week to ensure we always get the 'next' stream
+                # even if it falls just outside the current week's image timeframe.
+                # This will be filtered down later in post_schedule.
+                
+                # Default filter for get_schedule is already the current week
+                # For `post_schedule` we might need a broader range to find the absolute "next" stream.
+                # Let's keep `get_schedule` as it is for the "current week" context and introduce
+                # `get_schedule_for_range` for flexible fetching.
                 
                 filtered_segments = []
                 for seg in segments:
                     start_time = dateutil.parser.isoparse(seg["start_time"])
                     if start_time.tzinfo is None:
                         start_time = start_time.replace(tzinfo=datetime.timezone.utc)
-                    start_time_local = start_time.astimezone(london_tz)
-                    
-                    if start_time_local <= end_of_week:
-                        seg["broadcaster_name"] = broadcaster_name
-                        filtered_segments.append(seg)
+                    # We are not filtering by end_of_week here to get ALL current/future segments from Twitch
+                    # The filtering for 'current week for image' vs 'next upcoming' will happen in post_schedule.
+                    seg["broadcaster_name"] = broadcaster_name
+                    filtered_segments.append(seg)
                         
                 return filtered_segments
 
-    async def get_schedule_for_range(self, username: str, start_date, end_date):
+
+    async def get_schedule_for_range(self, username: str, start_date: datetime.datetime, end_date: datetime.datetime):
         credentials = await self.get_credentials()
         if not credentials:
             return None
@@ -195,6 +196,8 @@ class TwitchSchedule(commands.Cog):
                 broadcaster_id = user_data["data"][0]["id"]
                 broadcaster_name = user_data["data"][0]["login"]
         async with aiohttp.ClientSession() as session:
+            # Twitch schedule API has no direct date range filter, it returns up to 100 segments
+            # So we fetch all and filter locally.
             url = f"https://api.twitch.tv/helix/schedule?broadcaster_id={broadcaster_id}"
             async with session.get(url, headers=headers) as resp:
                 if resp.status == 404:
@@ -209,7 +212,7 @@ class TwitchSchedule(commands.Cog):
                     start_time = dateutil.parser.isoparse(seg["start_time"])
                     if start_time.tzinfo is None:
                         start_time = start_time.replace(tzinfo=datetime.timezone.utc)
-                    start_time_local = start_time.astimezone(london_tz)
+                    start_time_local = start_time.astimezone(london_tz) # Convert to local timezone for comparison
                     
                     if start_date <= start_time_local <= end_date:
                         seg["broadcaster_name"] = broadcaster_name
@@ -261,11 +264,7 @@ class TwitchSchedule(commands.Cog):
                     return None
                 broadcaster_id = user_data["data"][0]["id"]
         
-        # Twitch API dates are ISO 8601, UTC
-        # started_at = start_time.astimezone(datetime.timezone.utc).isoformat(timespec='seconds') + 'Z'
-        # ended_at = end_time.astimezone(datetime.timezone.utc).isoformat(timespec='seconds') + 'Z'
-
-        vods_url = f"https://api.twitch.tv/helix/videos?user_id={broadcaster_id}&type=archive&first=5&period=month" # period=month to ensure it covers
+        vods_url = f"https://api.twitch.tv/helix/videos?user_id={broadcaster_id}&type=archive&first=5&period=month"
         
         try:
             async with session.get(vods_url, headers=headers) as resp:
@@ -275,9 +274,7 @@ class TwitchSchedule(commands.Cog):
                 vods = []
                 for vod in data.get("data", []):
                     vod_created_at = dateutil.parser.isoparse(vod["created_at"])
-                    # Consider the actual duration of the VOD and the scheduled stream
-                    # A simple check: if VOD creation time is within scheduled stream time + a buffer
-                    # This is a heuristic, as Twitch doesn't directly link schedule segments to VODs.
+                    # Heuristic: check if VOD creation time is within scheduled stream time + a buffer
                     if vod_created_at >= start_time.astimezone(datetime.timezone.utc) - timedelta(hours=2) and \
                        vod_created_at <= end_time.astimezone(datetime.timezone.utc) + timedelta(hours=2):
                         vods.append(vod)
@@ -286,26 +283,31 @@ class TwitchSchedule(commands.Cog):
             return None
 
 
-    async def generate_schedule_image(self, schedule: list, guild: discord.Guild, start_date=None) -> io.BytesIO:
+    async def generate_schedule_image(self, schedule_for_image: list, guild: discord.Guild, start_date=None) -> io.BytesIO:
         if not await self.ensure_resources(guild):
             return None
         
         img = Image.open(self.template_path)
         event_count = await self.config.guild(guild).event_count()
-        actual_events = min(len(schedule), event_count)
+        actual_events = min(len(schedule_for_image), event_count)
         
+        # Adjust image height if fewer events than expected
         if actual_events < event_count:
             width, height = img.size
-            row_height = 150
+            row_height = 150 # Estimated height per event line in template
             height_to_remove = (event_count - actual_events) * row_height
             new_height = height - height_to_remove
             new_img = Image.new(img.mode, (width, new_height))
-            new_img.paste(img.crop((0, 0, width, 350)), (0, 0))
             
+            # Copy top part (header)
+            new_img.paste(img.crop((0, 0, width, 350)), (0, 0)) # Assuming 350px is below title
+            
+            # Copy event part if there are events
             if actual_events > 0:
                 event_section_height = actual_events * row_height
                 new_img.paste(img.crop((0, 350, width, 350 + event_section_height)), (0, 350))
             
+            # Copy bottom part (footer, if any space left after removing rows)
             if height > 350 + event_count * row_height:
                 bottom_start = 350 + event_count * row_height
                 bottom_height = height - bottom_start
@@ -321,7 +323,7 @@ class TwitchSchedule(commands.Cog):
         if start_date is None:
             today = datetime.datetime.now(london_tz)
             days_since_sunday = today.weekday() + 1
-            if days_since_sunday == 7:
+            if days_since_sunday == 7: # If today is Sunday, it's the start of the current week
                 days_since_sunday = 0
             start_of_week = today - timedelta(days=days_since_sunday)
             start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -348,8 +350,8 @@ class TwitchSchedule(commands.Cog):
         row_height = 150
         day_offset = -45
         
-        for i, segment in enumerate(schedule):
-            if i >= actual_events:
+        for i, segment in enumerate(schedule_for_image):
+            if i >= actual_events: # Ensure we only draw up to event_count
                 break
             bar_y = initial_y + (i * row_height)
             day_y = bar_y + day_offset
@@ -373,76 +375,44 @@ class TwitchSchedule(commands.Cog):
         while True:
             try:
                 for guild in self.bot.guilds:
+                    channel_id = await self.config.guild(guild).channel_id()
+                    twitch_username = await self.config.guild(guild).twitch_username()
                     update_days = await self.config.guild(guild).update_days()
                     update_time = await self.config.guild(guild).update_time()
-                    if not update_days or not update_time:
+
+                    if not (channel_id and twitch_username and update_days and update_time):
+                        continue # Skip if main schedule not fully configured
+
+                    channel = guild.get_channel(channel_id)
+                    if not channel:
+                        await self._log_error(guild, f"Configured schedule channel (ID: {channel_id}) not found for guild {guild.id}.")
                         continue
+
                     now = datetime.datetime.now(london_tz)
                     current_day = now.weekday()
                     current_time = now.strftime("%H:%M")
+
                     if current_day in update_days and current_time == update_time:
-                        channel_id = await self.config.guild(guild).channel_id()
-                        twitch_username = await self.config.guild(guild).twitch_username()
-                        if channel_id and twitch_username:
-                            channel = guild.get_channel(channel_id)
-                            if channel:
-                                try:
-                                    # Calculate next week's date range
-                                    today = datetime.datetime.now(london_tz)
-                                    days_until_next_sunday = (6 - today.weekday() + 7) % 7
-                                    if days_until_next_sunday == 0:
-                                        days_until_next_sunday = 7 # Ensures it's always the *next* Sunday
-                                    next_sunday = today + timedelta(days=days_until_next_sunday)
-                                    next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
-                                    next_saturday = next_sunday + timedelta(days=6)
-                                    next_saturday = next_saturday.replace(hour=23, minute=59, second=59)
-                                    
-                                    # Use get_schedule_for_range for next week's schedule
-                                    schedule = await self.get_schedule_for_range(twitch_username, next_sunday, next_saturday)
-                                    if schedule is not None:
-                                        await self.post_schedule(channel, schedule, start_date=next_sunday) # Pass start_date
-                                    else:
-                                        await self._log_error(guild, f"Failed to fetch schedule for {twitch_username} during automated update.")
-                                except Exception as e:
-                                    await self._log_error(guild, f"Error in schedule_update_loop for guild {guild.id}: {e}\n{traceback.format_exc()}")
+                        try:
+                            # Fetch a broader range of schedules to ensure we catch the very next one,
+                            # even if the main image is for the current week.
+                            start_of_current_week = self.get_next_sunday() - timedelta(days=7) # To get this week's Sunday
+                            end_of_next_week = self.get_next_sunday() + timedelta(days=13) # End of next week's Saturday
+                            
+                            all_upcoming_segments = await self.get_schedule_for_range(
+                                twitch_username, start_of_current_week, end_of_next_week
+                            )
+
+                            if all_upcoming_segments is not None:
+                                await self.post_schedule(channel, all_upcoming_segments)
+                            else:
+                                await self._log_error(guild, f"Failed to fetch schedule for {twitch_username} during automated update.")
+                        except Exception as e:
+                            await self._log_error(guild, f"Error in schedule_update_loop for guild {guild.id}: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(60) # Check every minute
-            except Exception: # Catch any uncaught errors in the loop itself
-                await asyncio.sleep(60)
+            except Exception:
+                await asyncio.sleep(60) # Wait before retrying after any uncaught errors in the loop itself
 
-    async def daily_upcoming_stream_loop(self):
-        await self.bot.wait_until_ready()
-        while True:
-            try:
-                for guild in self.bot.guilds:
-                    channel_id = await self.config.guild(guild).daily_upcoming_channel_id()
-                    update_time = await self.config.guild(guild).daily_upcoming_time()
-                    
-                    if not channel_id or not update_time:
-                        continue # Skip if not configured
-                    
-                    channel = guild.get_channel(channel_id)
-                    if not channel:
-                        await self._log_error(guild, f"Daily upcoming stream channel (ID: {channel_id}) not found.")
-                        continue
-
-                    now = datetime.datetime.now(london_tz)
-                    current_time = now.strftime("%H:%M")
-                    
-                    # Ensure it only runs once per day at the set time
-                    last_run_date = await self.config.guild(guild).daily_upcoming_last_run_date()
-                    
-                    if current_time == update_time and (last_run_date is None or last_run_date != now.date().isoformat()):
-                        twitch_username = await self.config.guild(guild).twitch_username()
-                        if not twitch_username:
-                            continue
-
-                        await self.post_upcoming_stream(channel, twitch_username)
-                        await self.config.guild(guild).daily_upcoming_last_run_date.set(now.date().isoformat())
-                
-                await asyncio.sleep(60) # Check every minute
-            except Exception as e:
-                await self._log_error(guild, f"Error in daily_upcoming_stream_loop for guild {guild.id}: {e}\n{traceback.format_exc()}")
-                await asyncio.sleep(60) # Wait before retrying after an error
 
     async def _log_error(self, guild: discord.Guild, error_message: str):
         log_channel_id = await self.config.guild(guild).log_channel_id()
@@ -460,8 +430,22 @@ class TwitchSchedule(commands.Cog):
                 except Exception:
                     pass # Fallback if logging fails
 
-    async def post_schedule(self, channel: discord.TextChannel, schedule: list, start_date=None, dry_run: bool = False):
+    async def post_schedule(self, channel: discord.TextChannel, all_segments: list, dry_run: bool = False):
         try:
+            twitch_username = await self.config.guild(channel.guild).twitch_username()
+            event_count = await self.config.guild(channel.guild).event_count()
+
+            # Filter for current and future streams, and sort them
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            future_segments = []
+            for seg in all_segments:
+                start_time_utc = dateutil.parser.isoparse(seg["start_time"].replace("Z", "+00:00"))
+                if start_time_utc >= now_utc - timedelta(minutes=5): # Small buffer for recently started streams
+                    future_segments.append(seg)
+            
+            future_segments.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
+
+            # --- Delete previous bot messages ---
             if not dry_run:
                 notify_role_id = await self.config.guild(channel.guild).notify_role_id()
                 notify_role = channel.guild.get_role(notify_role_id) if notify_role_id else None
@@ -474,16 +458,14 @@ class TwitchSchedule(commands.Cog):
                 await warning_msg.delete()
                 
                 bot_messages = []
-                async for message in channel.history(limit=30):
+                async for message in channel.history(limit=30): # Adjust limit if many messages are posted
                     if message.author == self.bot.user and message.id != warning_msg.id:
                         bot_messages.append(message)
-                        if len(bot_messages) >= 10:
-                            break
                 
                 for message in bot_messages:
                     try:
                         await message.delete()
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(1.5) # Small delay to avoid rate limits
                     except discord.errors.NotFound:
                         pass
                     except discord.errors.Forbidden:
@@ -494,32 +476,44 @@ class TwitchSchedule(commands.Cog):
                         break
 
             async with channel.typing():
-                if dry_run:
-                    await channel.send("🧪 Dry run: Generating schedule image...")
-                image_buf = await self.generate_schedule_image(schedule, channel.guild, start_date)
-                if image_buf:
-                    schedule_message = await channel.send(
-                        file=discord.File(image_buf, filename="schedule.png")
+                # --- Generate and Post Main Schedule Image (for current week) ---
+                start_of_current_week = self.get_next_sunday() - timedelta(days=7) # Get current week's Sunday
+                end_of_current_week = self.get_end_of_week()
+                
+                schedule_for_image = [
+                    s for s in future_segments
+                    if start_of_current_week <= dateutil.parser.isoparse(s["start_time"]).astimezone(london_tz) <= end_of_current_week
+                ]
+                
+                main_schedule_message = None
+                if schedule_for_image:
+                    if dry_run:
+                        await channel.send("🧪 Dry run: Generating weekly schedule image...")
+                    image_buf = await self.generate_schedule_image(schedule_for_image, channel.guild, start_date=start_of_current_week)
+                    if image_buf:
+                        main_schedule_message = await channel.send(
+                            file=discord.File(image_buf, filename="schedule.png")
+                        )
+                else:
+                    embed_no_image = discord.Embed(
+                        title="No Streams Scheduled This Week",
+                        description="There are no streams currently scheduled for the remainder of this week on Twitch.",
+                        color=discord.Color.orange()
                     )
-                    if not dry_run:
-                        try:
-                            await schedule_message.pin()
-                            await self.config.guild(channel.guild).schedule_message_id.set(schedule_message.id)
-                        except discord.errors.Forbidden:
-                            await self._log_error(channel.guild, f"Missing permissions to pin messages in {channel.name}.")
-                        except Exception as e:
-                            await self._log_error(channel.guild, f"Error pinning message: {e}\n{traceback.format_exc()}")
+                    main_schedule_message = await channel.send(embed=embed_no_image)
 
-                event_count = await self.config.guild(channel.guild).event_count()
-                twitch_username = await self.config.guild(channel.guild).twitch_username()
+                # --- Post "Next Upcoming Stream" ---
+                next_stream_segment = None
+                if future_segments:
+                    next_stream_segment = future_segments[0]
+                    # Ensure we don't duplicate it later if it's the first in the `event_count` list
+                    if next_stream_segment in schedule_for_image:
+                        schedule_for_image.remove(next_stream_segment) # Remove from the list for individual embeds
 
-                for i, segment in enumerate(schedule):
-                    if i >= event_count:
-                        break
-
-                    start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
-                    title = segment["title"]
-                    category = segment.get("category", {})
+                if next_stream_segment:
+                    start_time = datetime.datetime.fromisoformat(next_stream_segment["start_time"].replace("Z", "+00:00"))
+                    title = next_stream_segment["title"]
+                    category = next_stream_segment.get("category", {})
                     game_name = category.get("name", "No Category")
                     
                     boxart_url = None
@@ -529,60 +523,133 @@ class TwitchSchedule(commands.Cog):
                             boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
 
                     unix_ts = int(start_time.timestamp())
-                    time_str = f"<t:{unix_ts}:F>"
+                    time_str_relative = f"<t:{unix_ts}:R>"
+                    time_str_full = f"<t:{unix_ts}:F>"
                     
-                    end_time = segment.get("end_time")
-                    end_dt = None
+                    end_time = next_stream_segment.get("end_time")
+                    duration_str = "Unknown"
                     if end_time:
                         end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
                         duration = end_dt - start_time
                         hours, remainder = divmod(duration.seconds, 3600)
                         minutes = remainder // 60
                         duration_str = f"{hours}h {minutes}m"
-                    else:
-                        duration_str = "Unknown"
 
                     twitch_url = f"https://twitch.tv/{twitch_username}"
                     
-                    embed = discord.Embed(
-                        title=title,
+                    next_embed = discord.Embed(
+                        title=f"📣 NEXT UP: {title}",
                         url=twitch_url,
-                        description=f"**[Watch Live Here]({twitch_url})**",
-                        color=discord.Color.purple(),
+                        description=f"**[Watch Live Here!]({twitch_url})**\n\nStarting {time_str_relative} on {time_str_full}",
+                        color=discord.Color.green(), # Distinct color for next stream
                         timestamp=start_time
                     )
-                    embed.add_field(name="🕒 Start Time", value=time_str, inline=True)
-                    embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
-                    embed.add_field(name="🎮 Game", value=game_name, inline=True)
-                    embed.set_footer(text=f"Scheduled Stream • {twitch_username}")
-                    
+                    next_embed.add_field(name="🎮 Game", value=game_name, inline=True)
+                    next_embed.add_field(name="⏳ Expected Duration", value=duration_str, inline=True)
+                    next_embed.set_footer(text=f"Twitch Stream • {twitch_username}")
                     if boxart_url:
-                        embed.set_thumbnail(url=boxart_url)
-
-                    if end_dt and end_dt < datetime.datetime.now(datetime.timezone.utc):
-                        vods = await self.get_vods_for_user(twitch_username, start_time, end_dt)
-                        if vods and len(vods) > 0:
-                            vod_url = vods[0]["url"]
-                            embed.add_field(name="🎥 Watch VOD", value=f"[Click Here]({vod_url})", inline=False)
-
+                        next_embed.set_thumbnail(url=boxart_url)
 
                     if dry_run:
-                        embed.set_author(name="DRY RUN PREVIEW")
-                        embed.color = discord.Color.dark_grey()
-                        
-                    await channel.send(embed=embed)
-                    await asyncio.sleep(0.5)
+                        next_embed.set_author(name="DRY RUN PREVIEW (NEXT STREAM)")
+                        next_embed.color = discord.Color.dark_grey()
+                    
+                    await channel.send(embed=next_embed)
+                    # If this is the only stream, or first important message, pin it
+                    if main_schedule_message is None: # Only if image wasn't posted
+                        main_schedule_message = next_embed # Use this as the message to pin
 
-                if not schedule:
+                # --- Post remaining individual stream embeds ---
+                # Use a slice to ensure we don't exceed event_count (minus 1 if next_stream_segment was unique)
+                streams_for_individual_embeds = [s for s in future_segments if s != next_stream_segment][:event_count - (1 if next_stream_segment else 0)]
+
+                if not streams_for_individual_embeds and not next_stream_segment and not schedule_for_image:
+                    # Only send this if no streams were found at all
                     embed = discord.Embed(
                         title="No Upcoming Streams",
-                        description="Check back later for new streams!",
-                        color=discord.Color.purple()
+                        description="There are currently no streams scheduled on Twitch for this or the next week.",
+                        color=discord.Color.red()
                     )
                     if dry_run:
                         embed.set_author(name="DRY RUN PREVIEW")
                         embed.color = discord.Color.dark_grey()
                     await channel.send(embed=embed)
+                else:
+                    for segment in streams_for_individual_embeds:
+                        start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
+                        title = segment["title"]
+                        category = segment.get("category", {})
+                        game_name = category.get("name", "No Category")
+                        
+                        boxart_url = None
+                        if category and category.get("id"):
+                            cat_info = await self.get_category_info(category["id"])
+                            if cat_info and cat_info.get("box_art_url"):
+                                boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
+
+                        unix_ts = int(start_time.timestamp())
+                        time_str = f"<t:{unix_ts}:F>"
+                        
+                        end_time = segment.get("end_time")
+                        end_dt = None
+                        if end_time:
+                            end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                            duration = end_dt - start_time
+                            hours, remainder = divmod(duration.seconds, 3600)
+                            minutes = remainder // 60
+                            duration_str = f"{hours}h {minutes}m"
+                        else:
+                            duration_str = "Unknown"
+
+                        twitch_url = f"https://twitch.tv/{twitch_username}"
+                        
+                        embed = discord.Embed(
+                            title=title,
+                            url=twitch_url,
+                            description=f"**[Watch Live Here]({twitch_url})**",
+                            color=discord.Color.purple(),
+                            timestamp=start_time
+                        )
+                        embed.add_field(name="🕒 Start Time", value=time_str, inline=True)
+                        embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
+                        embed.add_field(name="🎮 Game", value=game_name, inline=True)
+                        embed.set_footer(text=f"Scheduled Stream • {twitch_username}")
+                        
+                        if boxart_url:
+                            embed.set_thumbnail(url=boxart_url)
+
+                        if end_dt and end_dt < now_utc: # If event has passed
+                            vods = await self.get_vods_for_user(twitch_username, start_time, end_dt)
+                            if vods and len(vods) > 0:
+                                vod_url = vods[0]["url"]
+                                embed.add_field(name="🎥 Watch VOD", value=f"[Click Here]({vod_url})", inline=False)
+
+
+                        if dry_run:
+                            embed.set_author(name="DRY RUN PREVIEW")
+                            embed.color = discord.Color.dark_grey()
+                            
+                        await channel.send(embed=embed)
+                        await asyncio.sleep(0.5)
+
+                # --- Pin the main message ---
+                if not dry_run and main_schedule_message:
+                    try:
+                        # Ensure the message object is valid for pinning (it will be if sent in this function)
+                        if isinstance(main_schedule_message, discord.Message):
+                            await main_schedule_message.pin()
+                            await self.config.guild(channel.guild).schedule_message_id.set(main_schedule_message.id)
+                        else: # If main_schedule_message was an embed, it's not a direct message object to pin.
+                             # Try to get the last message sent by bot.
+                            async for msg in channel.history(limit=10):
+                                if msg.author == self.bot.user:
+                                    await msg.pin()
+                                    await self.config.guild(channel.guild).schedule_message_id.set(msg.id)
+                                    break
+                    except discord.errors.Forbidden:
+                        await self._log_error(channel.guild, f"Missing permissions to pin messages in {channel.name}.")
+                    except Exception as e:
+                        await self._log_error(channel.guild, f"Error pinning message: {e}\n{traceback.format_exc()}")
 
         except Exception as e:
             await self._log_error(channel.guild, f"Error in post_schedule: {e}\n{traceback.format_exc()}")
@@ -590,89 +657,6 @@ class TwitchSchedule(commands.Cog):
                 await channel.send(f"❌ Dry run failed due to an error. Check logs for details.")
             else:
                 await channel.send(f"❌ An error occurred while posting the schedule. Please check the logs.")
-
-    async def post_upcoming_stream(self, channel: discord.TextChannel, twitch_username: str):
-        try:
-            today = datetime.datetime.now(london_tz)
-            end_of_future = today + timedelta(days=14) # Look 14 days ahead for upcoming streams
-            schedule_segments = await self.get_schedule_for_range(twitch_username, today, end_of_future)
-            
-            next_stream = None
-            if schedule_segments:
-                schedule_segments.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
-                
-                for segment in schedule_segments:
-                    start_time_utc = dateutil.parser.isoparse(segment["start_time"].replace("Z", "+00:00"))
-                    if start_time_utc > datetime.datetime.now(datetime.timezone.utc): # Ensure it's truly in the future
-                        next_stream = segment
-                        break
-
-            if next_stream:
-                start_time = datetime.datetime.fromisoformat(next_stream["start_time"].replace("Z", "+00:00"))
-                title = next_stream["title"]
-                category = next_stream.get("category", {})
-                game_name = category.get("name", "No Category")
-                
-                boxart_url = None
-                if category and category.get("id"):
-                    cat_info = await self.get_category_info(category["id"])
-                    if cat_info and cat_info.get("box_art_url"):
-                        boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
-
-                unix_ts = int(start_time.timestamp())
-                time_str_relative = f"<t:{unix_ts}:R>"
-                time_str_full = f"<t:{unix_ts}:F>"
-                
-                end_time = next_stream.get("end_time")
-                duration_str = "Unknown"
-                if end_time:
-                    end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                    duration = end_dt - start_time
-                    hours, remainder = divmod(duration.seconds, 3600)
-                    minutes = remainder // 60
-                    duration_str = f"{hours}h {minutes}m"
-
-                twitch_url = f"https://twitch.tv/{twitch_username}"
-                
-                embed = discord.Embed(
-                    title=f"📣 Next Stream: {title}",
-                    url=twitch_url,
-                    description=f"**[Watch Live Here]({twitch_url})**\n\nStarting {time_str_relative} on {time_str_full}",
-                    color=discord.Color.green(),
-                    timestamp=start_time
-                )
-                embed.add_field(name="🎮 Game", value=game_name, inline=True)
-                embed.add_field(name="⏳ Expected Duration", value=duration_str, inline=True)
-                embed.set_footer(text=f"Twitch Stream • {twitch_username}")
-                if boxart_url:
-                    embed.set_thumbnail(url=boxart_url)
-                
-                content = f"Hey @everyone! Here's the **NEXT** stream happening soon from {twitch_username}!" # Consider making @everyone configurable
-            else:
-                content = "📣 No upcoming streams found for the next two weeks!"
-                embed = discord.Embed(
-                    title="No Upcoming Streams",
-                    description="The streamer currently has no upcoming events on Twitch's schedule for the next two weeks.",
-                    color=discord.Color.red()
-                )
-
-            message_id = await self.config.guild(channel.guild).upcoming_message_id()
-            if message_id:
-                try:
-                    old_message = await channel.fetch_message(message_id)
-                    await old_message.delete()
-                except discord.errors.NotFound:
-                    pass
-                except discord.errors.Forbidden:
-                    await self._log_error(channel.guild, f"Missing permissions to delete old upcoming message in {channel.name}.")
-                    pass
-
-            new_message = await channel.send(content, embed=embed)
-            await self.config.guild(channel.guild).upcoming_message_id.set(new_message.id)
-
-        except Exception as e:
-            await self._log_error(channel.guild, f"Error posting upcoming stream: {e}\n{traceback.format_exc()}")
-            await channel.send("❌ An error occurred while posting the upcoming stream. Check logs.")
 
 
     @commands.group(aliases=["tsched"])
@@ -684,75 +668,79 @@ class TwitchSchedule(commands.Cog):
                 title="Twitch Schedule Commands",
                 color=discord.Color.purple(),
                 description=(
-                    f"`{ctx.clean_prefix}tsched setup` - Interactive setup process for main schedule\n"
-                    f"`{ctx.clean_prefix}tsched force [next]` - Force an immediate main schedule update\n"
-                    f"`{ctx.clean_prefix}tsched notify [@role/none]` - Set or clear notification role for main schedule\n"
-                    f"`{ctx.clean_prefix}tsched events [number]` - Set number of events to show (1-10) on main schedule\n"
-                    f"`{ctx.clean_prefix}tsched settings` - Show all current settings\n"
-                    f"`{ctx.clean_prefix}tsched test #channel` - Test post main schedule to a channel\n"
-                    f"`{ctx.clean_prefix}tsched reload [url]` - Redownload template image and font files\n"
-                    f"`{ctx.clean_prefix}tsched dryrun [#channel]` - Test post main schedule without deleting/pinning\n"
-                    f"`{ctx.clean_prefix}tsched setlogchannel [#channel/none]` - Set channel for error logs\n"
-                    f"\n**Daily Upcoming Stream Commands:**\n"
-                    f"`{ctx.clean_prefix}tsched setupcomingchannel [#channel/none]` - Set channel for daily next stream post\n"
-                    f"`{ctx.clean_prefix}tsched setupcomingtime [HH:MM]` - Set time for daily next stream post\n"
-                    f"`{ctx.clean_prefix}tsched forceupcoming` - Force an immediate next stream post\n"
-                    f"\n(Other commands like `imgr`, `next`, `timezone`, `list` are available if you add them back from previous versions.)"
+                    f"`{ctx.clean_prefix}tsched setup` - Interactive setup process for the schedule channel and update times.\n"
+                    f"`{ctx.clean_prefix}tsched force [next]` - Force an immediate schedule update.\n"
+                    f"`{ctx.clean_prefix}tsched notify [@role/none]` - Set or clear notification role for schedule updates.\n"
+                    f"`{ctx.clean_prefix}tsched events [number]` - Set number of events to show (1-10) on the image and as individual embeds.\n"
+                    f"`{ctx.clean_prefix}tsched settings` - Show all current settings.\n"
+                    f"`{ctx.clean_prefix}tsched test #channel` - Test post schedule to a channel.\n"
+                    f"`{ctx.clean_prefix}tsched reload [url]` - Redownload template image and font files (optional: set custom template URL).\n"
+                    f"`{ctx.clean_prefix}tsched dryrun [#channel]` - Test post schedule without deleting/pinning messages.\n"
+                    f"`{ctx.clean_prefix}tsched setlogchannel [#channel/none]` - Set channel for bot error logs.\n"
                 )
             )
             await ctx.send(embed=embed)
 
     @twitchschedule.command(name="force")
     async def force_update(self, ctx, option: str = None):
-        """Force an immediate schedule update. Use 'next' to show next week's schedule."""
+        """Force an immediate schedule update to the configured channel. Use 'next' to show next week's image schedule."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
         
         if not channel_id or not twitch_username:
-            await ctx.send("❌ Please run setup first to configure the main schedule channel and Twitch username!")
+            await ctx.send("❌ Please run setup first to configure the schedule channel and Twitch username!")
             return
             
         channel = ctx.guild.get_channel(channel_id)
         if not channel:
-            await ctx.send("❌ Schedule channel not found! Please re-run setup or check permissions.")
+            await ctx.send("❌ Configured schedule channel not found! Please re-run setup or check permissions.")
             return
             
         async with ctx.channel.typing():
-            await ctx.send("🔄 Forcing main schedule update... This might take a moment.")
+            await ctx.send("🔄 Forcing schedule update... This might take a moment.")
 
             if option and option.lower() == "next":
+                # This option will generate the image specifically for the *next* week.
+                # However, the individual embeds will still show all current/future streams from Twitch.
                 today = datetime.datetime.now(london_tz)
                 days_until_next_sunday = (6 - today.weekday() + 7) % 7
                 if days_until_next_sunday == 0:
                     days_until_next_sunday = 7
-                next_sunday = today + timedelta(days=days_until_next_sunday)
-                next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
-                next_saturday = next_sunday + timedelta(days=6)
-                next_saturday = next_saturday.replace(hour=23, minute=59, second=59)
-                
-                schedule = await self.get_schedule_for_range(twitch_username, next_sunday, next_saturday)
-                if schedule is not None:
-                    await self.post_schedule(channel, schedule, start_date=next_sunday)
-            else:
-                schedule = await self.get_schedule(twitch_username)
-                if schedule is not None:
-                    await self.post_schedule(channel, schedule)
+                next_sunday_start = today + timedelta(days=days_until_next_sunday)
+                next_sunday_start = next_sunday_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                next_saturday_end = next_sunday_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
 
-            if schedule is not None:
-                await ctx.send("✅ Main schedule updated!")
+                # Fetch all relevant streams (current + next week)
+                all_segments = await self.get_schedule_for_range(twitch_username, today, next_saturday_end)
+                if all_segments is not None:
+                    await self.post_schedule(channel, all_segments, start_date_for_image=next_sunday_start)
+                else:
+                    await ctx.send("❌ Failed to fetch schedule from Twitch! Check bot logs for details.")
+                    await self._log_error(ctx.guild, f"Force update failed for {twitch_username}. No schedule fetched.")
             else:
-                await ctx.send("❌ Failed to fetch main schedule from Twitch! Check bot logs for details.")
-                await self._log_error(ctx.guild, f"Force update failed for {twitch_username}. No schedule fetched.")
+                # Default behavior: show current week's image and all future streams as embeds
+                today = datetime.datetime.now(london_tz)
+                end_of_next_week = today + timedelta(days=14) # Get enough streams to find the 'next'
+                all_segments = await self.get_schedule_for_range(twitch_username, today, end_of_next_week)
+
+                if all_segments is not None:
+                    await self.post_schedule(channel, all_segments)
+                else:
+                    await ctx.send("❌ Failed to fetch schedule from Twitch! Check bot logs for details.")
+                    await self._log_error(ctx.guild, f"Force update failed for {twitch_username}. No schedule fetched.")
+
+            if all_segments is not None: # Only confirm success if we actually got data
+                await ctx.send("✅ Schedule updated!")
 
     @twitchschedule.command(name="setup")
     async def setup_schedule(self, ctx):
-        """Interactive setup process for Twitch schedule."""
-        await ctx.send("Starting interactive setup process for the **main weekly schedule**... Please answer the following questions. You will have 30 seconds to respond to each question, or the setup will cancel.")
+        """Interactive setup process for the Twitch schedule in a single channel."""
+        await ctx.send("Starting interactive setup process for the **all-in-one schedule**... Please answer the following questions. You will have 30 seconds to respond to each question, or the setup will cancel.")
         
         # Channel ID
         channel = None
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/4:** Which channel should I post the **main weekly schedule** in? (Mention the channel, e.g., `#schedule`)")
+            await ctx.send(f"**Step {i+1}/4:** Which channel should I post **all schedule updates (image, next stream, and individual streams)** in? (Mention the channel, e.g., `#schedule`)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -798,7 +786,7 @@ class TwitchSchedule(commands.Cog):
         # Update Days
         days = []
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/4:** On which days should I automatically update the **main weekly schedule**? (Send numbers: `0=Monday, 1=Tuesday, ..., 6=Sunday`. Separate multiple days with spaces, e.g., `0 6` for Monday and Sunday)")
+            await ctx.send(f"**Step {i+1}/4:** On which days should I automatically update the schedule? (Send numbers: `0=Monday, 1=Tuesday, ..., 6=Sunday`. Separate multiple days with spaces, e.g., `0 6` for Monday and Sunday)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -825,7 +813,7 @@ class TwitchSchedule(commands.Cog):
         # Update Time
         update_time = None
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/4:** At what time (in London/UK time) should I update the **main weekly schedule** on the chosen days? (Use 24-hour format, e.g., `14:00` for 2 PM)")
+            await ctx.send(f"**Step {i+1}/4:** At what time (in London/UK time) should I update the schedule on the chosen days? (Use 24-hour format, e.g., `14:00` for 2 PM)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -848,7 +836,7 @@ class TwitchSchedule(commands.Cog):
         
         # Final Confirmation
         confirm_embed = discord.Embed(
-            title="Main Schedule Setup Summary",
+            title="Schedule Setup Summary",
             description="Please confirm these settings:",
             color=discord.Color.blue()
         )
@@ -869,11 +857,11 @@ class TwitchSchedule(commands.Cog):
                 timeout=30.0
             )
             if msg.content.lower() == "yes":
-                await ctx.send("✅ Main schedule setup complete! The schedule will be updated on the specified days and time.")
+                await ctx.send("✅ Setup complete! The schedule will be updated on the specified days and time in the single channel.")
             else:
-                await ctx.send("❌ Main schedule setup cancelled by user.")
+                await ctx.send("❌ Setup cancelled by user.")
         except asyncio.TimeoutError:
-            await ctx.send("⌛ Confirmation timed out. Main schedule setup cancelled.")
+            await ctx.send("⌛ Confirmation timed out. Setup cancelled.")
         except Exception as e:
             await ctx.send(f"❌ An error occurred during setup: {str(e)}")
             await self._log_error(ctx.guild, f"Error during setup confirmation: {e}\n{traceback.format_exc()}")
@@ -881,26 +869,26 @@ class TwitchSchedule(commands.Cog):
 
     @twitchschedule.command(name="notify")
     async def set_notify_role(self, ctx, role: discord.Role = None):
-        """Set or clear the role to notify for main schedule updates."""
+        """Set or clear the role to notify for schedule updates."""
         if role is None:
             await self.config.guild(ctx.guild).notify_role_id.set(None)
-            await ctx.send("✅ Notification role for main schedule cleared!")
+            await ctx.send("✅ Notification role cleared!")
         else:
             await self.config.guild(ctx.guild).notify_role_id.set(role.id)
-            await ctx.send(f"✅ Notification role for main schedule set to {role.mention}!")
+            await ctx.send(f"✅ Notification role set to {role.mention}!")
 
     @twitchschedule.command(name="events")
     async def set_event_count(self, ctx, count: int):
-        """Set the number of events to show (1-10) on the main schedule image."""
+        """Set the number of events to show (1-10) on the schedule image and as individual embeds."""
         if not 1 <= count <= 10:
             await ctx.send("❌ Event count must be between 1 and 10!")
             return
         await self.config.guild(ctx.guild).event_count.set(count)
-        await ctx.send(f"✅ Event count for main schedule set to {count}!")
+        await ctx.send(f"✅ Event count set to {count}!")
 
     @twitchschedule.command(name="settings")
     async def show_settings(self, ctx):
-        """Show all current settings."""
+        """Show current settings."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
         twitch_username = await self.config.guild(ctx.guild).twitch_username()
         update_days = await self.config.guild(ctx.guild).update_days()
@@ -909,13 +897,10 @@ class TwitchSchedule(commands.Cog):
         event_count = await self.config.guild(ctx.guild).event_count()
         custom_template_url = await self.config.guild(ctx.guild).custom_template_url()
         log_channel_id = await self.config.guild(ctx.guild).log_channel_id()
-        daily_upcoming_channel_id = await self.config.guild(ctx.guild).daily_upcoming_channel_id()
-        daily_upcoming_time = await self.config.guild(ctx.guild).daily_upcoming_time()
         
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         notify_role = ctx.guild.get_role(notify_role_id) if notify_role_id else None
         log_channel = ctx.guild.get_channel(log_channel_id) if log_channel_id else None
-        daily_upcoming_channel = ctx.guild.get_channel(daily_upcoming_channel_id) if daily_upcoming_channel_id else None
         
         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         update_days_str = ", ".join(days[day] for day in update_days) if update_days else "None"
@@ -924,22 +909,20 @@ class TwitchSchedule(commands.Cog):
             title="Twitch Schedule Settings",
             color=discord.Color.purple()
         )
-        embed.add_field(name="Main Schedule Channel", value=channel.mention if channel else "Not set", inline=True)
+        embed.add_field(name="Schedule Channel", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Twitch Username", value=twitch_username or "Not set", inline=True)
-        embed.add_field(name="Main Update Time (UK)", value=update_time or "Not set", inline=True)
-        embed.add_field(name="Main Update Days (UK)", value=update_days_str, inline=True)
-        embed.add_field(name="Main Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
-        embed.add_field(name="Main Event Count", value=str(event_count), inline=True)
+        embed.add_field(name="Update Time (UK)", value=update_time or "Not set", inline=True)
+        embed.add_field(name="Update Days (UK)", value=update_days_str, inline=True)
+        embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
+        embed.add_field(name="Event Count (on image & embeds)", value=str(event_count), inline=True)
         embed.add_field(name="Custom Template URL", value=custom_template_url or "Not set (using default)", inline=True)
         embed.add_field(name="Error Log Channel", value=log_channel.mention if log_channel else "Not set", inline=True)
-        embed.add_field(name="Daily Upcoming Channel", value=daily_upcoming_channel.mention if daily_upcoming_channel else "Not set", inline=True)
-        embed.add_field(name="Daily Upcoming Time (UK)", value=daily_upcoming_time or "Not set", inline=True)
         
         await ctx.send(embed=embed)
 
     @twitchschedule.command(name="test")
     async def test_post(self, ctx, channel: discord.TextChannel = None):
-        """Test post main schedule to a channel."""
+        """Test post schedule to a channel."""
         if channel is None:
             channel = ctx.channel
             
@@ -949,13 +932,16 @@ class TwitchSchedule(commands.Cog):
             return
             
         async with ctx.channel.typing():
-            await ctx.send("🔄 Testing main schedule post...")
-            schedule = await self.get_schedule(twitch_username)
-            if schedule is not None:
-                await self.post_schedule(channel, schedule)
+            await ctx.send("🔄 Testing schedule post... This will post the current schedule.")
+            today = datetime.datetime.now(london_tz)
+            end_of_next_week = today + timedelta(days=14) # Enough range to find 'next' streams
+            all_segments = await self.get_schedule_for_range(twitch_username, today, end_of_next_week)
+
+            if all_segments is not None:
+                await self.post_schedule(channel, all_segments)
                 await ctx.send("✅ Test complete!")
             else:
-                await ctx.send("❌ Failed to fetch main schedule from Twitch! Check bot logs for details.")
+                await ctx.send("❌ Failed to fetch schedule from Twitch! Check bot logs for details.")
                 await self._log_error(ctx.guild, f"Test post failed for {twitch_username}. No schedule fetched.")
 
     @twitchschedule.command(name="reload")
@@ -1004,7 +990,7 @@ class TwitchSchedule(commands.Cog):
 
     @twitchschedule.command(name="dryrun")
     async def dry_run_schedule(self, ctx, channel: discord.TextChannel = None):
-        """Perform a dry run of the main schedule post without deleting/pinning messages."""
+        """Perform a dry run of the schedule post without deleting/pinning messages."""
         if channel is None:
             channel = ctx.channel
             
@@ -1014,13 +1000,16 @@ class TwitchSchedule(commands.Cog):
             return
             
         async with ctx.channel.typing():
-            await ctx.send("🧪 Starting dry run for main schedule... No messages will be deleted or pinned.")
-            schedule = await self.get_schedule(twitch_username)
-            if schedule is not None:
-                await self.post_schedule(channel, schedule, dry_run=True)
+            await ctx.send("🧪 Starting dry run... No messages will be deleted or pinned.")
+            today = datetime.datetime.now(london_tz)
+            end_of_next_week = today + timedelta(days=14) # Enough range to find 'next' streams
+            all_segments = await self.get_schedule_for_range(twitch_username, today, end_of_next_week)
+
+            if all_segments is not None:
+                await self.post_schedule(channel, all_segments, dry_run=True)
                 await ctx.send("✅ Dry run complete! Check the specified channel for a preview. No actual changes were made.")
             else:
-                await ctx.send("❌ Failed to fetch main schedule from Twitch for dry run! Check bot logs for details.")
+                await ctx.send("❌ Failed to fetch schedule from Twitch for dry run! Check bot logs for details.")
                 await self._log_error(ctx.guild, f"Dry run failed for {twitch_username}. No schedule fetched.")
 
     @twitchschedule.command(name="setlogchannel")
@@ -1032,45 +1021,6 @@ class TwitchSchedule(commands.Cog):
         else:
             await self.config.guild(ctx.guild).log_channel_id.set(None)
             await ctx.send("✅ Error log channel cleared. No errors will be reported via Discord.")
-
-    @twitchschedule.command(name="setupcomingchannel")
-    async def set_upcoming_channel(self, ctx, channel: discord.TextChannel = None):
-        """Set the channel for the daily 'next upcoming stream' post. Use `none` to disable."""
-        if channel:
-            await self.config.guild(ctx.guild).daily_upcoming_channel_id.set(channel.id)
-            await ctx.send(f"✅ Daily upcoming stream will now be posted in {channel.mention}.")
-        else:
-            await self.config.guild(ctx.guild).daily_upcoming_channel_id.set(None)
-            await ctx.send("✅ Daily upcoming stream channel cleared. This feature is now disabled.")
-
-    @twitchschedule.command(name="setupcomingtime")
-    async def set_upcoming_time(self, ctx, time_str: str):
-        """Set the time (HH:MM London/UK time) for the daily 'next upcoming stream' post."""
-        if not re.match(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$", time_str):
-            await ctx.send("❌ Invalid time format. Please use HH:MM (24-hour, e.g., `09:30` or `23:00`).")
-            return
-        await self.config.guild(ctx.guild).daily_upcoming_time.set(time_str)
-        await ctx.send(f"✅ Daily upcoming stream will update at `{time_str}` London/UK time.")
-
-    @twitchschedule.command(name="forceupcoming")
-    async def force_upcoming_update(self, ctx):
-        """Force an immediate update of the 'next upcoming stream' post."""
-        channel_id = await self.config.guild(ctx.guild).daily_upcoming_channel_id()
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-
-        if not channel_id or not twitch_username:
-            await ctx.send("❌ Please set up the upcoming stream channel and Twitch username first using `!tsched setupcomingchannel`.")
-            return
-
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel:
-            await ctx.send("❌ The configured upcoming stream channel no longer exists! Please re-set it.")
-            return
-        
-        async with ctx.channel.typing():
-            await ctx.send("🔄 Forcing update of upcoming stream...")
-            await self.post_upcoming_stream(channel, twitch_username)
-            await ctx.send("✅ Upcoming stream updated!")
 
 
 async def setup(bot: Red):
