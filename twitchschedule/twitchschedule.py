@@ -315,9 +315,23 @@ class TwitchSchedule(commands.Cog):
                         if channel_id and twitch_username:
                             channel = guild.get_channel(channel_id)
                             if channel:
-                                schedule = await self.get_schedule(twitch_username)
+                                # Calculate next week's date range
+                                today = datetime.datetime.now(london_tz)
+                                # (6 - today.weekday()) % 7 gives days until next Sunday if today is not Sunday
+                                # If today is Sunday (weekday 6), (6-6)%7 = 0, so it would be current Sunday.
+                                # To get *next* Sunday, we add 7 days to this calculation if it's already Sunday, or just add 1 day if it's currently Saturday.
+                                # A more robust way to get next Sunday:
+                                days_until_next_sunday = (6 - today.weekday() + 7) % 7
+                                if days_until_next_sunday == 0: # if today is Sunday, we want next Sunday, so add 7 days
+                                    days_until_next_sunday = 7
+                                next_sunday = today + timedelta(days=days_until_next_sunday)
+                                next_sunday = next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
+                                next_saturday = next_sunday + timedelta(days=6)
+                                next_saturday = next_saturday.replace(hour=23, minute=59, second=59)
+
+                                schedule = await self.get_schedule_for_range(twitch_username, next_sunday, next_saturday)
                                 if schedule is not None:
-                                    await self.post_schedule(channel, schedule)
+                                    await self.post_schedule(channel, schedule, start_date=next_sunday) # Pass start_date
                 await asyncio.sleep(60)
             except Exception:
                 await asyncio.sleep(60)
