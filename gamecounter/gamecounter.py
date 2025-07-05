@@ -10,6 +10,8 @@ from redbot.core.utils.chat_formatting import humanize_list # Might not be stric
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
 from redbot.core.tasks import loop # Explicitly import loop from tasks
+from redbot.internal.tasks import loop
+
 
 # Optional: If you want logging for debugging the cog
 # Uncomment these lines to enable basic logging
