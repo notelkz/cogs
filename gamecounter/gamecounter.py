@@ -1,9 +1,8 @@
-# gamecounter.py
-
 import discord
 import asyncio
 import json
 import aiohttp
+from aiohttp import web # ADD THIS IMPORT
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.menus import DEFAULT_CONTROLS 
 from redbot.core.utils.chat_formatting import humanize_list 
@@ -12,14 +11,14 @@ from redbot.core.bot import Red
 from discord.ext import tasks
 
 # Optional: If you want logging for debugging the cog
-# Uncomment these lines to enable basic logging
-# import logging
-# log = logging.getLogger("red.Elkz.gamecounter")
+import logging # ADD THIS IMPORT
+log = logging.getLogger("red.Elkz.gamecounter") # INITIALIZE LOGGER
 # Ensure your RedBot logging configuration (via `[p]set logging level debug`) allows DEBUG level for this cog
 
 class GameCounter(commands.Cog):
     """
     Periodically counts users with specific Discord roles and sends the data to a Django website API.
+    Also serves a read-only API for Discord role members for the website.
     """
 
     def __init__(self, bot: Red):
@@ -29,27 +28,202 @@ class GameCounter(commands.Cog):
             self, identifier=123456789012345, force_registration=True
         )
         self.config.register_global(
-            api_url=None,
-            api_key=None,
+            api_url=None, # This is for RedBot -> Django (counts)
+            api_key=None, # This is for RedBot -> Django (counts)
             interval=15,
             guild_id=None,
-            game_role_mappings={}
+            game_role_mappings={},
+            # NEW CONFIG FOR THE WEB API SERVER (Django -> RedBot)
+            web_api_host="0.0.0.0", # Default host for the web API (accessible from outside)
+            web_api_port=5001,      # Default port for the web API (choose an unused port, e.g., 5001)
+            web_api_key=None        # API key for Django to authenticate with this cog's web API
         )
-        if self.bot.is_ready():
-            self.counter_loop.start()
+        
+        # Initialize aiohttp web server components
+        self.web_app = web.Application()
+        self.web_runner = None
+        self.web_site = None
+        
+        # Define routes for the web API
+        self.web_app.router.add_get(
+            "/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler
+        )
+        # Add a simple health check endpoint
+        self.web_app.router.add_get(
+            "/health", self.health_check_handler
+        )
+        
+        # Removed self.counter_loop.start() from here. It will start in on_ready.
 
     def cog_unload(self):
+        # Gracefully shut down the web server
+        # Schedule the shutdown as a task, as cog_unload is synchronous
+        asyncio.create_task(self._shutdown_web_server()) 
+        
         if self.counter_loop.is_running():
             self.counter_loop.cancel()
         asyncio.create_task(self.session.close())
 
+    async def _shutdown_web_server(self):
+        """Helper to gracefully shut down the aiohttp web server."""
+        if self.web_runner:
+            log.info("Shutting down GameCounter web API server...")
+            try:
+                await self.web_app.shutdown()
+                await self.web_runner.cleanup()
+                log.info("GameCounter web API server shut down successfully.")
+            except Exception as e:
+                log.error(f"Error during web API server shutdown: {e}")
+        self.web_runner = None
+        self.web_site = None
+
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
+        # TODO: This cog does not store any user data. If it did, it would be deleted here.
         return
+
+    # --- NEW WEB API ENDPOINT HANDLERS ---
+
+    async def _authenticate_request(self, request: web.Request):
+        """Authenticates incoming web API requests based on X-API-Key header."""
+        expected_key = await self.config.web_api_key()
+        if not expected_key:
+            log.warning("Web API key is not set in config, all requests will fail authentication.")
+            raise web.HTTPUnauthorized(reason="Web API Key not configured on RedBot.")
+        
+        provided_key = request.headers.get("X-API-Key")
+        if not provided_key:
+            raise web.HTTPUnauthorized(reason="X-API-Key header missing.")
+        
+        if provided_key != expected_key:
+            raise web.HTTPForbidden(reason="Invalid API Key.")
+        
+        return True
+
+    async def health_check_handler(self, request: web.Request):
+        """Simple health check endpoint for the web API."""
+        log.debug("Received health check request.")
+        return web.Response(text="OK", status=200)
+
+    async def get_role_members_handler(self, request: web.Request):
+        """
+        Web API handler to return members of a specific Discord role.
+        Expected URL: /guilds/{guild_id}/roles/{role_id}/members
+        Requires X-API-Key header for authentication.
+        """
+        try:
+            await self._authenticate_request(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.warning(f"Authentication failed for /guilds/roles/members endpoint: {e.reason}")
+            return e # Returns the HTTP error response directly
+
+        guild_id_str = request.match_info.get("guild_id")
+        role_id_str = request.match_info.get("role_id")
+
+        if not guild_id_str or not role_id_str:
+            log.warning("Missing guild_id or role_id in /guilds/roles/members request path.")
+            raise web.HTTPBadRequest(reason="Missing guild_id or role_id in path.")
+
+        try:
+            guild_id = int(guild_id_str)
+            role_id = int(role_id_str)
+        except ValueError:
+            log.warning(f"Invalid guild_id ({guild_id_str}) or role_id ({role_id_str}) provided to API.")
+            raise web.HTTPBadRequest(reason="Invalid guild_id or role_id format.")
+
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            log.warning(f"Guild with ID {guild_id} not found for API request.")
+            raise web.HTTPNotFound(reason=f"Guild with ID {guild_id} not found.")
+
+        # Ensure members are cached for the guild
+        if not guild.chunked:
+            log.debug(f"Chunking guild {guild.id} for API request.")
+            try:
+                await guild.chunk()
+            except asyncio.TimeoutError:
+                log.error(f"Failed to chunk guild {guild.id} within timeout for API request.")
+                raise web.HTTPGatewayTimeout(reason="Bot timed out fetching guild members.")
+            except Exception as e:
+                log.error(f"Error chunking guild {guild.id} for API request: {e}")
+                raise web.HTTPInternalServerError(reason="Failed to fetch guild members.")
+
+        role = guild.get_role(role_id)
+        if not role:
+            log.warning(f"Role with ID {role_id} not found in guild {guild.id} for API request.")
+            raise web.HTTPNotFound(reason=f"Role with ID {role_id} not found in guild {guild.id}.")
+
+        members_data = []
+        for member in role.members:
+            members_data.append({
+                "id": str(member.id),
+                "name": member.name,
+                "display_name": member.display_name,
+                "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
+                "discriminator": member.discriminator if member.discriminator != "0" else None # Legacy discriminator
+            })
+        
+        log.debug(f"Returning {len(members_data)} members for role {role_id} in guild {guild_id}.")
+        return web.json_response(members_data)
+
+    # --- END NEW WEB API ENDPOINT HANDLERS ---
 
     @commands.hybrid_group(name="gamecounter", aliases=["gc"])
     async def gamecounter_settings(self, ctx: commands.Context):
         """Manage the GameCounter settings."""
         pass
+
+    # --- NEW WEB API CONFIGURATION COMMANDS ---
+    @gamecounter_settings.command(name="setwebhost")
+    @commands.is_owner()
+    @app_commands.describe(host="The host for the cog's web API (e.g., 0.0.0.0 for all interfaces, 127.0.0.1 for local).")
+    async def set_web_host(self, ctx: commands.Context, host: str):
+        """Sets the host for the cog's internal web API."""
+        if ":" in host or "//" in host:
+            return await ctx.send("Please provide just the host/IP address (e.g., `0.0.0.0` or `127.0.0.1`), not a full URL.")
+        await self.config.web_api_host.set(host)
+        await ctx.send(f"Web API host set to: `{host}`. Restart cog to apply changes.")
+        log.info(f"Web API host set to {host} by {ctx.author}.")
+
+    @gamecounter_settings.command(name="setwebport")
+    @commands.is_owner()
+    @app_commands.describe(port="The port for the cog's web API (e.g., 5001).")
+    async def set_web_port(self, ctx: commands.Context, port: int):
+        """Sets the port for the cog's internal web API."""
+        if not (1024 <= port <= 65535):
+            return await ctx.send("Please provide a port between 1024 and 65535.")
+        await self.config.web_api_port.set(port)
+        await ctx.send(f"Web API port set to: `{port}`. Restart cog to apply changes.")
+        log.info(f"Web API port set to {port} by {ctx.author}.")
+
+    @gamecounter_settings.command(name="setwebapikey")
+    @commands.is_owner()
+    @app_commands.describe(key="The secret API key for your Django website to authenticate with this cog's API.")
+    async def set_web_api_key(self, ctx: commands.Context, key: str):
+        """Sets the secret API key for your Django website to authenticate with this cog's API."""
+        if len(key) < 16:
+            return await ctx.send("Please provide a longer, more secure API key (e.g., 16+ characters).")
+        await self.config.web_api_key.set(key)
+        await ctx.send("Web API Key has been set. Keep this key secure!")
+        log.info(f"Web API key set by {ctx.author}.")
+    
+    @gamecounter_settings.command(name="showwebapi")
+    @commands.is_owner()
+    async def show_web_api_settings(self, ctx: commands.Context):
+        """Shows the current settings for the cog's internal web API."""
+        host = await self.config.web_api_host()
+        port = await self.config.web_api_port()
+        key_set = "Yes" if await self.config.web_api_key() else "No"
+        
+        await ctx.send(
+            f"**GameCounter Web API Settings:**\n"
+            f"  Host: `{host}`\n"
+            f"  Port: `{port}`\n"
+            f"  API Key Set: `{key_set}`\n\n"
+            "**Important:** If you changed host/port, you need to unload and load the cog for changes to take effect."
+        )
+
+    # --- END NEW WEB API CONFIGURATION COMMANDS ---
+
 
     @gamecounter_settings.command(name="setapiurl")
     @commands.is_owner()
@@ -325,10 +499,17 @@ class GameCounter(commands.Cog):
         guild = self.bot.get_guild(guild_id) if guild_id else None
         mappings = await self.config.game_role_mappings()
 
+        web_api_host = await self.config.web_api_host() # NEW
+        web_api_port = await self.config.web_api_port() # NEW
+        web_api_key_set = "Yes" if await self.config.web_api_key() else "No" # NEW
+        
         status_msg = (
             f"**GameCounter Status:**\n"
-            f"  API URL: `{api_url or 'Not set'}`\n"
-            f"  API Key Set: `{api_key_set}`\n"
+            f"  API URL (RedBot->Django): `{api_url or 'Not set'}`\n"
+            f"  API Key Set (RedBot->Django): `{api_key_set}`\n"
+            f"  Web API Host (Django->RedBot): `{web_api_host}`\n" # NEW
+            f"  Web API Port (Django->RedBot): `{web_api_port}`\n" # NEW
+            f"  Web API Key Set (Django->RedBot): `{web_api_key_set}`\n" # NEW
             f"  Update Interval: `{interval} minutes`\n"
             f"  Counting Guild: `{guild.name}` (`{guild.id}`)" if guild else "`Not set`"
         )
@@ -340,8 +521,8 @@ class GameCounter(commands.Cog):
                 role = guild.get_role(role_id) if guild and guild.get_role(role_id) else None
                 role_display = role.name if role else f"ID: {role_id_str}"
                 status_msg += f"  - Discord Role: `{role_display}` -> Django Game: **{game_name}**\n"
-            else:
-                status_msg += "\n\nNo game role mappings configured."
+        else:
+            status_msg += "\n\nNo game role mappings configured."
 
         await ctx.send(status_msg)
 
@@ -361,8 +542,16 @@ class GameCounter(commands.Cog):
         game_counts = {}
         role_mappings = await self.config.game_role_mappings()
 
+        # Ensure all members are cached before counting
         if not guild.chunked:
-            await guild.chunk()
+            try:
+                await guild.chunk()
+            except asyncio.TimeoutError:
+                log.error(f"Failed to chunk guild {guild.id} for game count update within timeout.")
+                return {} # Return empty counts if chunking fails
+            except Exception as e:
+                log.error(f"Error chunking guild {guild.id} for game count update: {e}")
+                return {}
 
         for role_id_str, game_name in role_mappings.items():
             role_id = int(role_id_str)
@@ -371,7 +560,7 @@ class GameCounter(commands.Cog):
                 member_count = len(role.members)
                 game_counts[game_name] = member_count
             else:
-                pass
+                log.warning(f"Role with ID {role_id_str} not found in guild {guild.id}. Skipping count.")
 
         return game_counts
 
@@ -381,6 +570,7 @@ class GameCounter(commands.Cog):
         api_key = await self.config.api_key()
 
         if not api_url or not api_key:
+            log.warning("Django API URL or Key not configured. Skipping sending counts.")
             return False
 
         headers = {
@@ -390,62 +580,98 @@ class GameCounter(commands.Cog):
         payload = {"game_counts": game_counts}
 
         try:
-            async with self.session.post(api_url, headers=headers, json=payload) as response:
-                response.raise_for_status()
+            async with self.session.post(api_url, headers=headers, json=payload, timeout=10) as response:
+                response.raise_for_status() # Raises an exception for 4xx/5xx responses
                 response_json = await response.json()
+                log.info(f"Successfully sent game counts to Django. Response: {response_json}")
                 return True
         except aiohttp.ClientError as e:
+            log.error(f"Error sending counts to Django API at {api_url}: {e}")
             return False
         except Exception as e:
+            log.error(f"An unexpected error occurred sending counts to Django API: {e}")
             return False
 
     async def _run_update(self):
         """Fetches counts and sends them to Django."""
         guild_id = await self.config.guild_id()
         if not guild_id:
+            log.debug("No guild ID configured for game counter. Skipping update.")
             return
 
         guild = self.bot.get_guild(guild_id)
         if not guild:
+            log.warning(f"Configured guild with ID {guild_id} not found. Skipping update.")
             return
 
-        if not guild.chunked:
-            await guild.chunk()
+        # Ensure bot has necessary intents for members and presences
+        if not self.bot.intents.members:
+            log.error("Bot does not have the 'members' intent enabled! Cannot count members.")
+            return
+        # If your bot relies on presence for game statuses beyond roles, ensure presence intent
+        # if not self.bot.intents.presences:
+        #    log.warning("Bot does not have the 'presences' intent enabled. Game status detection might be limited.")
+
 
         game_counts = await self._get_game_counts(guild)
         if game_counts:
             success = await self._send_counts_to_django(game_counts)
             if not success:
-                pass
+                log.error("Failed to send game counts to Django.")
         else:
-            pass
+            log.debug("No game counts to send or error getting counts.")
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         """Triggers an update if a member's roles change in the configured guild."""
         guild_id = await self.config.guild_id()
         if after.guild.id == guild_id and before.roles != after.roles:
+            log.debug(f"Roles changed for member {after.display_name}. Restarting counter loop.")
             self.counter_loop.restart()
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Ensures the loop starts when the bot is fully ready."""
+        """Ensures loops and web server start when the bot is fully ready."""
+        log.info("GameCounter cog is ready.")
+        # Start the counter loop
         if not self.counter_loop.is_running():
             self.counter_loop.start()
+            log.info("GameCounter update loop started.")
 
-    @tasks.loop(minutes=None)
+        # Start the web API server
+        web_api_host = await self.config.web_api_host()
+        web_api_port = await self.config.web_api_port()
+        if not self.web_runner:
+            try:
+                self.web_runner = web.AppRunner(self.web_app)
+                await self.web_runner.setup()
+                self.web_site = web.TCPSite(self.web_runner, host=web_api_host, port=web_api_port)
+                await self.web_site.start()
+                log.info(f"GameCounter web API server started on http://{web_api_host}:{web_api_port}/")
+            except Exception as e:
+                log.error(f"Failed to start GameCounter web API server: {e}")
+        else:
+            log.debug("GameCounter web API server already running.")
+
+
+    @tasks.loop(minutes=None) # Interval is set dynamically via config
     async def counter_loop(self):
         """Main loop that periodically updates game counts."""
         await self.bot.wait_until_ready()
 
         interval = await self.config.interval()
         if interval is None:
-            await asyncio.sleep(60)
+            # If interval is not set, wait a default time and try again
+            log.debug("Counter interval not set, waiting 60s.")
+            await asyncio.sleep(60) 
             return
         
+        # Ensure the loop interval matches the configured interval
         if self.counter_loop.minutes != interval:
             self.counter_loop.change_interval(minutes=interval)
+            log.info(f"Counter loop interval changed to {interval} minutes.")
         
+        log.debug(f"Running game count update (interval: {interval} mins).")
         await self._run_update()
 
     @counter_loop.before_loop
@@ -455,4 +681,12 @@ class GameCounter(commands.Cog):
 
 async def setup(bot: Red):
     """Adds the GameCounter cog to the bot."""
+    # Ensure necessary Discord Gateway Intents are enabled for member counting
+    # You MUST enable 'Members Intent' in your bot's application settings on Discord Developer Portal.
+    # If you use Red v3.5.2 or newer, you also need it enabled in your RedBot config:
+    # [p]set api intents enable members
+    if not bot.intents.members:
+        log.critical("Members intent is NOT enabled! GameCounter cannot count members. Please enable it in your bot's application settings and Red's config.")
+        raise RuntimeError("Members intent is not enabled. GameCounter cannot function.")
+
     await bot.add_cog(GameCounter(bot))
