@@ -90,11 +90,11 @@ class GameCounter(commands.Cog):
         log.debug("Received health check request.")
         return web.Response(text="OK", status=200)
 
-    # --- THIS FUNCTION IS UPDATED TO INCLUDE LIVE STATUS ---
+    # --- THIS IS THE UPDATED FUNCTION ---
     async def get_role_members_handler(self, request: web.Request):
         """
         Web API handler to return members of a specific Discord role,
-        including their live streaming status.
+        including their live streaming status and Twitch URL.
         """
         try:
             await self._authenticate_request(request)
@@ -132,17 +132,22 @@ class GameCounter(commands.Cog):
 
         members_with_status = []
         for member in role.members:
-            # Check if any of the member's activities is a Streaming activity
-            is_currently_streaming = any(isinstance(activity, discord.Streaming) for activity in member.activities)
             
-            # Build the dictionary for this member
+            # Find the streaming activity, if it exists
+            streaming_activity = next((a for a in member.activities if isinstance(a, discord.Streaming)), None)
+            
+            is_live = streaming_activity is not None
+            # Use the real Twitch URL if available, otherwise fall back to guessing from their username
+            twitch_url = streaming_activity.url if is_live else f"https://www.twitch.tv/{member.name}"
+
             member_data = {
                 "id": str(member.id),
                 "name": member.name,
                 "display_name": member.display_name,
                 "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
                 "discriminator": member.discriminator if member.discriminator != "0" else None,
-                "is_live": is_currently_streaming
+                "is_live": is_live,
+                "twitch_url": twitch_url
             }
             members_with_status.append(member_data)
         
@@ -243,7 +248,6 @@ class GameCounter(commands.Cog):
         guild = self.bot.get_guild(guild_id)
         if not guild:
             return await ctx.send(f"Could not find a guild with ID `{guild_id}`. Please ensure the bot is in that guild and the ID is correct.")
-        
         view = ConfirmView(ctx.author) 
         view.message = await ctx.send(f"Are you sure you want to set the counting guild to **{guild.name}** (`{guild.id}`)?\nThis will stop counting roles in any previously configured guild.", view=view)
         await view.wait()
@@ -253,7 +257,6 @@ class GameCounter(commands.Cog):
             self.counter_loop.restart()
         else:
             await ctx.send("Guild setting cancelled.")
-
 
     @gamecounter_settings.command(name="addmapping")
     @commands.is_owner()
@@ -295,7 +298,7 @@ class GameCounter(commands.Cog):
                 existing_role = ctx.guild.get_role(int(existing_role_id_str))
                 existing_role_display = existing_role.name if existing_role else f"ID: {existing_role_id_str}"
                 view = ConfirmView(ctx.author)
-                view.message = await ctx.send(f"Warning: The Django game name `{django_game_name}` is already mapped to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\nAre you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?", view=view)
+                view.message = await ctx.send(f"Warning: The Django game name `{django_game_name}` is already mapped to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\nAre you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?\nThis is unusual and might lead to conflicting counts if both roles represent the same game.\nConfirm to proceed.", view=view)
                 await view.wait()
                 if not view.result:
                     return await ctx.send("Mapping cancelled to avoid potential conflict.")
@@ -312,14 +315,35 @@ class GameCounter(commands.Cog):
         if not discord_roles:
             return await ctx.send("Please provide at least one Discord role to map.")
         current_mappings = await self.config.game_role_mappings()
-        successful_mappings, skipped_mappings = [], []
+        successful_mappings = []
+        skipped_mappings = []
         for discord_role in discord_roles:
             if not discord_role.guild == ctx.guild:
                 skipped_mappings.append(f"`{discord_role.name}` (from another server)")
                 continue
             role_id = discord_role.id
             django_game_name = discord_role.name
-            # Simplified logic for example
+            if str(role_id) in current_mappings and current_mappings[str(role_id)] == django_game_name:
+                skipped_mappings.append(f"`{discord_role.name}` (already mapped with same name)")
+                continue
+            if str(role_id) in current_mappings and current_mappings[str(role_id)] != django_game_name:
+                view = ConfirmView(ctx.author)
+                view.message = await ctx.send(f"Discord Role `{discord_role.name}` (`{role_id}`) is already mapped to Django Game `{current_mappings[str(role_id)]}`. Do you want to update it to `{django_game_name}`? (This will interrupt the current batch if cancelled.)", view=view)
+                await view.wait()
+                if not view.result:
+                    skipped_mappings.append(f"`{discord_role.name}` (update cancelled)")
+                    continue
+            for existing_role_id_str, existing_game_name in current_mappings.items():
+                if existing_game_name == django_game_name and int(existing_role_id_str) != role_id:
+                    existing_role = ctx.guild.get_role(int(existing_role_id_str))
+                    existing_role_display = existing_role.name if existing_role else f"ID: {existing_role_id_str}"
+                    view = ConfirmView(ctx.author)
+                    view.message = await ctx.send(f"Warning: The Django game name `{django_game_name}` is already mapped to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\nAre you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?\nThis is unusual and might lead to conflicting counts if both roles represent the same game.\nConfirm to proceed. (This will interrupt the current batch if cancelled.)", view=view)
+                    await view.wait()
+                    if not view.result:
+                        skipped_mappings.append(f"`{discord_role.name}` (conflict cancelled)")
+                        continue
+                    break
             current_mappings[str(role_id)] = django_game_name
             successful_mappings.append(f"`{discord_role.name}` (`{role_id}`)")
         await self.config.game_role_mappings.set(current_mappings)
@@ -327,8 +351,10 @@ class GameCounter(commands.Cog):
         if successful_mappings:
             response_msg += "Successfully added/updated mappings for:\n" + humanize_list(successful_mappings) + "\n"
         if skipped_mappings:
-            response_msg += "Skipped mappings for:\n" + humanize_list(skipped_mappings)
-        await ctx.send(response_msg or "No mappings were added or updated.")
+            response_msg += "Skipped mappings for:\n" + humanize_list(skipped_mappings) + "\n"
+        if not response_msg:
+            response_msg = "No mappings were added or updated."
+        await ctx.send(response_msg)
         if successful_mappings:
             self.counter_loop.restart()
 
@@ -352,19 +378,46 @@ class GameCounter(commands.Cog):
         mappings = await self.config.game_role_mappings()
         if not mappings:
             return await ctx.send("No game role mappings configured.")
-        guild = self.bot.get_guild(await self.config.guild_id()) if await self.config.guild_id() else None
+        guild_id = await self.config.guild_id()
+        guild = self.bot.get_guild(guild_id) if guild_id else None
         msg = "**Configured Game Role Mappings:**\n"
         for role_id_str, game_name in mappings.items():
-            role = guild.get_role(int(role_id_str)) if guild else None
-            role_name = role.name if role else f"ID: {role_id_str} (Role not found)"
+            role_id = int(role_id_str)
+            role = guild.get_role(role_id) if guild and guild.get_role(role_id) else None
+            role_name = role.name if role else f"ID: {role_id_str} (Role not found in guild)"
             msg += f"`{role_name}` -> Django Game: **{game_name}**\n"
         await ctx.send(msg)
 
     @gamecounter_settings.command(name="status")
     async def show_status(self, ctx: commands.Context):
         """Shows the current GameCounter settings and status."""
-        # ... (Implementation of this command) ...
-        await ctx.send("Status display is a work in progress.")
+        api_url = await self.config.api_url()
+        api_key_set = "Yes" if await self.config.api_key() else "No"
+        interval = await self.config.interval()
+        guild_id = await self.config.guild_id()
+        guild = self.bot.get_guild(guild_id) if guild_id else None
+        mappings = await self.config.game_role_mappings()
+        web_api_host = await self.config.web_api_host()
+        web_api_port = await self.config.web_api_port()
+        web_api_key_set = "Yes" if await self.config.web_api_key() else "No"
+        status_msg = (f"**GameCounter Status:**\n"
+            f"  API URL (RedBot->Django): `{api_url or 'Not set'}`\n"
+            f"  API Key Set (RedBot->Django): `{api_key_set}`\n"
+            f"  Web API Host (Django->RedBot): `{web_api_host}`\n"
+            f"  Web API Port (Django->RedBot): `{web_api_port}`\n"
+            f"  Web API Key Set (Django->RedBot): `{web_api_key_set}`\n"
+            f"  Update Interval: `{interval} minutes`\n"
+            f"  Counting Guild: `{guild.name}` (`{guild.id}`)" if guild else "`Not set`")
+        if mappings:
+            status_msg += "\n\n**Configured Mappings:**\n"
+            for role_id_str, game_name in mappings.items():
+                role_id = int(role_id_str)
+                role = guild.get_role(role_id) if guild and guild.get_role(role_id) else None
+                role_display = role.name if role else f"ID: {role_id_str}"
+                status_msg += f"  - Discord Role: `{role_display}` -> Django Game: **{game_name}**\n"
+        else:
+            status_msg += "\n\nNo game role mappings configured."
+        await ctx.send(status_msg)
 
     @gamecounter_settings.command(name="forcerun")
     @commands.is_owner()
