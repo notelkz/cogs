@@ -1,179 +1,237 @@
+# In your existing GameCounter cog or as a new cog
+
 import discord
-import datetime
-from redbot.core import commands, checks, Config
-from redbot.core.utils.chat_formatting import humanize_timedelta
+import asyncio
+from datetime import datetime, timedelta
+from redbot.core import commands, Config
 
-class UserTracker(commands.Cog):
-    """Tracks user join date, voice time, and messages."""
-
-    __author__ = "elkz"
-    __version__ = "1.1.0"
-
+class ActivityTracker(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890)
+        self.config = Config.get_conf(self, identifier=987654321)
+        
+        # Default settings
         default_guild = {
-            "voice": {},  # {user_id: [{"start": ts, "end": ts or None}]}
-            "messages": {}  # {user_id: [timestamp, ...]}
+            "recruit_role_id": None,
+            "member_role_id": None,
+            "promotion_threshold_hours": 1.0,  # Default 1 hour
+            "promotion_channel_id": None
         }
+        
+        default_member = {
+            "voice_time_minutes": 0,
+            "last_voice_join": None,
+            "current_role": "recruit"
+        }
+        
         self.config.register_guild(**default_guild)
-        self.voice_states = {}  # {guild_id: {user_id: join_time}}
-
-    async def red_delete_data_for_user(self, *, requester, user_id: int):
-        guilds = self.bot.guilds
-        for guild in guilds:
-            async with self.config.guild(guild).voice() as voice:
-                voice.pop(str(user_id), None)
-            async with self.config.guild(guild).messages() as messages:
-                messages.pop(str(user_id), None)
-
-    async def cog_load(self):
-        for guild in self.bot.guilds:
-            self.voice_states[guild.id] = {}
-
+        self.config.register_member(**default_member)
+        
+        self.voice_tracking = {}  # {user_id: join_timestamp}
+        self.promotion_task = self.bot.loop.create_task(self.check_for_promotions())
+        
+    def cog_unload(self):
+        self.promotion_task.cancel()
+    
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        guild = member.guild
-        user_id = str(member.id)
-        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-
+        # Skip bots
         if member.bot:
             return
-
-        # User joins voice
-        if not before.channel and after.channel:
-            if guild.id not in self.voice_states:
-                self.voice_states[guild.id] = {}
-            self.voice_states[guild.id][user_id] = now
-
-        # User leaves voice
-        elif before.channel and not after.channel:
-            join_time = self.voice_states.get(guild.id, {}).pop(user_id, None)
-            if join_time:
-                async with self.config.guild(guild).voice() as voice:
-                    sessions = voice.get(user_id, [])
-                    sessions.append({"start": join_time, "end": now})
-                    # Keep only last 90 days of sessions
-                    ninety_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).timestamp()
-                    sessions = [s for s in sessions if s["end"] is None or s["end"] >= ninety_days_ago]
-                    voice[user_id] = sessions
-
-        # User switches channel (treat as leave+join)
-        elif before.channel and after.channel and before.channel != after.channel:
-            # End previous session
-            join_time = self.voice_states.get(guild.id, {}).pop(user_id, None)
-            if join_time:
-                async with self.config.guild(guild).voice() as voice:
-                    sessions = voice.get(user_id, [])
-                    sessions.append({"start": join_time, "end": now})
-                    ninety_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).timestamp()
-                    sessions = [s for s in sessions if s["end"] is None or s["end"] >= ninety_days_ago]
-                    voice[user_id] = sessions
-            # Start new session
-            self.voice_states[guild.id][user_id] = now
-
-    @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.guild is None or message.author.bot:
+            
+        # Check if user has the recruit role
+        recruit_role_id = await self.config.guild(member.guild).recruit_role_id()
+        if recruit_role_id:
+            recruit_role = member.guild.get_role(recruit_role_id)
+            if not recruit_role or recruit_role not in member.roles:
+                return  # Not a recruit, don't track
+        
+        # User joined a voice channel
+        if before.channel is None and after.channel is not None:
+            self.voice_tracking[member.id] = datetime.now()
+            
+        # User left a voice channel
+        elif before.channel is not None and after.channel is None:
+            if member.id in self.voice_tracking:
+                join_time = self.voice_tracking.pop(member.id)
+                duration = (datetime.now() - join_time).total_seconds() / 60
+                
+                # Update their total time
+                async with self.config.member(member).all() as member_data:
+                    member_data["voice_time_minutes"] += duration
+                    
+                # Send update to website API
+                await self._update_website_activity(member.id, duration)
+    
+    async def _update_website_activity(self, discord_id, minutes_to_add):
+        """Send activity update to website API"""
+        api_url = await self.config.api_url()
+        api_key = await self.config.api_key()
+        
+        if not api_url or not api_key:
             return
-        user_id = str(message.author.id)
-        guild = message.guild
-        now = int(message.created_at.timestamp())
-        async with self.config.guild(guild).messages() as messages:
-            if user_id not in messages:
-                messages[user_id] = []
-            messages[user_id].append(now)
-            # Keep only last 90 days of messages to save space
-            ninety_days_ago = int((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=90)).timestamp())
-            messages[user_id] = [ts for ts in messages[user_id] if ts >= ninety_days_ago]
-
-    @commands.guild_only()
-    @commands.command(name="usertracker", aliases=["ut", "track"])
-    @checks.mod_or_permissions(administrator=True)
-    async def usertracker(self, ctx, member: discord.Member = None, days: int = 7):
-        """
-        Track a user's join date, voice time, and messages sent over a period.
-
-        Usage: !usertracker @user [days]
-        """
-        if member is None:
-            await ctx.send_help()
+            
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        payload = {
+            "discord_id": str(discord_id),
+            "voice_minutes": minutes_to_add
+        }
+        
+        try:
+            async with self.bot.session.post(
+                f"{api_url}/api/update_activity/", 
+                headers=headers, 
+                json=payload
+            ) as resp:
+                if resp.status != 200:
+                    print(f"Error updating activity: {await resp.text()}")
+        except Exception as e:
+            print(f"Failed to update website: {e}")
+    
+    async def check_for_promotions(self):
+        """Background task to check for promotions"""
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            try:
+                # For each guild
+                for guild in self.bot.guilds:
+                    # Get role IDs
+                    recruit_role_id = await self.config.guild(guild).recruit_role_id()
+                    member_role_id = await self.config.guild(guild).member_role_id()
+                    promotion_threshold_hours = await self.config.guild(guild).promotion_threshold_hours()
+                    
+                    # Convert hours to minutes for comparison
+                    promotion_threshold_minutes = promotion_threshold_hours * 60
+                    
+                    if not (recruit_role_id and member_role_id):
+                        continue
+                        
+                    recruit_role = guild.get_role(recruit_role_id)
+                    member_role = guild.get_role(member_role_id)
+                    
+                    if not (recruit_role and member_role):
+                        continue
+                    
+                    # Check each recruit
+                    for member in recruit_role.members:
+                        voice_time = await self.config.member(member).voice_time_minutes()
+                        
+                        # If they've met the threshold
+                        if voice_time >= promotion_threshold_minutes:
+                            # Promote them
+                            try:
+                                await member.remove_roles(recruit_role)
+                                await member.add_roles(member_role)
+                                
+                                # Update their status
+                                await self.config.member(member).current_role.set("member")
+                                
+                                # Notify the website
+                                await self._notify_promotion(member.id, "member")
+                                
+                                # Announce in a channel
+                                channel_id = await self.config.guild(guild).promotion_channel_id()
+                                if channel_id:
+                                    channel = guild.get_channel(channel_id)
+                                    if channel:
+                                        hours = voice_time / 60
+                                        await channel.send(
+                                            f"🎉 Congratulations {member.mention}! "
+                                            f"You've been promoted to full Member status after "
+                                            f"{hours:.1f} hours of voice activity!"
+                                        )
+                            except discord.Forbidden:
+                                print(f"Missing permissions to promote {member}")
+                            except Exception as e:
+                                print(f"Error promoting {member}: {e}")
+            except Exception as e:
+                print(f"Error in promotion check: {e}")
+                
+            # Check every 5 minutes
+            await asyncio.sleep(300)
+    
+    async def _notify_promotion(self, discord_id, new_role):
+        """Notify website of role promotion"""
+        api_url = await self.config.api_url()
+        api_key = await self.config.api_key()
+        
+        if not api_url or not api_key:
             return
-
-        if days < 1 or days > 90:
-            await ctx.send("Please specify a period between 1 and 90 days.")
-            return
-
-        now = datetime.datetime.now(datetime.timezone.utc)
-        since = now - datetime.timedelta(days=days)
-        since_ts = since.timestamp()
-
-        # Join date
-        join_date = member.joined_at
-        if join_date is None:
-            join_str = "Unknown"
-            days_ago = "?"
+            
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        payload = {
+            "discord_id": str(discord_id),
+            "new_role": new_role
+        }
+        
+        try:
+            async with self.bot.session.post(
+                f"{api_url}/api/update_role/", 
+                headers=headers, 
+                json=payload
+            ) as resp:
+                if resp.status != 200:
+                    print(f"Error updating role: {await resp.text()}")
+        except Exception as e:
+            print(f"Failed to update website: {e}")
+    
+    @commands.group(name="activitytracker")
+    @commands.admin_or_permissions(administrator=True)
+    async def activitytracker(self, ctx):
+        """Activity tracker settings"""
+        pass
+    
+    @activitytracker.command(name="setroles")
+    async def set_roles(self, ctx, recruit_role: discord.Role, member_role: discord.Role):
+        """Set the recruit and member roles for promotion"""
+        await self.config.guild(ctx.guild).recruit_role_id.set(recruit_role.id)
+        await self.config.guild(ctx.guild).member_role_id.set(member_role.id)
+        await ctx.send(f"Roles set: Recruits = {recruit_role.name}, Members = {member_role.name}")
+    
+    @activitytracker.command(name="setthreshold")
+    async def set_threshold(self, ctx, hours: float):
+        """Set the voice activity threshold for promotion (in hours)"""
+        if hours <= 0:
+            return await ctx.send("Threshold must be greater than 0 hours.")
+            
+        await self.config.guild(ctx.guild).promotion_threshold_hours.set(hours)
+        await ctx.send(f"Promotion threshold set to {hours} hours of voice activity")
+    
+    @activitytracker.command(name="setchannel")
+    async def set_channel(self, ctx, channel: discord.TextChannel = None):
+        """Set the channel for promotion announcements (leave empty to disable)"""
+        if channel:
+            await self.config.guild(ctx.guild).promotion_channel_id.set(channel.id)
+            await ctx.send(f"Promotion announcements will be sent to {channel.mention}")
         else:
-            join_str = join_date.strftime("%d/%m/%Y")
-            days_ago = (now - join_date).days
-
-        # Voice time (over period)
-        async with self.config.guild(ctx.guild).voice() as voice:
-            sessions = voice.get(str(member.id), [])
-            # Add ongoing session if user is in voice now
-            ongoing = None
-            if ctx.guild.id in self.voice_states and str(member.id) in self.voice_states[ctx.guild.id]:
-                join_time = self.voice_states[ctx.guild.id][str(member.id)]
-                ongoing = {"start": join_time, "end": now.timestamp()}
-            all_sessions = sessions.copy()
-            if ongoing:
-                all_sessions.append(ongoing)
-            period_voice_seconds = 0
-            for s in all_sessions:
-                start = s["start"]
-                end = s["end"] if s["end"] is not None else now.timestamp()
-                # Only count if session overlaps with period
-                if end < since_ts:
-                    continue  # session ended before period
-                # Clamp start to period start
-                session_start = max(start, since_ts)
-                session_end = end
-                if session_end > session_start:
-                    period_voice_seconds += int(session_end - session_start)
-            voice_time_str = humanize_timedelta(seconds=period_voice_seconds)
-
-        # Messages
-        async with self.config.guild(ctx.guild).messages() as messages:
-            user_msgs = messages.get(str(member.id), [])
-            # Count messages in period
-            period_ts = int(since.timestamp())
-            msg_count = sum(1 for ts in user_msgs if ts >= period_ts)
-
+            await self.config.guild(ctx.guild).promotion_channel_id.set(None)
+            await ctx.send("Promotion announcements disabled")
+    
+    @activitytracker.command(name="status")
+    async def status(self, ctx, member: discord.Member = None):
+        """Check activity status for a member or yourself"""
+        target = member or ctx.author
+        
+        voice_time_minutes = await self.config.member(target).voice_time_minutes()
+        voice_time_hours = voice_time_minutes / 60
+        current_role = await self.config.member(target).current_role()
+        threshold_hours = await self.config.guild(ctx.guild).promotion_threshold_hours()
+        
         embed = discord.Embed(
-            title=f"User Activity for {member.display_name}",
-            color=member.color if member.color.value else discord.Color.blue()
+            title="Activity Status",
+            color=discord.Color.blue()
         )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Joined Server", value=f"{join_str} ({days_ago} days ago)", inline=False)
-        embed.add_field(name=f"Messages (last {days} days)", value=str(msg_count), inline=False)
-        embed.add_field(name=f"Voice Time (last {days} days)", value=voice_time_str, inline=False)
-        embed.set_footer(text=f"Requested by {ctx.author}", icon_url=ctx.author.display_avatar.url)
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(name="Member", value=target.mention, inline=False)
+        embed.add_field(name="Current Role", value=current_role.capitalize(), inline=True)
+        embed.add_field(name="Voice Activity", value=f"{voice_time_hours:.2f} hours", inline=True)
+        
+        if current_role == "recruit":
+            progress = min(voice_time_hours / threshold_hours * 100, 100)
+            embed.add_field(
+                name="Progress to Member", 
+                value=f"{progress:.1f}% ({voice_time_hours:.2f}/{threshold_hours} hours)", 
+                inline=False
+            )
+            
         await ctx.send(embed=embed)
-
-    @usertracker.error
-    async def usertracker_error(self, ctx, error):
-        if isinstance(error, commands.BadArgument):
-            await ctx.send("Couldn't find that user. Please mention a valid user.")
-        else:
-            raise error
-
-    @commands.command(name="usertrackerhelp")
-    async def usertrackerhelp(self, ctx):
-        """Show help for UserTracker."""
-        msg = (
-            "**UserTracker Commands:**\n"
-            "`!usertracker @user [days]` - Show join date, messages, and voice time for a user (default 7 days, max 90).\n"
-            "Aliases: `!ut`, `!track`\n"
-            "Only admins/mods can use this command."
-        )
-        await ctx.send(msg)
