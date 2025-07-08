@@ -1,4 +1,7 @@
-from .usertracker import UserTracker
+from .activitytracker import ActivityTracker
 
 async def setup(bot):
-    await bot.add_cog(UserTracker(bot))
+    """
+    Loads the ActivityTracker cog.
+    """
+    await bot.add_cog(ActivityTracker(bot))
