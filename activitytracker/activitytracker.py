@@ -5,7 +5,8 @@ import asyncio
 import aiohttp
 from datetime import datetime
 
-from redbot.core import commands, Config, tasks
+from redbot.core import commands, Config
+from redbot.core.tasks import loop
 
 class ActivityTracker(commands.Cog):
     """Tracks user voice activity and syncs with a Django website API."""
