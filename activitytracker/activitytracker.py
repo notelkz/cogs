@@ -1,5 +1,3 @@
-# Red-V3/cogs/activitytracker/activitytracker.py
-
 import discord
 import asyncio
 import aiohttp
@@ -8,7 +6,13 @@ import json
 from datetime import datetime
 
 from redbot.core import commands, Config
-from aiohttp import web # Required for creating web server routes
+from aiohttp import web
+from redbot.core.utils.chat_formatting import humanize_list
+from redbot.core.utils.views import ConfirmView # Added for role removal confirmations
+
+import logging
+
+log = logging.getLogger("red.Elkz.activitytracker")
 
 class ActivityTracker(commands.Cog):
     """Tracks user voice activity and syncs with a Django website API."""
@@ -18,373 +22,522 @@ class ActivityTracker(commands.Cog):
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
         
         default_guild = {
-            "api_url": None,
-            "api_key": None,
+            "api_url": None, # For sending activity updates to Django
+            "api_key": None, # Key for RedBot -> Django API
             "recruit_role_id": None,
             "member_role_id": None,
-            "promotion_threshold_hours": 24.0,
-            "promotion_channel_id": None
+            "promotion_threshold_hours": 24.0, # Recruit to Member threshold
+            "promotion_channel_id": None,
+            "military_ranks": [], # NEW: List of dicts for military ranks
+            "promotion_update_url": None # NEW: Specific URL for role update notifications
         }
         self.config.register_guild(**default_guild)
         
         self.voice_tracking = {}
         self.session = aiohttp.ClientSession()
         
-        # --- ADDITION: Start the web server for the API endpoint ---
+        self.web_app = web.Application()
+        self.web_runner = None
+        self.web_site = None
+        
+        # Define routes for the internal web server (for the Django site to call)
+        self.web_app.router.add_post("/api/assign_initial_role", self.assign_initial_role_handler)
+        self.web_app.router.add_get("/health", self.health_check_handler) # Good practice to have
+
         self.bot.loop.create_task(self.initialize_webserver())
 
-    # --- NEW: Function to handle the web server and routes ---
     async def initialize_webserver(self):
         await self.bot.wait_until_ready()
-        routes = web.RouteTableDef()
-
-        @routes.post("/api/assign_initial_role")
-        async def assign_initial_role(request):
-            # Security Check
-            api_key = await self.config.guild(request.app["guild"]).api_key()
-            if not api_key or request.headers.get("X-API-Key") != api_key:
-                return web.Response(text="Unauthorized", status=401)
-            
-            try:
-                data = await request.json()
-                discord_id = int(data.get("discord_id"))
-            except (ValueError, TypeError, json.JSONDecodeError):
-                return web.Response(text="Invalid request data", status=400)
-
-            guild = request.app["guild"]
-            recruit_role_id = await self.config.guild(guild).recruit_role_id()
-            if not recruit_role_id:
-                print("BOT API ERROR: Recruit Role ID is not configured.")
-                return web.Response(text="Recruit role not configured", status=500)
-
-            member = guild.get_member(discord_id)
-            recruit_role = guild.get_role(recruit_role_id)
-
-            if member and recruit_role:
-                try:
-                    await member.add_roles(recruit_role, reason="Initial role assignment from website.")
-                    print(f"BOT API: Successfully assigned Recruit role to {member.name}")
-                    return web.Response(text="Role assigned successfully", status=200)
-                except discord.Forbidden:
-                    print(f"BOT API ERROR: Missing permissions to assign role to {member.name}")
-                    return web.Response(text="Missing permissions", status=503)
-                except Exception as e:
-                    print(f"BOT API ERROR: Failed to assign role: {e}")
-                    return web.Response(text="Internal server error", status=500)
-            else:
-                print(f"BOT API WARN: Could not find member ({discord_id}) or role ({recruit_role_id}) in guild.")
-                return web.Response(text="Member or role not found", status=404)
-
-        # Add the new endpoint for time ranks
-        @routes.get("/api/get_time_ranks")
-        async def get_time_ranks(request):
-            # Security Check
-            api_key = await self.config.guild(request.app["guild"]).api_key()
-            if not api_key or request.headers.get("X-API-Key") != api_key:
-                return web.Response(text="Unauthorized", status=401)
-            
-            # Forward the request to the website
-            guild_settings = await self.config.guild(request.app["guild"]).all()
-            website_url = "https://zerolivesleft.net/api/get_time_ranks/"
-            headers = {"X-API-Key": api_key}
-            
-            try:
-                print(f"DEBUG: Fetching time ranks from {website_url}")
-                async with self.session.get(website_url, headers=headers) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        print(f"ERROR: Failed to get time ranks from website: {resp.status} - {error_text}")
-                        return web.Response(text=f"Error from website: {error_text}", status=resp.status)
-                    
-                    data = await resp.json()
-                    print(f"DEBUG: Successfully fetched {len(data)} time ranks from website")
-                    return web.json_response(data)
-            except Exception as e:
-                print(f"ERROR: Exception while fetching time ranks: {e}")
-                return web.Response(text=f"Error: {str(e)}", status=500)
-
-        app = web.Application()
-        app.add_routes(routes)
         
         # Get the guild ID from environment variables
+        # This setup implies a single guild per bot instance, which might not be ideal for all Red setups.
+        # Consider making the guild ID configurable via commands if multi-guild support is needed for this API.
         guild_id_str = os.environ.get("DISCORD_GUILD_ID")
         if not guild_id_str:
-            print("CRITICAL ERROR: DISCORD_GUILD_ID environment variable not set for the bot.")
+            log.critical("CRITICAL ERROR: DISCORD_GUILD_ID environment variable not set for the bot. Web API will not function correctly without a target guild.")
+            # Depending on severity, you might want to raise an exception or disable the web server
             return
             
-        app["guild"] = self.bot.get_guild(int(guild_id_str))
-        runner = web.AppRunner(app)
-        await runner.setup()
-        
-        site = web.TCPSite(runner, "0.0.0.0", 5002) 
-        await site.start()
-        print("ActivityTracker API server started on port 5002.")
+        guild = self.bot.get_guild(int(guild_id_str))
+        if not guild:
+            log.critical(f"CRITICAL ERROR: Guild with ID {guild_id_str} not found. Bot might not be in the guild or it's not cached yet. Web API will not function correctly.")
+            return
+
+        self.web_app["guild"] = guild # Store guild in app for handler access
+
+        try:
+            self.web_runner = web.AppRunner(self.web_app)
+            await self.web_runner.setup()
+            # Use a configurable host/port if desired, for now hardcoding to 0.0.0.0:5002
+            host = os.environ.get("ACTIVITY_WEB_HOST", "0.0.0.0") # Allow env var override
+            port = int(os.environ.get("ACTIVITY_WEB_PORT", 5002)) # Allow env var override
+            self.web_site = web.TCPSite(self.web_runner, host, port) 
+            await self.web_site.start()
+            log.info(f"ActivityTracker API server started on http://{host}:{port}/")
+        except Exception as e:
+            log.critical(f"Failed to start ActivityTracker web API server: {e}")
+            self.web_runner = None
+            self.web_site = None
+
 
     def cog_unload(self):
+        # Schedule the web server shutdown
+        if self.web_runner:
+            asyncio.create_task(self._shutdown_web_server())
+        # Close the aiohttp session
         asyncio.create_task(self.session.close())
+        # Ensure any active voice sessions are logged before unload
+        for guild_id, members_tracking in self.voice_tracking.items():
+            guild = self.bot.get_guild(guild_id)
+            if guild:
+                for member_id, join_time in members_tracking.items():
+                    member = guild.get_member(member_id)
+                    if member:
+                        duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
+                        if duration_minutes >= 1:
+                            log.info(f"Unloading: Logging {duration_minutes:.2f} minutes for {member.name} due to cog unload.")
+                            asyncio.create_task(self._update_website_activity(guild, member, int(duration_minutes)))
+        self.voice_tracking.clear()
+
+    async def _shutdown_web_server(self):
+        """Helper to gracefully shut down the aiohttp web server."""
+        if self.web_runner:
+            log.info("Shutting down ActivityTracker web API server...")
+            try:
+                await self.web_app.shutdown()
+                await self.web_runner.cleanup()
+                log.info("ActivityTracker web API server shut down successfully.")
+            except Exception as e:
+                log.error(f"Error during web API server shutdown: {e}")
+        self.web_runner = None
+        self.web_site = None
+
+    async def _authenticate_web_request(self, request: web.Request):
+        """Authenticates incoming web API requests based on X-API-Key header."""
+        guild = request.app["guild"]
+        expected_key = await self.config.guild(guild).api_key() # Using the RedBot -> Django key for this web API too
+        if not expected_key:
+            log.warning(f"Web API key is not set in config for guild {guild.id}, all requests will fail authentication.")
+            raise web.HTTPUnauthorized(reason="Web API Key not configured on RedBot for this guild.")
+        
+        provided_key = request.headers.get("X-API-Key")
+        if not provided_key:
+            raise web.HTTPUnauthorized(reason="X-API-Key header missing.")
+        
+        if provided_key != expected_key:
+            raise web.HTTPForbidden(reason="Invalid API Key.")
+        
+        return True
+
+    async def health_check_handler(self, request: web.Request):
+        """Simple health check endpoint for the web API."""
+        log.debug("Received health check request.")
+        return web.Response(text="OK", status=200)
+
+    async def assign_initial_role_handler(self, request):
+        """
+        Web API handler to assign initial Recruit role to a user.
+        Called by the Django website after user registration.
+        """
+        try:
+            await self._authenticate_web_request(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.warning(f"Authentication failed for /api/assign_initial_role endpoint: {e.reason}")
+            return e
+        
+        try:
+            data = await request.json()
+            discord_id = int(data.get("discord_id"))
+        except (ValueError, TypeError, json.JSONDecodeError):
+            log.warning("Invalid request data received for /api/assign_initial_role")
+            return web.Response(text="Invalid request data", status=400)
+
+        guild = request.app["guild"]
+        recruit_role_id = await self.config.guild(guild).recruit_role_id()
+        if not recruit_role_id:
+            log.error(f"Recruit Role ID is not configured for guild {guild.id}.")
+            return web.Response(text="Recruit role not configured", status=500)
+
+        member = guild.get_member(discord_id)
+        recruit_role = guild.get_role(recruit_role_id)
+
+        if member and recruit_role:
+            try:
+                if recruit_role not in member.roles: # Only add if they don't have it
+                    await member.add_roles(recruit_role, reason="Initial role assignment from website.")
+                    log.info(f"Successfully assigned Recruit role to {member.name} ({member.id}).")
+                else:
+                    log.info(f"Member {member.name} ({member.id}) already has Recruit role. Skipping assignment.")
+                return web.Response(text="Role assigned/already present successfully", status=200)
+            except discord.Forbidden:
+                log.error(f"Missing permissions to assign role to {member.name} ({member.id}).")
+                return web.Response(text="Missing permissions", status=503)
+            except Exception as e:
+                log.exception(f"Failed to assign role to {member.name} ({member.id}): {e}")
+                return web.Response(text="Internal server error", status=500)
+        else:
+            log.warning(f"Could not find member ({discord_id}) or recruit role ({recruit_role_id}) in guild {guild.id}.")
+            return web.Response(text="Member or role not found", status=404)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        print(f"DEBUG: Voice state update for {member.name}")
         if member.bot:
             return
+        # Check if the guild of the member matches the configured guild for this cog instance
+        # This is particularly relevant if the DISCORD_GUILD_ID env var is used to tie this cog to one guild.
+        guild_id_for_cog = int(os.environ.get("DISCORD_GUILD_ID", 0)) # Default to 0 if not set
+        if member.guild.id != guild_id_for_cog:
+            return # Ignore activity from other guilds if specific guild is configured via env var
+
         if before.channel is None and after.channel is not None:
-            if member.guild.id not in self.voice_tracking:
-                self.voice_tracking[member.guild.id] = {}
-            self.voice_tracking[member.guild.id][member.id] = datetime.utcnow()
-            print(f"ACTIVITY: User {member.name} joined voice. Starting session.")
+            # User joined a voice channel
+            if after.channel.guild.id not in self.voice_tracking:
+                self.voice_tracking[after.channel.guild.id] = {}
+            self.voice_tracking[after.channel.guild.id][member.id] = datetime.utcnow()
+            log.debug(f"User {member.name} joined voice in {after.channel.name}. Starting session.")
         elif before.channel is not None and after.channel is None:
-            if member.guild.id in self.voice_tracking and member.id in self.voice_tracking[member.guild.id]:
-                join_time = self.voice_tracking[member.guild.id].pop(member.id)
+            # User left a voice channel
+            if before.channel.guild.id in self.voice_tracking and member.id in self.voice_tracking[before.channel.guild.id]:
+                join_time = self.voice_tracking[before.channel.guild.id].pop(member.id)
                 duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
+                
+                # Only process if duration is at least 1 minute to avoid spamming for quick joins/leaves
                 if duration_minutes < 1:
+                    log.debug(f"User {member.name} left voice. Duration too short ({duration_minutes:.2f}m). Skipping sync.")
                     return
-                print(f"ACTIVITY: User {member.name} left voice. Duration: {duration_minutes:.2f} minutes.")
+                
+                log.info(f"User {member.name} left voice. Duration: {duration_minutes:.2f} minutes.")
                 await self._update_website_activity(member.guild, member, int(duration_minutes))
 
     async def _update_website_activity(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int):
-        print(f"DEBUG: Updating activity for {member.name} with {minutes_to_add} minutes")
         guild_settings = await self.config.guild(guild).all()
         api_url = guild_settings.get("api_url")
         api_key = guild_settings.get("api_key")
-        
-        print(f"DEBUG: API URL: {api_url}")
-        print(f"DEBUG: API Key exists: {bool(api_key)}")
-        
-        if not api_url or not api_key:
-            print("DEBUG: Missing API URL or key, cannot update activity")
+        if not api_url or not api_key: 
+            log.warning(f"Django API URL or Key not configured for guild {guild.id}. Skipping activity update for {member.name}.")
             return
-            
-        endpoint = f"{api_url}/api/update_activity/"
+        
+        endpoint = f"{api_url}/api/update_activity/" # This is the activity update URL
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
         payload = {"discord_id": str(member.id), "voice_minutes": minutes_to_add}
-        
         try:
-            print(f"DEBUG: Sending request to {endpoint}")
             async with self.session.post(endpoint, headers=headers, json=payload) as resp:
-                print(f"DEBUG: Received response with status {resp.status}")
                 if resp.status == 200:
-                    print(f"API: Successfully synced {minutes_to_add} minutes for user {member.id}.")
+                    log.info(f"Successfully synced {minutes_to_add} minutes for user {member.id}.")
                     data = await resp.json()
                     total_minutes = data.get("total_minutes", 0)
-                    print(f"DEBUG: Total minutes from API: {total_minutes}")
                     await self._check_for_promotion(guild, member, total_minutes)
                 else:
-                    print(f"API ERROR: Failed to update activity for {member.id}: {resp.status} - {await resp.text()}")
+                    log.error(f"Failed to update activity for {member.id}: {resp.status} - {await resp.text()}")
+        except aiohttp.ClientError as e:
+            log.error(f"Network error sending activity to Django API for {member.id}: {e}")
         except Exception as e:
-            print(f"NETWORK ERROR: Could not reach website for {member.id}: {e}")
+            log.exception(f"An unexpected error occurred sending activity to Django API for {member.id}: {e}")
 
     async def _check_for_promotion(self, guild: discord.Guild, member: discord.Member, total_minutes: int):
         """
-        Checks for both Member promotion and Time Rank promotion, handling them as separate systems.
+        Checks for both Member promotion and Military Rank promotion based on total_minutes.
         """
-        print(f"DEBUG: Starting promotion check for {member.name} with {total_minutes} minutes")
         guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("api_url")
-        api_key = guild_settings.get("api_key")
-
+        
         # --- System 1: Recruit -> Member Promotion ---
         recruit_role_id = guild_settings.get("recruit_role_id")
         member_role_id = guild_settings.get("member_role_id")
         promotion_threshold_hours = guild_settings.get("promotion_threshold_hours")
         
-        print(f"DEBUG: Recruit role ID: {recruit_role_id}")
-        print(f"DEBUG: Member role ID: {member_role_id}")
-        print(f"DEBUG: Promotion threshold: {promotion_threshold_hours} hours ({promotion_threshold_hours * 60} minutes)")
-        print(f"DEBUG: User has {total_minutes} minutes ({total_minutes / 60} hours)")
-        
         if all([recruit_role_id, member_role_id, promotion_threshold_hours]):
             promotion_threshold_minutes = promotion_threshold_hours * 60
             recruit_role = guild.get_role(recruit_role_id)
+            member_role = guild.get_role(member_role_id) # Get member role here
             
-            print(f"DEBUG: Found recruit role object: {recruit_role is not None}")
-            if recruit_role:
-                print(f"DEBUG: User has recruit role: {recruit_role in member.roles}")
-                print(f"DEBUG: User meets threshold: {total_minutes >= promotion_threshold_minutes}")
-            
-            # This logic only runs if the user is currently a Recruit
-            if recruit_role and recruit_role in member.roles and total_minutes >= promotion_threshold_minutes:
-                member_role = guild.get_role(member_role_id)
-                print(f"DEBUG: Found member role object: {member_role is not None}")
-                
-                if member_role:
-                    print(f"MEMBERSHIP: Promoting {member.name} from Recruit to Member...")
-                    try:
-                        await member.remove_roles(recruit_role, reason="Automatic promotion via voice activity")
-                        await member.add_roles(member_role, reason="Automatic promotion via voice activity")
-                        print(f"MEMBERSHIP SUCCESS: Roles updated for {member.name}")
-                        await self._notify_website_of_promotion(guild, member.id, "member")
-                        
-                        channel_id = guild_settings.get("promotion_channel_id")
-                        if channel_id:
-                            channel = guild.get_channel(channel_id)
-                            if channel:
-                                await channel.send(
-                                    f"🎉 Congratulations {member.mention}! You've been promoted to **Member** status!"
-                                )
-                    except discord.Forbidden:
-                        print(f"MEMBERSHIP ERROR: Missing permissions to promote {member.name}.")
-                    except Exception as e:
-                        print(f"MEMBERSHIP ERROR: An unexpected error occurred: {e}")
-                else:
-                    print(f"MEMBERSHIP ERROR: Member role with ID {member_role_id} not found.")
-            else:
-                if not recruit_role:
-                    print(f"DEBUG: Skipping membership promotion - Recruit role not found")
-                elif recruit_role not in member.roles:
-                    print(f"DEBUG: Skipping membership promotion - User doesn't have Recruit role")
-                else:
-                    print(f"DEBUG: Skipping membership promotion - Not enough minutes ({total_minutes} < {promotion_threshold_minutes})")
-
-        # --- System 2: Military Time Rank Promotion (runs for everyone, every time) ---
-        print(f"DEBUG: Starting military rank check")
-        if not api_url or not api_key:
-            print(f"DEBUG: Missing API URL or key, cannot check military ranks")
+            # Promote if they are a Recruit and meet the threshold
+            if recruit_role and member_role and recruit_role in member.roles and total_minutes >= promotion_threshold_minutes:
+                log.info(f"Promoting {member.name} ({member.id}) from Recruit to Member...")
+                try:
+                    await member.remove_roles(recruit_role, reason="Automatic promotion via voice activity")
+                    await member.add_roles(member_role, reason="Automatic promotion via voice activity")
+                    await self._notify_website_of_promotion(guild, member.id, "member")
+                    
+                    channel_id = guild_settings.get("promotion_channel_id")
+                    if channel_id:
+                        channel = guild.get_channel(channel_id)
+                        if channel and isinstance(channel, discord.TextChannel): # Ensure it's a text channel
+                            await channel.send(
+                                f"🎉 Congratulations {member.mention}! You've been promoted to **{member_role.name}** status!"
+                            )
+                except discord.Forbidden:
+                    log.error(f"MEMBERSHIP ERROR: Missing permissions to promote {member.name} ({member.id}).")
+                except Exception as e:
+                    log.exception(f"MEMBERSHIP ERROR: An unexpected error occurred promoting {member.name} ({member.id}): {e}")
+        
+        # --- System 2: Military Time Rank Promotion (using local config now!) ---
+        # NOTE: This system will now try to apply the highest qualified rank
+        # regardless of whether they just got promoted to Member or not.
+        # This is the desired consistent behavior.
+        military_ranks_config = guild_settings.get("military_ranks")
+        
+        if not military_ranks_config:
+            log.debug(f"No military ranks configured for guild {guild.id}. Skipping military rank promotion.")
             return
 
-        # Fetch the list of all possible time ranks from the website
-        ranks_endpoint = f"{api_url}/api/get_time_ranks/"
-        headers = {"X-API-Key": api_key}
-        try:
-            print(f"DEBUG: Fetching ranks from {ranks_endpoint}")
-            async with self.session.get(ranks_endpoint, headers=headers) as resp:
-                print(f"DEBUG: Ranks API response status: {resp.status}")
-                if resp.status != 200:
-                    print(f"RANKING ERROR: Could not fetch time ranks from website. Status: {resp.status}")
-                    print(f"RANKING ERROR: Response body: {await resp.text()}")
-                    return
-                # The API returns ranks ordered from highest to lowest (by rank_order)
-                time_ranks = await resp.json()
-                print(f"DEBUG: Received {len(time_ranks)} ranks from API")
-        except Exception as e:
-            print(f"RANKING NETWORK ERROR: {e}")
-            return
+        # Sort ranks by required_hours descending to ensure we pick the highest qualified rank
+        # We need to ensure required_hours is numeric for sorting
+        sorted_ranks = sorted(
+            [r for r in military_ranks_config if isinstance(r.get('required_hours'), (int, float))], 
+            key=lambda x: x['required_hours'], 
+            reverse=True
+        )
 
-        if not time_ranks:
-            print(f"DEBUG: No ranks configured on the website")
-            return # No ranks configured on the website
-
-        # Determine the highest rank the user has earned
         user_hours = total_minutes / 60
-        print(f"DEBUG: User has {user_hours} hours")
-        earned_rank = None
-        for rank in time_ranks:
-            print(f"DEBUG: Checking rank {rank['name']} (requires {rank['required_hours']} hours)")
-            if user_hours >= float(rank['required_hours']):
-                earned_rank = rank
-                print(f"DEBUG: User qualifies for rank {rank['name']}")
-                break # Stop at the first (highest) rank they qualify for
+        earned_rank_data = None
+        for rank in sorted_ranks:
+            if user_hours >= rank['required_hours']:
+                earned_rank_data = rank
+                break # Found the highest rank they qualify for
 
-        if not earned_rank:
-            print(f"DEBUG: User doesn't qualify for any rank yet")
+        if not earned_rank_data:
+            log.debug(f"User {member.name} ({member.id}) does not qualify for any military rank yet.")
             return # User doesn't qualify for any rank yet
-        
-        if int(earned_rank['discord_role_id']) == recruit_role_id:
-            print(f"DEBUG: Skipping rank assignment - earned rank is Recruit")
-            return # Skip if the earned rank is Recruit
 
-        # Check if the user already has this rank to avoid unnecessary API calls
-        earned_role_id = int(earned_rank['discord_role_id'])
-        print(f"DEBUG: Checking if user already has role ID {earned_role_id}")
+        earned_role_id = int(earned_rank_data['discord_role_id'])
+        earned_role_name = earned_rank_data['name'] # Get name from config for logs/messages
+
+        # Optimization: Check if the user already has the highest earned rank.
+        # This prevents unnecessary API calls to Discord if their roles are already correct.
         if any(role.id == earned_role_id for role in member.roles):
-            print(f"DEBUG: User already has the correct rank role")
-            return # User already has the correct rank
+            log.debug(f"User {member.name} already has rank {earned_role_name}. Skipping role update.")
+            return
 
-        # --- The Promotion: Remove old rank roles and add the new one ---
-        print(f"RANKING: Updating {member.name}'s rank to {earned_rank['name']}...")
+        log.info(f"Updating {member.name}'s ({member.id}) rank to {earned_role_name} (Total Minutes: {total_minutes}).")
         
-        # Get all possible time rank IDs (excluding Recruit) to remove any old ones
-        all_time_rank_ids = {int(r['discord_role_id']) for r in time_ranks if int(r['discord_role_id']) != recruit_role_id}
-        print(f"DEBUG: All time rank IDs: {all_time_rank_ids}")
+        # Get all possible military rank IDs from config to remove any old ones
+        all_military_rank_ids = {int(r['discord_role_id']) for r in military_ranks_config if r.get('discord_role_id') is not None}
         
-        roles_to_keep = [role for role in member.roles if role.id not in all_time_rank_ids]
-        print(f"DEBUG: Keeping {len(roles_to_keep)} roles")
+        # Filter out current roles that are old military ranks
+        roles_to_remove = [
+            role for role in member.roles 
+            if role.id in all_military_rank_ids and role.id != earned_role_id
+        ]
         
         new_rank_role = guild.get_role(earned_role_id)
+        
         if not new_rank_role:
-            print(f"RANKING ERROR: Role ID {earned_role_id} not found in this server.")
+            log.error(f"RANKING ERROR: Configured role ID {earned_role_id} for rank '{earned_role_name}' not found in guild {guild.id}.")
             return
 
-        roles_to_keep.append(new_rank_role)
-        print(f"DEBUG: Adding new rank role {new_rank_role.name}")
+        # Prepare roles to be set. This includes all non-military roles + the new earned military role.
+        current_non_military_roles = [
+            role for role in member.roles 
+            if role.id not in all_military_rank_ids and role.id != recruit_role_id and role.id != member_role_id
+        ] # Exclude recruit/member as they are handled by the first system, but ensure no conflict.
+
+        target_roles = set(current_non_military_roles + [new_rank_role])
+
+        # If they are currently a Recruit, and now qualify for a military rank, remove Recruit role
+        recruit_role = guild.get_role(recruit_role_id)
+        if recruit_role and recruit_role in member.roles and new_rank_role.id != recruit_role_id:
+             log.debug(f"Removing Recruit role from {member.name} as they now qualify for a military rank.")
+             target_roles.discard(recruit_role)
+        
+        # Ensure 'Member' role is preserved if applicable and it's not a military rank (which it shouldn't be)
+        member_role = guild.get_role(member_role_id)
+        if member_role and member_role in member.roles and member_role.id not in all_military_rank_ids:
+            target_roles.add(member_role)
+
 
         try:
-            print(f"DEBUG: Attempting to update roles for {member.name}")
-            await member.edit(roles=roles_to_keep, reason=f"Automatic time rank update to {earned_rank['name']}")
-            print(f"RANKING SUCCESS: {member.name} is now {earned_rank['name']}.")
+            # Use edit(roles=...) to set the exact set of roles, removing/adding in one go
+            await member.edit(roles=list(target_roles), reason=f"Automatic time rank update to {earned_rank_data['name']}")
+            log.info(f"RANKING SUCCESS: {member.name} ({member.id}) is now {earned_role_name}.")
+            await self._notify_website_of_promotion(guild, member.id, earned_rank_name) # Notify website
+            
+            # Send promotion message
+            channel_id = guild_settings.get("promotion_channel_id")
+            if channel_id:
+                channel = guild.get_channel(channel_id)
+                if channel and isinstance(channel, discord.TextChannel):
+                    await channel.send(
+                        f"🎖️ Bravo, {member.mention}! You've achieved the rank of **{earned_role_name}**!"
+                    )
+
         except discord.Forbidden:
-            print(f"RANKING ERROR: Missing permissions to manage roles for {member.name}.")
+            log.error(f"RANKING ERROR: Missing permissions to manage roles for {member.name} ({member.id}).")
         except Exception as e:
-            print(f"RANKING ERROR: An unexpected error occurred: {e}")
+            log.exception(f"RANKING ERROR: An unexpected error occurred during military rank update for {member.name} ({member.id}): {e}")
 
-    async def _notify_website_of_promotion(self, guild: discord.Guild, discord_id: int, new_role: str):
+    async def _notify_website_of_promotion(self, guild: discord.Guild, discord_id: int, new_role_name: str):
         guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("api_url")
+        promotion_update_url = guild_settings.get("promotion_update_url") # Use specific promotion URL
         api_key = guild_settings.get("api_key")
-        if not api_url or not api_key: return
-        endpoint = f"{api_url}/api/update_role/"
+        if not promotion_update_url or not api_key: 
+            log.warning(f"Promotion update URL or API Key not configured for guild {guild.id}. Skipping promotion notification for {discord_id}.")
+            return
+        
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"discord_id": str(discord_id), "new_role": new_role}
+        payload = {"discord_id": str(discord_id), "new_role_name": new_role_name} # Changed 'new_role' to 'new_role_name' for clarity
         try:
-            async with self.session.post(endpoint, headers=headers, json=payload) as resp:
+            async with self.session.post(promotion_update_url, headers=headers, json=payload) as resp:
                 if resp.status == 200:
-                    print(f"API: Successfully notified website of promotion for {discord_id}.")
+                    log.info(f"Successfully notified website of promotion for {discord_id} to {new_role_name}.")
                 else:
-                    print(f"API ERROR: Failed to update role on website for {discord_id}: {resp.status} - {await resp.text()}")
+                    log.error(f"Failed to notify website of promotion for {discord_id} to {new_role_name}: {resp.status} - {await resp.text()}")
+        except aiohttp.ClientError as e:
+            log.error(f"Network error notifying website of promotion for {discord_id}: {e}")
         except Exception as e:
-            print(f"NETWORK ERROR: Could not notify website of promotion for {discord_id}: {e}")
+            log.exception(f"An unexpected error occurred notifying website of promotion for {discord_id}: {e}")
 
     @commands.group(name="activityset")
     @commands.admin_or_permissions(manage_guild=True)
     async def activityset(self, ctx):
+        """Manage ActivityTracker settings."""
         pass
     
     @activityset.command(name="api")
     async def set_api(self, ctx, url: str, key: str):
+        """Sets the Django API URL and Key for sending activity updates."""
         if not url.startswith("http"):
             return await ctx.send("The URL must start with `http://` or `https://`.")
         await self.config.guild(ctx.guild).api_url.set(url)
         await self.config.guild(ctx.guild).api_key.set(key)
-        await ctx.send("API URL and Key have been set.")
+        await ctx.send("API URL and Key for activity tracking have been set.")
+
+    @activityset.command(name="promotionurl")
+    async def set_promotion_url(self, ctx, url: str):
+        """Sets the Django API URL for notifying about role promotions (e.g., /api/update_role/)."""
+        if not url.startswith("http"):
+            return await ctx.send("The URL must start with `http://` or `https://`.")
+        await self.config.guild(ctx.guild).promotion_update_url.set(url)
+        await ctx.send(f"Promotion update URL set to: `{url}`")
 
     @activityset.command(name="roles")
     async def set_roles(self, ctx, recruit_role: discord.Role, member_role: discord.Role):
+        """Sets the Recruit and Member roles for the promotion system."""
         await self.config.guild(ctx.guild).recruit_role_id.set(recruit_role.id)
         await self.config.guild(ctx.guild).member_role_id.set(member_role.id)
-        await ctx.send(f"Roles set: Recruits = `{recruit_role.name}`, Members = `{member_role.name}`")
+        await ctx.send(f"Membership promotion roles set: Recruit = `{recruit_role.name}`, Member = `{member_role.name}`")
     
     @activityset.command(name="threshold")
     async def set_threshold(self, ctx, hours: float):
+        """Sets the activity threshold (in hours) for Recruit to Member promotion."""
         if hours <= 0: return await ctx.send("Threshold must be a positive number of hours.")
         await self.config.guild(ctx.guild).promotion_threshold_hours.set(hours)
-        await ctx.send(f"Promotion threshold set to {hours} hours.")
+        await ctx.send(f"Recruit to Member promotion threshold set to `{hours}` hours.")
     
     @activityset.command(name="channel")
     async def set_channel(self, ctx, channel: discord.TextChannel = None):
+        """Sets the channel where promotion announcements will be sent."""
         if channel:
             await self.config.guild(ctx.guild).promotion_channel_id.set(channel.id)
             await ctx.send(f"Promotion announcements will be sent to {channel.mention}.")
         else:
             await self.config.guild(ctx.guild).promotion_channel_id.set(None)
             await ctx.send("Promotion announcements have been disabled.")
+
+    @activityset.group(name="militaryranks")
+    async def military_ranks_group(self, ctx):
+        """Manage military rank promotion settings."""
+        pass
+
+    @military_ranks_group.command(name="add")
+    async def add_military_rank(self, ctx, role: discord.Role, required_hours: float):
+        """
+        Adds or updates a military rank.
+        Required hours should be cumulative for this rank.
+        Ranks are ordered by required_hours internally.
+        """
+        if required_hours < 0:
+            return await ctx.send("Required hours must be 0 or greater.")
+        
+        async with self.config.guild(ctx.guild).military_ranks() as military_ranks:
+            # Check if this role ID already exists
+            existing_rank_index = next((i for i, r in enumerate(military_ranks) if int(r['discord_role_id']) == role.id), -1)
+
+            if existing_rank_index != -1:
+                # Update existing rank
+                old_hours = military_ranks[existing_rank_index]['required_hours']
+                military_ranks[existing_rank_index]['name'] = role.name
+                military_ranks[existing_rank_index]['required_hours'] = required_hours
+                await ctx.send(f"Updated military rank `{role.name}` (`{role.id}`). Old hours: `{old_hours}`. New hours: `{required_hours}`.")
+            else:
+                # Add new rank
+                military_ranks.append({
+                    "name": role.name,
+                    "discord_role_id": str(role.id), # Store as string for JSON compatibility and consistency
+                    "required_hours": required_hours
+                })
+                await ctx.send(f"Added military rank `{role.name}` (`{role.id}`) requiring `{required_hours}` hours.")
             
-    @activityset.command(name="testpromotion")
-    async def test_promotion(self, ctx, member: discord.Member = None):
-        """Test the promotion logic for a member."""
-        if not member:
-            member = ctx.author
+            # Re-sort is not strictly necessary on add/update here, as it's done in _check_for_promotion, 
+            # but can be useful for display consistency in `show` command or if you store `rank_order`.
+            # For now, relying on sort in _check_for_promotion is fine.
+
+    @military_ranks_group.command(name="remove")
+    async def remove_military_rank(self, ctx, role: discord.Role):
+        """Removes a military rank by its Discord role."""
+        async with self.config.guild(ctx.guild).military_ranks() as military_ranks:
+            initial_len = len(military_ranks)
+            military_ranks[:] = [r for r in military_ranks if int(r['discord_role_id']) != role.id]
+            if len(military_ranks) < initial_len:
+                await ctx.send(f"Removed military rank `{role.name}` (`{role.id}`).")
+            else:
+                await ctx.send(f"Military rank `{role.name}` (`{role.id}`) not found in config.")
+
+    @military_ranks_group.command(name="list")
+    async def list_military_ranks(self, ctx):
+        """Lists all configured military ranks."""
+        military_ranks = await self.config.guild(ctx.guild).military_ranks()
+        if not military_ranks:
+            return await ctx.send("No military ranks configured.")
         
-        await ctx.send(f"Testing promotion for {member.mention}...")
+        # Sort for display, generally from lowest hours to highest for clarity
+        sorted_ranks = sorted(military_ranks, key=lambda x: x.get('required_hours', 0))
+
+        msg = "**Configured Military Ranks (by required hours):**\n"
+        for rank in sorted_ranks:
+            role = ctx.guild.get_role(int(rank['discord_role_id']))
+            role_display = role.name if role else f"ID: {rank['discord_role_id']} (Not found)"
+            msg += f"- `{role_display}`: **{rank['required_hours']} hours**\n"
+        await ctx.send(msg)
+
+    @activityset.command(name="status")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def show_status(self, ctx):
+        """Shows the current ActivityTracker settings."""
+        settings = await self.config.guild(ctx.guild).all()
+
+        api_url = settings.get("api_url")
+        api_key_set = "Yes" if settings.get("api_key") else "No"
+        promotion_url = settings.get("promotion_update_url")
+
+        recruit_role = ctx.guild.get_role(settings.get("recruit_role_id"))
+        member_role = ctx.guild.get_role(settings.get("member_role_id"))
+        promotion_threshold = settings.get("promotion_threshold_hours")
+        promotion_channel = ctx.guild.get_channel(settings.get("promotion_channel_id"))
         
-        # Get the user's activity from the website
-        guild_settings = await self.config.guild(ctx.guild).all()
-        api_url = guild_settings.get("api_url")
-        api_key = guild_settings.get("api_key")
-        
-        if not api_url or not api_key:
-            return await ctx.send("API not configured.")
-        
-        # Manually trigger the promotion check with a large number of minutes
-        await self._check_for_promotion(ctx.guild, member, 3000)
-        
-        await ctx.send("Promotion check complete. Check the logs for details.")
+        military_ranks = settings.get("military_ranks")
+        military_ranks_count = len(military_ranks) if military_ranks else 0
+
+        status_msg = (
+            f"**ActivityTracker Settings for {ctx.guild.name}:**\n"
+            f"  - **Django API URL (Activity Sync):** `{api_url or 'Not set'}`\n"
+            f"  - **Django API Key Set (Activity Sync):** `{api_key_set}`\n"
+            f"  - **Django API URL (Promotion Notify):** `{promotion_url or 'Not set'}`\n"
+            f"  - **Recruit Role:** `{recruit_role.name}` ({recruit_role.id})" if recruit_role else "Not set" + "\n"
+            f"  - **Member Role:** `{member_role.name}` ({member_role.id})" if member_role else "Not set" + "\n"
+            f"  - **Promotion Threshold (Recruit->Member):** `{promotion_threshold or 'Not set'}` hours\n"
+            f"  - **Promotion Announcement Channel:** {promotion_channel.mention}" if promotion_channel else "`Not set`" + "\n"
+            f"  - **Configured Military Ranks:** `{military_ranks_count}` (Use `[p]activityset militaryranks list` to see details)\n"
+        )
+        await ctx.send(status_msg)
+
+
+async def setup(bot):
+    """Adds the ActivityTracker cog to the bot."""
+    if not bot.intents.members:
+        log.critical("Members intent is NOT enabled! ActivityTracker requires the Members intent to track voice activity and manage roles.")
+        raise RuntimeError("Members intent is not enabled.")
+    if not bot.intents.voice_states:
+        log.critical("Voice States intent is NOT enabled! ActivityTracker requires the Voice States intent to track voice activity.")
+        raise RuntimeError("Voice States intent is not enabled.")
+
+    await bot.add_cog(ActivityTracker(bot))
