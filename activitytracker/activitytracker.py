@@ -8,7 +8,7 @@ from datetime import datetime
 from redbot.core import commands, Config
 from aiohttp import web
 from redbot.core.utils.chat_formatting import humanize_list
-from redbot.core.utils.views import ConfirmView # Added for role removal confirmations
+from redbot.core.utils.views import ConfirmView 
 
 import logging
 
@@ -18,6 +18,7 @@ class ActivityTracker(commands.Cog):
     """
     Tracks user voice activity, handles Discord role promotions (Recruit/Member, Military Ranks),
     and exposes an API for a Django website to query member initial role assignment and military rank definitions.
+    Also includes a periodic role check.
     """
 
     def __init__(self, bot):
@@ -31,7 +32,7 @@ class ActivityTracker(commands.Cog):
             "member_role_id": None,
             "promotion_threshold_hours": 24.0, # Recruit to Member threshold
             "promotion_channel_id": None,
-            "military_ranks": [], # RE-ADDED: List of dicts for military ranks, configured via bot commands
+            "military_ranks": [], # List of dicts for military ranks, configured via bot commands
             "promotion_update_url": None # Specific URL for role update notifications (e.g., http://your.site:8000/api/update_role/)
         }
         self.config.register_guild(**default_guild)
@@ -45,7 +46,7 @@ class ActivityTracker(commands.Cog):
         
         # Define routes for the internal web server (for the Django site to call)
         self.web_app.router.add_post("/api/assign_initial_role", self.assign_initial_role_handler)
-        self.web_app.router.add_get("/api/get_military_ranks", self.get_military_ranks_handler) # NEW ENDPOINT
+        self.web_app.router.add_get("/api/get_military_ranks", self.get_military_ranks_handler)
         self.web_app.router.add_get("/health", self.health_check_handler)
 
         self.bot.loop.create_task(self.initialize_webserver())
@@ -109,8 +110,6 @@ class ActivityTracker(commands.Cog):
     async def _authenticate_web_request(self, request: web.Request):
         """Authenticates incoming web API requests based on X-API-Key header."""
         guild = request.app["guild"]
-        # Use the bot's API key for its own internal web API as well.
-        # This means the Django site will use the SAME key to call the bot as the bot uses to call Django.
         expected_key = await self.config.guild(guild).api_key() 
         if not expected_key:
             log.warning(f"Web API key is not set in config for guild {guild.id}, all requests to bot's API will fail authentication.")
@@ -174,7 +173,6 @@ class ActivityTracker(commands.Cog):
             log.warning(f"Could not find member ({discord_id}) or recruit role ({recruit_role_id}) in guild {guild.id}.")
             return web.Response(text="Member or role not found", status=404)
 
-    # NEW ENDPOINT: get_military_ranks_handler
     async def get_military_ranks_handler(self, request):
         """
         Web API handler to return the configured military rank definitions.
@@ -191,9 +189,8 @@ class ActivityTracker(commands.Cog):
         
         if not military_ranks:
             log.debug(f"No military ranks configured in bot for guild {guild.id}.")
-            return web.json_response([], status=200) # Return empty list if none are configured
+            return web.json_response([], status=200)
 
-        # Optionally sort the ranks for the website's convenience, e.g., by required_hours ascending
         try:
             sorted_ranks = sorted(
                 [r for r in military_ranks if 'required_hours' in r and isinstance(r['required_hours'], (int, float))], 
@@ -205,6 +202,100 @@ class ActivityTracker(commands.Cog):
 
         log.debug(f"Returning {len(sorted_ranks)} military ranks from bot config via API.")
         return web.json_response(sorted_ranks)
+
+    # NEW HELPER FUNCTION: Fetch total minutes for a specific user from Django
+    async def _get_total_minutes_from_django(self, guild: discord.Guild, member_id: int) -> int | None:
+        """
+        Fetches the total voice minutes for a specific Discord user from the Django backend.
+        This assumes Django has an endpoint like /api/get_user_activity/<discord_id>/
+        """
+        guild_settings = await self.config.guild(guild).all()
+        api_url = guild_settings.get("api_url")
+        api_key = guild_settings.get("api_key")
+
+        if not api_url or not api_key:
+            log.warning(f"Django API URL or Key not configured for guild {guild.id}. Cannot fetch user activity.")
+            return None
+
+        # Construct the endpoint for fetching a specific user's activity
+        # You might need to adjust this URL based on your actual Django API design.
+        # For example, it could be f"{api_url}get_user_activity/{member_id}/"
+        endpoint = f"{api_url}/api/get_user_activity/{member_id}/" 
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+
+        try:
+            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    total_minutes = data.get("total_minutes")
+                    if isinstance(total_minutes, (int, float)):
+                        log.debug(f"Fetched {total_minutes} minutes for user {member_id} from Django.")
+                        return int(total_minutes)
+                    else:
+                        log.error(f"Django API for user {member_id} returned invalid 'total_minutes': {total_minutes}")
+                        return None
+                elif resp.status == 404:
+                    log.info(f"User {member_id} not found in Django activity records.")
+                    return 0 # User not found, assume 0 minutes
+                else:
+                    log.error(f"Failed to fetch activity for {member_id} from Django: {resp.status} - {await resp.text()}")
+                    return None
+        except aiohttp.ClientConnectorError as e:
+            log.error(f"Network error fetching activity for {member_id} from Django: {e}. Is the server running and accessible?")
+            return None
+        except asyncio.TimeoutError:
+            log.error(f"Timeout fetching activity for {member_id} from Django.")
+            return None
+        except Exception as e:
+            log.exception(f"An unexpected error occurred fetching activity for {member_id} from Django: {e}")
+            return None
+
+    # NEW FUNCTION: Periodic role check
+    async def _periodic_role_check(self, guild_id: int):
+        """
+        Performs a periodic check of all guild members' roles based on their total voice activity.
+        This function is intended to be called by the Redbot scheduler.
+        """
+        log.info(f"Starting periodic role check for guild ID: {guild_id}")
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            log.error(f"Guild with ID {guild_id} not found for periodic role check.")
+            return
+
+        members_checked = 0
+        promotions_made = 0
+
+        # Fetch all members to check. Using fetch_members() for full list, but be mindful of large guilds.
+        # For very large guilds, consider iterating through guild.members if caching is enabled and sufficient.
+        try:
+            async for member in guild.fetch_members(limit=None): # Fetch all members
+                if member.bot:
+                    continue # Skip bots
+                
+                members_checked += 1
+                total_minutes = await self._get_total_minutes_from_django(guild, member.id)
+
+                if total_minutes is not None:
+                    # _check_for_promotion handles both Recruit->Member and Military Ranks
+                    # It also handles if a user already has the correct role
+                    initial_roles = {r.id for r in member.roles}
+                    await self._check_for_promotion(guild, member, total_minutes)
+                    final_roles = {r.id for r in member.roles}
+
+                    if initial_roles != final_roles:
+                        promotions_made += 1
+                        log.info(f"Role change detected for {member.name} ({member.id}) during periodic check.")
+                else:
+                    log.warning(f"Could not get total minutes for {member.name} ({member.id}) during periodic check. Skipping.")
+                
+                await asyncio.sleep(0.1) # Small delay to avoid hitting Discord/API rate limits too hard
+
+        except discord.Forbidden:
+            log.error(f"Bot lacks permissions to fetch members in guild {guild.id} for periodic check.")
+        except Exception as e:
+            log.exception(f"An unexpected error occurred during periodic role check for guild {guild.id}: {e}")
+
+        log.info(f"Periodic role check complete for guild {guild.id}. Checked {members_checked} members, made {promotions_made} role changes.")
 
 
     @commands.Cog.listener()
@@ -301,7 +392,6 @@ class ActivityTracker(commands.Cog):
             log.debug(f"No military ranks configured in bot for guild {guild.id}. Skipping military rank promotion.")
             return
 
-        # Sort ranks by required_hours descending to ensure we pick the highest qualified rank
         try:
             sorted_ranks = sorted(
                 [r for r in military_ranks_config if isinstance(r.get('required_hours'), (int, float))], 
@@ -315,7 +405,6 @@ class ActivityTracker(commands.Cog):
         user_hours = total_minutes / 60
         earned_rank_data = None
         for rank in sorted_ranks:
-            # Ensure discord_role_id exists and is convertible to int
             if 'discord_role_id' not in rank or not str(rank['discord_role_id']).isdigit():
                 log.warning(f"RANKING WARNING: Invalid or missing 'discord_role_id' in configured rank data: {rank}. Skipping.")
                 continue
@@ -337,22 +426,17 @@ class ActivityTracker(commands.Cog):
 
         log.info(f"Updating {member.name}'s ({member.id}) rank to {earned_role_name} (Total Minutes: {total_minutes}).")
         
-        # Get all possible military rank IDs from the bot's configured list
         all_military_rank_ids = {
             int(r['discord_role_id']) 
             for r in military_ranks_config 
             if r.get('discord_role_id') is not None and str(r['discord_role_id']).isdigit()
         }
         
-        # Determine the set of roles the member should have *after* the update
-        # Start with all roles the member currently has that are NOT military ranks,
-        # AND are NOT the recruit/member roles (as those are handled separately)
         target_roles = {
             role for role in member.roles 
             if role.id not in all_military_rank_ids and role.id != recruit_role_id and role.id != member_role_id
         }
         
-        # Add the newly earned military rank role
         new_rank_role = guild.get_role(earned_role_id)
         if not new_rank_role:
             log.error(f"RANKING ERROR: Configured role ID {earned_role_id} for rank '{earned_role_name}' not found in guild {guild.id}. Please ensure the role exists in Discord.")
@@ -360,19 +444,13 @@ class ActivityTracker(commands.Cog):
 
         target_roles.add(new_rank_role)
 
-        # Handle Recruit/Member roles specifically for consistency across promotion systems
         recruit_role = guild.get_role(recruit_role_id)
         member_role = guild.get_role(member_role_id)
 
-        # If they are currently a Recruit and now qualify for a military rank (that isn't the Recruit role itself), remove Recruit
         if recruit_role and recruit_role in member.roles and earned_role_id != recruit_role_id:
              log.debug(f"Removing Recruit role from {member.name} as they now qualify for a military rank.")
              target_roles.discard(recruit_role)
         
-        # Ensure the Member role (if they have it and it's not a military rank) is kept
-        # This is already handled by adding to `target_roles` only non-military/non-recruit/non-member roles,
-        # then adding the new rank. If they already have `member_role`, it should persist unless it was a military role.
-        # Let's ensure it's explicitly added back if they had it and it's not an old military role being removed.
         if member_role and member_role in member.roles and member_role.id not in all_military_rank_ids:
             target_roles.add(member_role)
 
@@ -440,8 +518,6 @@ class ActivityTracker(commands.Cog):
         await self.config.guild(ctx.guild).promotion_update_url.set(url)
         await ctx.send(f"Promotion update URL set to: `{url}`")
 
-    # Removed set_military_ranks_api as it's no longer needed for bot to fetch
-
     @activityset.command(name="roles")
     async def set_roles(self, ctx, recruit_role: discord.Role, member_role: discord.Role):
         """Sets the Recruit and Member roles for the promotion system."""
@@ -482,20 +558,17 @@ class ActivityTracker(commands.Cog):
             return await ctx.send("Required hours must be 0 or greater.")
         
         async with self.config.guild(ctx.guild).military_ranks() as military_ranks:
-            # Check if this role ID already exists
-            existing_rank_index = next((i for i, r in enumerate(military_ranks) if str(r['discord_role_id']) == str(role.id)), -1) # Compare as strings for consistency
+            existing_rank_index = next((i for i, r in enumerate(military_ranks) if str(r['discord_role_id']) == str(role.id)), -1)
 
             if existing_rank_index != -1:
-                # Update existing rank
                 old_hours = military_ranks[existing_rank_index]['required_hours']
                 military_ranks[existing_rank_index]['name'] = role.name
                 military_ranks[existing_rank_index]['required_hours'] = required_hours
                 await ctx.send(f"Updated military rank `{role.name}` (`{role.id}`). Old hours: `{old_hours}`. New hours: `{required_hours}`.")
             else:
-                # Add new rank
                 military_ranks.append({
                     "name": role.name,
-                    "discord_role_id": str(role.id), # Store as string for JSON compatibility and consistency
+                    "discord_role_id": str(role.id),
                     "required_hours": required_hours
                 })
                 await ctx.send(f"Added military rank `{role.name}` (`{role.id}`) requiring `{required_hours}` hours.")
@@ -505,7 +578,7 @@ class ActivityTracker(commands.Cog):
         """Removes a military rank by its Discord role."""
         async with self.config.guild(ctx.guild).military_ranks() as military_ranks:
             initial_len = len(military_ranks)
-            military_ranks[:] = [r for r in military_ranks if str(r['discord_role_id']) != str(role.id)] # Compare as strings
+            military_ranks[:] = [r for r in military_ranks if str(r['discord_role_id']) != str(role.id)]
             if len(military_ranks) < initial_len:
                 await ctx.send(f"Removed military rank `{role.name}` (`{role.id}`).")
             else:
@@ -518,7 +591,6 @@ class ActivityTracker(commands.Cog):
         if not military_ranks:
             return await ctx.send("No military ranks configured.")
         
-        # Sort for display, generally from lowest hours to highest for clarity
         sorted_ranks = sorted(military_ranks, key=lambda x: x.get('required_hours', 0))
 
         msg = "**Configured Military Ranks (by required hours):**\n"
@@ -527,6 +599,13 @@ class ActivityTracker(commands.Cog):
             role_display = role.name if role else f"ID: {rank['discord_role_id']} (Role not found in guild)"
             msg += f"- `{role_display}`: **{rank['required_hours']} hours**\n"
         await ctx.send(msg)
+
+    @activityset.command(name="runcheck")
+    async def run_periodic_check(self, ctx):
+        """Manually runs the periodic role check for the current guild."""
+        await ctx.send("Starting manual periodic role check. This may take a moment for large guilds.")
+        await self._periodic_role_check(ctx.guild.id)
+        await ctx.send("Manual periodic role check complete.")
 
     @activityset.command(name="status")
     @commands.admin_or_permissions(manage_guild=True)
@@ -561,7 +640,10 @@ class ActivityTracker(commands.Cog):
             f"  - **Port:** `{os.environ.get('ACTIVITY_WEB_PORT', '5002')}`\n"
             f"  - **Endpoint for Military Ranks:** `/api/get_military_ranks`\n"
             f"  - **Endpoint for Assign Initial Role:** `/api/assign_initial_role`\n"
-            f"  (Django should use the same API Key for these endpoints as the bot uses for Django calls)"
+            f"  (Django should use the same API Key for these endpoints as the bot uses for Django calls)\n"
+            f"\n**Periodic Role Check:**\n"
+            f"  - **Scheduled:** Yes (Daily at 03:00 UTC)\n"
+            f"  - **Manual Trigger:** `[p]activityset runcheck`"
         )
         await ctx.send(status_msg)
 
@@ -573,4 +655,8 @@ async def setup(bot):
         log.critical("Voice States intent is NOT enabled! ActivityTracker requires the Voice States intent to track voice activity.")
         raise RuntimeError("Voice States intent is not enabled.")
 
-    await bot.add_cog(ActivityTracker(bot))
+    cog = ActivityTracker(bot)
+    await bot.add_cog(cog)
+    # Register the periodic check function with the scheduler after the cog is loaded
+    # The scheduler tool call already handled the scheduling, this ensures the function exists for it.
+    bot.add_dev_env_value("activitytracker_periodic_check", lambda: cog._periodic_role_check)
