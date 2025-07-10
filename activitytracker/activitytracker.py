@@ -5,8 +5,10 @@ import asyncio
 import aiohttp
 from datetime import datetime
 
+# --- THIS IS THE CORRECTED IMPORT BLOCK ---
 from redbot.core import commands, Config
 from redbot.core.tasks import loop
+# -----------------------------------------
 
 class ActivityTracker(commands.Cog):
     """Tracks user voice activity and syncs with a Django website API."""
@@ -15,7 +17,6 @@ class ActivityTracker(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         
-        # Guild-specific settings stored in Red's Config
         default_guild = {
             "api_url": None,
             "api_key": None,
@@ -26,12 +27,11 @@ class ActivityTracker(commands.Cog):
         }
         self.config.register_guild(**default_guild)
         
-        # In-memory tracking for live voice sessions {guild_id: {user_id: join_timestamp}}
         self.voice_tracking = {}
-        self.session = aiohttp.ClientSession() # Create a persistent session for API calls
+        self.session = aiohttp.ClientSession()
+        # The promotion check is now handled by the API call, so the background loop is removed for simplicity.
         
     def cog_unload(self):
-        # Cleanly close the session when the cog is unloaded
         asyncio.create_task(self.session.close())
 
     @commands.Cog.listener()
@@ -40,20 +40,18 @@ class ActivityTracker(commands.Cog):
         if member.bot:
             return
 
-        # User joins a voice channel
         if before.channel is None and after.channel is not None:
             if member.guild.id not in self.voice_tracking:
                 self.voice_tracking[member.guild.id] = {}
             self.voice_tracking[member.guild.id][member.id] = datetime.utcnow()
             print(f"User {member.name} joined voice. Starting session.")
 
-        # User leaves a voice channel
         elif before.channel is not None and after.channel is None:
             if member.guild.id in self.voice_tracking and member.id in self.voice_tracking[member.guild.id]:
                 join_time = self.voice_tracking[member.guild.id].pop(member.id)
                 duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
                 
-                if duration_minutes < 1: # Ignore very short sessions
+                if duration_minutes < 1:
                     return
 
                 print(f"User {member.name} left voice. Duration: {duration_minutes:.2f} minutes.")
@@ -79,7 +77,6 @@ class ActivityTracker(commands.Cog):
             async with self.session.post(endpoint, headers=headers, json=payload) as resp:
                 if resp.status == 200:
                     print(f"Successfully synced {minutes_to_add} minutes for user {discord_id}.")
-                    # The API response now includes the new total minutes
                     data = await resp.json()
                     total_minutes = data.get("total_minutes", 0)
                     await self._check_for_promotion(guild, discord_id, total_minutes)
