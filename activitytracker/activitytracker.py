@@ -35,7 +35,7 @@ class ActivityTracker(commands.Cog):
             "military_ranks": [], # List of dicts for military ranks, configured via bot commands
             "promotion_update_url": None, # Base URL for role update notifications (e.g., http://your.site:8000)
             # "get_user_activity_url": None # REMOVED: Bot no longer fetches total activity from Django for its own logic
-            "activity_data": {} # NEW: Store user voice activity data locally in bot's config
+            "activity_data": {} # Store user voice activity data locally in bot's config
         }
         self.config.register_guild(**default_guild)
         
@@ -82,18 +82,8 @@ class ActivityTracker(commands.Cog):
                         if duration_minutes >= 1: # Only send if minimum 1 minute tracked
                             log.info(f"Unloading: Logging {duration_minutes:.2f} minutes for {member.name} ({member.id}) due to cog unload.")
                             
-                            # Update local config immediately
-                            user_id_str = str(member.id)
-                            asyncio.create_task(self._update_local_activity(guild, user_id_str, int(duration_minutes)))
-
-                            # Prepare to send the *new total* to Django
-                            # Need to fetch the updated total AFTER the local update
-                            # This needs to be slightly refactored for the unload context.
-                            # For unload, we just update local and try to send. The total might not be perfectly fresh if multiple
-                            # updates happen simultaneously, but it's the best effort for graceful shutdown.
-                            
-                            # Instead of calling _send_total_activity_to_django directly,
-                            # we'll create a task that ensures local update then sends.
+                            # For unload, we need to ensure local config is updated before potentially sending to Django
+                            # and checking promotions. This helper covers that.
                             pending_activity_updates.append(
                                 self._update_local_and_then_send(guild, member, int(duration_minutes), is_unload=True)
                             )
@@ -104,10 +94,10 @@ class ActivityTracker(commands.Cog):
         asyncio.ensure_future(self._perform_unload_cleanup(pending_activity_updates))
 
     async def _update_local_and_then_send(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int, is_unload: bool = False):
-        """Helper to combine local update and remote send, used by unload and voice updates."""
+        """Helper to combine local activity update, remote send, and promotion check."""
         user_id_str = str(member.id)
         
-        # Ensure activity_data structure exists
+        # 1. Update local activity data
         async with self.config.guild(guild).activity_data() as activity_data:
             if user_id_str not in activity_data:
                 activity_data[user_id_str] = {"total_minutes": 0}
@@ -115,10 +105,10 @@ class ActivityTracker(commands.Cog):
             current_total_minutes = activity_data[user_id_str]["total_minutes"]
             log.debug(f"Local activity for {member.name} ({member.id}) updated to {current_total_minutes} minutes.")
 
-        # Now send this total to Django
+        # 2. Push this new total to Django
         await self._send_total_activity_to_django(guild, member, current_total_minutes, is_unload=is_unload)
         
-        # Then, check for promotions based on this current total
+        # 3. Check for promotions based on this current total (from local config)
         await self._check_for_promotion(guild, member, current_total_minutes)
 
 
@@ -316,7 +306,7 @@ class ActivityTracker(commands.Cog):
                 
                 members_checked += 1
                 
-                # Fetch total minutes from bot's local config
+                # Fetch total minutes from bot's local config (source of truth)
                 total_minutes = activity_data_all.get(str(member.id), {}).get("total_minutes", 0)
 
                 initial_roles = {r.id for r in member.roles}
@@ -588,8 +578,7 @@ class ActivityTracker(commands.Cog):
         await self.config.guild(ctx.guild).api_key.set(key)
         await ctx.send("Django API URL and Key for pushing total activity have been set.")
 
-    # Removed: set_get_activity_url as bot no longer fetches totals from Django for its own logic.
-    # If Django needs to GET data from bot, that's via the web_api_key endpoints.
+    # Removed set_get_activity_url as it's no longer needed in this flow.
 
     @activityset.command(name="promotionurl")
     @app_commands.describe(url="The Django API *base* URL for notifying about role promotions (e.g., http://your.site:8000).")
@@ -601,7 +590,7 @@ class ActivityTracker(commands.Cog):
         await ctx.send(f"Promotion update base URL set to: `{url}`")
 
     @activityset.command(name="webapikey")
-    @app_commands.describe(key="The secret API key for YOUR Django website to authenticate with THIS bot's API.")
+    @app_commands.describe(key="The secret API key for YOUR Django website to authenticate with THIS bot's API (inbound).")
     async def set_web_api_key(self, ctx: commands.Context, key: str):
         """Sets the secret API key for your Django website to authenticate with this bot's API (inbound)."""
         if len(key) < 16:
@@ -748,7 +737,6 @@ class ActivityTracker(commands.Cog):
         api_key = settings.get("api_key")
         web_api_key = settings.get("web_api_key")
         promotion_url = settings.get("promotion_update_url")
-        # get_user_activity_url = settings.get("get_user_activity_url") # No longer used by bot
         
         embed.add_field(
             name="API Configuration",
@@ -757,7 +745,6 @@ class ActivityTracker(commands.Cog):
                 f"Django Outbound Key: `{'✓ Set' if api_key else '✗ Not set'}`\n"
                 f"Django Inbound Key (to bot): `{'✓ Set' if web_api_key else '✗ Not set'}`\n"
                 f"Promotion API Base URL: `{promotion_url or 'Not set'}`\n"
-                # f"Get User Activity URL: `{get_user_activity_url or 'Not set'}`" # No longer displayed/used by bot
             ),
             inline=False
         )
