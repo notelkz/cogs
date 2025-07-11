@@ -38,6 +38,7 @@ class GameCounter(commands.Cog):
             activity_data={}  # Store user activity data
         )
         
+        self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
