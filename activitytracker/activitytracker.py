@@ -204,51 +204,48 @@ class ActivityTracker(commands.Cog):
         return web.json_response(sorted_ranks)
 
     # NEW HELPER FUNCTION: Fetch total minutes for a specific user from Django
-    async def _get_total_minutes_from_django(self, guild, user_id):
-        """Get the total voice minutes for a user from the Django website."""
-        api_url = await self.config.guild(guild).api_url()
-        api_key = await self.config.guild(guild).api_key()
-        
+    async def _get_total_minutes_from_django(self, guild: discord.Guild, member_id: int) -> int | None:
+        """
+        Fetches the total voice minutes for a specific Discord user from the Django backend.
+        This assumes Django has an endpoint like /api/get_user_activity/<discord_id>/
+        """
+        guild_settings = await self.config.guild(guild).all()
+        api_url = guild_settings.get("api_url")
+        api_key = guild_settings.get("api_key")
+
         if not api_url or not api_key:
-            log.error(f"API URL or key not configured for guild {guild.id}")
+            log.warning(f"Django API URL or Key not configured for guild {guild.id}. Cannot fetch user activity.")
             return None
-        
-        # Convert user_id to string to ensure consistent formatting
-        user_id_str = str(user_id)
-        
-        # Log the request details
-        log.info(f"Requesting activity data for user {user_id_str} from {api_url}")
-        
+
+        # Construct the endpoint for fetching a specific user's activity
+        endpoint = f"{api_url}/api/get_user_activity/{member_id}/" 
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+
         try:
-            endpoint = f"{api_url}/api/get_user_activity/{user_id_str}/"
-            headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-            
-            log.debug(f"Making API request to: {endpoint}")
-            log.debug(f"Using headers: {headers}")
-            
-            async with self.session.get(endpoint, headers=headers) as resp:
-                log.info(f"API response status: {resp.status}")
-                
+            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    log.debug(f"API response data: {data}")
-                    
-                    # Extract total_minutes from the response
-                    total_minutes = data.get("total_minutes", 0)
-                    log.info(f"Retrieved {total_minutes} minutes for user {user_id_str}")
-                    return total_minutes
+                    total_minutes = data.get("total_minutes")
+                    if isinstance(total_minutes, (int, float)):
+                        log.debug(f"Fetched {total_minutes} minutes for user {member_id} from Django.")
+                        return int(total_minutes)
+                    else:
+                        log.error(f"Django API for user {member_id} returned invalid 'total_minutes': {total_minutes}")
+                        return None
+                elif resp.status == 404:
+                    log.info(f"User {member_id} not found in Django activity records.")
+                    return 0 # User not found, assume 0 minutes
                 else:
-                    error_text = await resp.text()
-                    log.error(f"API request failed with status {resp.status}: {error_text}")
+                    log.error(f"Failed to fetch activity for {member_id} from Django: {resp.status} - {await resp.text()}")
                     return None
-        except aiohttp.ClientError as e:
-            log.error(f"API request exception for user {user_id_str}: {str(e)}")
+        except aiohttp.ClientConnectorError as e:
+            log.error(f"Network error fetching activity for {member_id} from Django: {e}. Is the server running and accessible?")
             return None
-        except json.JSONDecodeError as e:
-            log.error(f"Failed to parse API response for user {user_id_str}: {str(e)}")
+        except asyncio.TimeoutError:
+            log.error(f"Timeout fetching activity for {member_id} from Django.")
             return None
         except Exception as e:
-            log.error(f"Unexpected error getting activity for user {user_id_str}: {str(e)}")
+            log.exception(f"An unexpected error occurred fetching activity for {member_id} from Django: {e}")
             return None
 
     # NEW FUNCTION: Periodic role check
@@ -296,52 +293,31 @@ class ActivityTracker(commands.Cog):
 
         log.info(f"Periodic role check complete for guild {guild.id}. Checked {members_checked} members, made {promotions_made} role changes.")
 
+
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        """Track when users join and leave voice channels."""
         if member.bot:
             return
-        
-        log.info(f"Voice state update for {member.name} ({member.id})")
-        log.info(f"Before channel: {before.channel}, After channel: {after.channel}")
-        
-        guild = member.guild
-        guild_id = guild.id
-        user_id = member.id
-        
         guild_id_for_cog = int(os.environ.get("DISCORD_GUILD_ID", 0))
-        if guild_id != guild_id_for_cog:
+        if member.guild.id != guild_id_for_cog:
             return
-        
-        # Initialize guild in tracking dict if needed
-        if guild_id not in self.voice_tracking:
-            log.info(f"Initializing voice tracking for guild {guild_id}")
-            self.voice_tracking[guild_id] = {}
-        
-        # User joined a voice channel
+
         if before.channel is None and after.channel is not None:
-            log.info(f"{member.name} joined voice channel {after.channel.name}")
-            self.voice_tracking[guild_id][user_id] = datetime.utcnow()
-        
-        # User left a voice channel
+            if after.channel.guild.id not in self.voice_tracking:
+                self.voice_tracking[after.channel.guild.id] = {}
+            self.voice_tracking[after.channel.guild.id][member.id] = datetime.utcnow()
+            log.debug(f"User {member.name} joined voice in {after.channel.name}. Starting session.")
         elif before.channel is not None and after.channel is None:
-            log.info(f"{member.name} left voice channel {before.channel.name}")
-            if user_id in self.voice_tracking[guild_id]:
-                join_time = self.voice_tracking[guild_id][user_id]
-                duration = datetime.utcnow() - join_time
-                minutes = duration.total_seconds() / 60
+            if before.channel.guild.id in self.voice_tracking and member.id in self.voice_tracking[before.channel.guild.id]:
+                join_time = self.voice_tracking[before.channel.guild.id].pop(member.id)
+                duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
                 
-                log.info(f"{member.name} was in voice for {minutes:.2f} minutes")
+                if duration_minutes < 1:
+                    log.debug(f"User {member.name} left voice. Duration too short ({duration_minutes:.2f}m). Skipping sync.")
+                    return
                 
-                if minutes >= 1:  # Only count if at least 1 minute
-                    log.info(f"Updating activity for {member.name}: {minutes:.2f} minutes")
-                    asyncio.create_task(self._update_website_activity(guild, member, int(minutes)))
-                else:
-                    log.info(f"Duration too short ({minutes:.2f}m). Skipping sync.")
-                
-                del self.voice_tracking[guild_id][user_id]
-            else:
-                log.warning(f"{member.name} left voice but wasn't being tracked")
+                log.info(f"User {member.name} left voice. Duration: {duration_minutes:.2f} minutes.")
+                await self._update_website_activity(member.guild, member, int(duration_minutes))
 
     async def _update_website_activity(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int):
         guild_settings = await self.config.guild(guild).all()
@@ -354,22 +330,15 @@ class ActivityTracker(commands.Cog):
         endpoint = f"{api_url}/api/update_activity/"
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
         payload = {"discord_id": str(member.id), "voice_minutes": minutes_to_add}
-        
-        log.info(f"Sending {minutes_to_add} minutes for user {member.id} to {endpoint}")
-        
         try:
             async with self.session.post(endpoint, headers=headers, json=payload, timeout=10) as resp:
-                log.info(f"API response status: {resp.status} for activity update")
-                
                 if resp.status == 200:
                     log.info(f"Successfully synced {minutes_to_add} minutes for user {member.id}.")
                     data = await resp.json()
-                    log.debug(f"API response data: {data}")
                     total_minutes = data.get("total_minutes", 0)
                     await self._check_for_promotion(guild, member, total_minutes)
                 else:
-                    error_text = await resp.text()
-                    log.error(f"Failed to update activity for {member.id}: {resp.status} - {error_text}")
+                    log.error(f"Failed to update activity for {member.id}: {resp.status} - {await resp.text()}")
         except aiohttp.ClientConnectorError as e:
             log.error(f"Network error sending activity to Django API for {member.id}: {e}. Is the server running and accessible?")
         except asyncio.TimeoutError:
@@ -919,147 +888,3 @@ class ActivityTracker(commands.Cog):
         self.bot.loop.create_task(self._periodic_role_check(ctx.guild.id))
         
         await ctx.send("Role check has been initiated. Results will be logged and role changes will be made automatically.")
-    @commands.command()
-    async def myvoicetime(self, ctx):
-        """Shows your total accumulated voice time."""
-        total_minutes = await self._get_total_minutes_from_django(ctx.guild, ctx.author.id)
-        if total_minutes is None:
-            return await ctx.send("Could not retrieve your voice time. Is the website API configured correctly?")
-
-        hours = total_minutes // 60
-        minutes = total_minutes % 60
-        await ctx.send(f"Your total voice time is {hours} hours and {minutes} minutes.")
-
-    @activityset.command(name="checkuser")
-    @commands.admin_or_permissions(administrator=True)
-    async def check_user_activity(self, ctx, member: discord.Member):
-        """Manually check a specific user's activity and update their roles."""
-        await ctx.send(f"Checking activity for {member.mention}...")
-        
-        total_minutes = await self._get_total_minutes_from_django(ctx.guild, member.id)
-        
-        if total_minutes is None:
-            return await ctx.send("❌ Unable to fetch activity data. The website may be down or not properly configured.")
-        
-        await ctx.send(f"Found {total_minutes} minutes ({total_minutes/60:.1f} hours) of activity for {member.mention}.")
-        
-        # Store original roles for comparison
-        original_roles = set(member.roles)
-        
-        # Process promotions
-        await self._check_for_promotion(ctx.guild, member, total_minutes)
-        
-        # Check if roles changed
-        current_roles = set(member.roles)
-        if original_roles != current_roles:
-            added_roles = [r.mention for r in current_roles - original_roles]
-            removed_roles = [r.mention for r in original_roles - current_roles]
-            
-            result = []
-            if added_roles:
-                result.append(f"Added roles: {humanize_list(added_roles)}")
-            if removed_roles:
-                result.append(f"Removed roles: {humanize_list(removed_roles)}")
-                
-            await ctx.send(f"✅ Updated roles for {member.mention}:\n" + "\n".join(result))
-        else:
-            await ctx.send(f"✅ No role changes needed for {member.mention}.")
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        """Sets up periodic tasks when the bot is ready."""
-        log.info("ActivityTracker is ready and setting up periodic tasks.")
-        await self._setup_periodic_tasks()
-
-    async def _setup_periodic_tasks(self):
-        """Sets up periodic tasks for role checking."""
-        guild_id_str = os.environ.get("DISCORD_GUILD_ID")
-        if not guild_id_str:
-            log.error("DISCORD_GUILD_ID environment variable not set. Periodic tasks will not be scheduled.")
-            return
-
-        guild_id = int(guild_id_str)
-        guild = self.bot.get_guild(guild_id)
-        if not guild:
-            log.error(f"Guild with ID {guild_id} not found. Periodic tasks will not be scheduled.")
-            return
-
-        # Schedule the periodic role check every 24 hours
-        self.bot.loop.create_task(self._schedule_periodic_role_check(guild_id))
-
-    async def _schedule_periodic_role_check(self, guild_id: int):
-        """Schedules the periodic role check to run every 24 hours."""
-        while self == self.bot.get_cog("ActivityTracker"):  # Run while cog is loaded
-            try:
-                log.info(f"Running scheduled role check for guild ID: {guild_id}")
-                await self._periodic_role_check(guild_id)
-                log.info(f"Completed scheduled role check for guild ID: {guild_id}")
-            except Exception as e:
-                log.exception(f"An error occurred during the scheduled role check: {e}")
-            await asyncio.sleep(86400)  # Sleep for 24 hours
-
-    @commands.Cog.listener()
-    async def on_member_join(self, member):
-        """Handles when a new member joins the guild."""
-        log.info(f"New member joined: {member.name} ({member.id})")
-        guild = member.guild
-        recruit_role_id = await self.config.guild(guild).recruit_role_id()
-        recruit_role = guild.get_role(recruit_role_id)
-        if recruit_role:
-            try:
-                await member.add_roles(recruit_role, reason="Automatic assignment of Recruit role on join.")
-                log.info(f"Assigned Recruit role to new member: {member.name} ({member.id})")
-            except discord.Forbidden:
-                log.error(f"Missing permissions to assign Recruit role to {member.name} ({member.id}).")
-            except Exception as e:
-                log.exception(f"An error occurred while assigning Recruit role to {member.name} ({member.id}): {e}")
-        else:
-            log.warning(f"Recruit role not configured or not found for guild: {guild.name} ({guild.id})")
-
-    @activityset.command(name="debug")
-    @commands.is_owner()
-    async def debug_info(self, ctx):
-        """Shows debug information about the ActivityTracker cog."""
-        embed = discord.Embed(
-            title="ActivityTracker Debug Information",
-            color=discord.Color.gold()
-        )
-        
-        # Web server status
-        web_status = "Running" if self.web_runner and self.web_site else "Not running"
-        host = os.environ.get("ACTIVITY_WEB_HOST", "0.0.0.0")
-        port = os.environ.get("ACTIVITY_WEB_PORT", "5002")
-        
-        embed.add_field(
-            name="Web API Server",
-            value=f"Status: {web_status}\nHost: {host}\nPort: {port}",
-            inline=False
-        )
-        
-        # Voice tracking stats
-        total_tracked = 0
-        for guild_id, members in self.voice_tracking.items():
-            total_tracked += len(members)
-        
-        embed.add_field(
-            name="Voice Tracking",
-            value=f"Currently tracking: {total_tracked} users",
-            inline=False
-        )
-        
-        # Environment variables
-        guild_id_env = os.environ.get("DISCORD_GUILD_ID", "Not set")
-        
-        embed.add_field(
-            name="Environment Variables",
-            value=f"DISCORD_GUILD_ID: {guild_id_env}\nACTIVITY_WEB_HOST: {host}\nACTIVITY_WEB_PORT: {port}",
-            inline=False
-        )
-        
-        # Version info
-        embed.set_footer(text=f"ActivityTracker Cog v1.2.0 | Discord.py {discord.__version__}")
-        
-        await ctx.send(embed=embed)
-
-def setup(bot):
-    bot.add_cog(ActivityTracker(bot))
