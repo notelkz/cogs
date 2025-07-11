@@ -218,8 +218,6 @@ class ActivityTracker(commands.Cog):
             return None
 
         # Construct the endpoint for fetching a specific user's activity
-        # You might need to adjust this URL based on your actual Django API design.
-        # For example, it could be f"{api_url}get_user_activity/{member_id}/"
         endpoint = f"{api_url}/api/get_user_activity/{member_id}/" 
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
 
@@ -266,7 +264,6 @@ class ActivityTracker(commands.Cog):
         promotions_made = 0
 
         # Fetch all members to check. Using fetch_members() for full list, but be mindful of large guilds.
-        # For very large guilds, consider iterating through guild.members if caching is enabled and sufficient.
         try:
             async for member in guild.fetch_members(limit=None): # Fetch all members
                 if member.bot:
@@ -277,7 +274,6 @@ class ActivityTracker(commands.Cog):
 
                 if total_minutes is not None:
                     # _check_for_promotion handles both Recruit->Member and Military Ranks
-                    # It also handles if a user already has the correct role
                     initial_roles = {r.id for r in member.roles}
                     await self._check_for_promotion(guild, member, total_minutes)
                     final_roles = {r.id for r in member.roles}
@@ -585,78 +581,310 @@ class ActivityTracker(commands.Cog):
                 await ctx.send(f"Military rank `{role.name}` (`{role.id}`) not found in config.")
 
     @military_ranks_group.command(name="list")
-    async def list_military_ranks(self, ctx):
-        """Lists all configured military ranks."""
+        async def list_military_ranks(self, ctx):
+        """Lists all configured military ranks in order of required hours."""
         military_ranks = await self.config.guild(ctx.guild).military_ranks()
-        if not military_ranks:
-            return await ctx.send("No military ranks configured.")
         
-        sorted_ranks = sorted(military_ranks, key=lambda x: x.get('required_hours', 0))
-
-        msg = "**Configured Military Ranks (by required hours):**\n"
+        if not military_ranks:
+            return await ctx.send("No military ranks have been configured.")
+        
+        try:
+            sorted_ranks = sorted(military_ranks, key=lambda x: x['required_hours'])
+        except (KeyError, TypeError):
+            return await ctx.send("Error: Some military ranks have invalid or missing required_hours values.")
+        
+        embed = discord.Embed(
+            title="Military Ranks Configuration",
+            description="Ranks are listed in order of required hours (lowest to highest).",
+            color=discord.Color.blue()
+        )
+        
         for rank in sorted_ranks:
-            role = ctx.guild.get_role(int(rank['discord_role_id']))
-            role_display = role.name if role else f"ID: {rank['discord_role_id']} (Role not found in guild)"
-            msg += f"- `{role_display}`: **{rank['required_hours']} hours**\n"
-        await ctx.send(msg)
+            role_id = rank.get('discord_role_id')
+            role_name = rank.get('name', 'Unknown')
+            hours = rank.get('required_hours', 'Unknown')
+            
+            role = ctx.guild.get_role(int(role_id)) if role_id and str(role_id).isdigit() else None
+            status = "✅ Valid" if role else "❌ Role not found in server"
+            
+            embed.add_field(
+                name=f"{role_name} ({hours} hours)",
+                value=f"Role ID: {role_id}\nStatus: {status}",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
 
-    @activityset.command(name="runcheck")
-    async def run_periodic_check(self, ctx):
-        """Manually runs the periodic role check for the current guild."""
-        await ctx.send("Starting manual periodic role check. This may take a moment for large guilds.")
-        await self._periodic_role_check(ctx.guild.id)
-        await ctx.send("Manual periodic role check complete.")
+    @military_ranks_group.command(name="clear")
+    async def clear_military_ranks(self, ctx):
+        """Clears all configured military ranks."""
+        confirm_view = ConfirmView(ctx.author)
+        await ctx.send("Are you sure you want to clear all military ranks? This cannot be undone.", view=confirm_view)
+        await confirm_view.wait()
+        
+        if confirm_view.result:
+            await self.config.guild(ctx.guild).military_ranks.set([])
+            await ctx.send("All military ranks have been cleared.")
+        else:
+            await ctx.send("Operation cancelled.")
 
-    @activityset.command(name="status")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def show_status(self, ctx):
+    @activityset.command(name="settings")
+    async def show_settings(self, ctx):
         """Shows the current ActivityTracker settings."""
         settings = await self.config.guild(ctx.guild).all()
-
+        
+        embed = discord.Embed(
+            title="ActivityTracker Settings",
+            color=discord.Color.blue()
+        )
+        
+        # API Settings
         api_url = settings.get("api_url")
-        api_key_set = "Yes" if settings.get("api_key") else "No"
+        api_key = settings.get("api_key")
         promotion_url = settings.get("promotion_update_url")
         
-        recruit_role = ctx.guild.get_role(settings.get("recruit_role_id"))
-        member_role = ctx.guild.get_role(settings.get("member_role_id"))
-        promotion_threshold = settings.get("promotion_threshold_hours")
-        promotion_channel = ctx.guild.get_channel(settings.get("promotion_channel_id"))
-        
-        military_ranks = settings.get("military_ranks")
-        military_ranks_count = len(military_ranks) if military_ranks else 0
-
-        status_msg = (
-            f"**ActivityTracker Settings for {ctx.guild.name}:**\n"
-            f"  - **Django API URL (Activity Sync):** `{api_url or 'Not set'}`\n"
-            f"  - **Django API Key Set (Activity Sync):** `{api_key_set}`\n"
-            f"  - **Django API URL (Promotion Notify):** `{promotion_url or 'Not set'}`\n"
-            f"  - **Recruit Role:** `{recruit_role.name}` ({recruit_role.id})" if recruit_role else "Not set" + "\n"
-            f"  - **Member Role:** `{member_role.name}` ({member_role.id})" if member_role else "Not set" + "\n"
-            f"  - **Promotion Threshold (Recruit->Member):** `{promotion_threshold or 'Not set'}` hours\n"
-            f"  - **Promotion Announcement Channel:** {promotion_channel.mention}" if promotion_channel else "`Not set`" + "\n"
-            f"  - **Configured Military Ranks (in Bot):** `{military_ranks_count}` (Use `[p]activityset militaryranks list` to see details)\n"
-            f"\n**Bot's Web API for Django to query:**\n"
-            f"  - **Host:** `{os.environ.get('ACTIVITY_WEB_HOST', '0.0.0.0')}`\n"
-            f"  - **Port:** `{os.environ.get('ACTIVITY_WEB_PORT', '5002')}`\n"
-            f"  - **Endpoint for Military Ranks:** `/api/get_military_ranks`\n"
-            f"  - **Endpoint for Assign Initial Role:** `/api/assign_initial_role`\n"
-            f"  (Django should use the same API Key for these endpoints as the bot uses for Django calls)\n"
-            f"\n**Periodic Role Check:**\n"
-            f"  - **Scheduled:** Yes (Daily at 03:00 UTC)\n"
-            f"  - **Manual Trigger:** `[p]activityset runcheck`"
+        embed.add_field(
+            name="API Configuration",
+            value=(
+                f"API URL: `{api_url or 'Not set'}`\n"
+                f"API Key: `{'✓ Set' if api_key else '✗ Not set'}`\n"
+                f"Promotion URL: `{promotion_url or 'Not set'}`"
+            ),
+            inline=False
         )
-        await ctx.send(status_msg)
+        
+        # Role Settings
+        recruit_role_id = settings.get("recruit_role_id")
+        member_role_id = settings.get("member_role_id")
+        recruit_role = ctx.guild.get_role(recruit_role_id) if recruit_role_id else None
+        member_role = ctx.guild.get_role(member_role_id) if member_role_id else None
+        
+        embed.add_field(
+            name="Role Configuration",
+            value=(
+                f"Recruit Role: {recruit_role.mention if recruit_role else '`Not set`'}\n"
+                f"Member Role: {member_role.mention if member_role else '`Not set`'}\n"
+                f"Promotion Threshold: `{settings.get('promotion_threshold_hours')} hours`"
+            ),
+            inline=False
+        )
+        
+        # Notification Settings
+        channel_id = settings.get("promotion_channel_id")
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        
+        embed.add_field(
+            name="Notification Settings",
+            value=f"Promotion Channel: {channel.mention if channel else '`Not set`'}",
+            inline=False
+        )
+        
+        # Military Ranks Summary
+        military_ranks = settings.get("military_ranks", [])
+        valid_ranks = [r for r in military_ranks if 'discord_role_id' in r and ctx.guild.get_role(int(r['discord_role_id']))]
+        
+        embed.add_field(
+            name="Military Ranks",
+            value=(
+                f"Total Configured: `{len(military_ranks)}`\n"
+                f"Valid Ranks: `{len(valid_ranks)}`\n"
+                f"Use `{ctx.prefix}activityset militaryranks list` for details"
+            ),
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
 
-async def setup(bot):
-    if not bot.intents.members:
-        log.critical("Members intent is NOT enabled! ActivityTracker requires the Members intent to track voice activity and manage roles.")
-        raise RuntimeError("Members intent is not enabled.")
-    if not bot.intents.voice_states:
-        log.critical("Voice States intent is NOT enabled! ActivityTracker requires the Voice States intent to track voice activity.")
-        raise RuntimeError("Voice States intent is not enabled.")
+    @commands.command(name="status")
+    @commands.guild_only()
+    async def check_status(self, ctx, member: discord.Member = None):
+        """
+        Check your voice activity status or another member's status.
+        Shows total voice minutes and progress toward promotions.
+        """
+        target = member or ctx.author
+        
+        # Get the total minutes from Django
+        total_minutes = await self._get_total_minutes_from_django(ctx.guild, target.id)
+        
+        if total_minutes is None:
+            return await ctx.send("❌ Unable to fetch activity data. The website may be down or not properly configured.")
+        
+        embed = discord.Embed(
+            title=f"Activity Status for {target.display_name}",
+            color=target.color
+        )
+        
+        # Add user avatar
+        embed.set_thumbnail(url=target.display_avatar.url)
+        
+        # Basic stats
+        total_hours = total_minutes / 60
+        embed.add_field(
+            name="Voice Activity",
+            value=f"**{total_hours:.1f}** hours ({total_minutes} minutes)",
+            inline=False
+        )
+        
+        # Check Recruit -> Member status
+        settings = await self.config.guild(ctx.guild).all()
+        recruit_role_id = settings.get("recruit_role_id")
+        member_role_id = settings.get("member_role_id")
+        threshold_hours = settings.get("promotion_threshold_hours", 0)
+        
+        if recruit_role_id and member_role_id and threshold_hours > 0:
+            recruit_role = ctx.guild.get_role(recruit_role_id)
+            member_role = ctx.guild.get_role(member_role_id)
+            
+            if recruit_role and member_role:
+                if member_role in target.roles:
+                    embed.add_field(
+                        name="Membership Status",
+                        value=f"✅ Full Member ({member_role.mention})",
+                        inline=False
+                    )
+                elif recruit_role in target.roles:
+                    threshold_minutes = threshold_hours * 60
+                    progress = min(100, (total_minutes / threshold_minutes) * 100)
+                    remaining_minutes = max(0, threshold_minutes - total_minutes)
+                    remaining_hours = remaining_minutes / 60
+                    
+                    progress_bar = self._generate_progress_bar(progress)
+                    
+                    embed.add_field(
+                        name="Membership Progress",
+                        value=(
+                            f"{recruit_role.mention} → {member_role.mention}\n"
+                            f"{progress_bar} **{progress:.1f}%**\n"
+                            f"Remaining: **{remaining_hours:.1f}** hours"
+                        ),
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Membership Status",
+                        value="Not in membership track (missing Recruit role)",
+                        inline=False
+                    )
+        
+        # Check Military Rank status
+        military_ranks = settings.get("military_ranks", [])
+        if military_ranks:
+            try:
+                sorted_ranks = sorted(
+                    [r for r in military_ranks if isinstance(r.get('required_hours'), (int, float))],
+                    key=lambda x: x['required_hours']
+                )
+                
+                # Find current and next rank
+                current_rank = None
+                next_rank = None
+                
+                # Get all military rank roles the user has
+                user_rank_ids = {
+                    role.id for role in target.roles 
+                    if any(str(role.id) == str(r.get('discord_role_id')) for r in military_ranks)
+                }
+                
+                # Find the highest rank the user has
+                if user_rank_ids:
+                    user_ranks = [r for r in sorted_ranks if str(r.get('discord_role_id')) in map(str, user_rank_ids)]
+                    if user_ranks:
+                        current_rank = max(user_ranks, key=lambda x: x['required_hours'])
+                
+                # Find the next rank
+                if current_rank:
+                    higher_ranks = [r for r in sorted_ranks if r['required_hours'] > current_rank['required_hours']]
+                    if higher_ranks:
+                        next_rank = min(higher_ranks, key=lambda x: x['required_hours'])
+                else:
+                    # If no current rank, the next rank is the lowest one
+                    if sorted_ranks:
+                        next_rank = sorted_ranks[0]
+                
+                # Display current rank
+                if current_rank:
+                    current_role_id = current_rank.get('discord_role_id')
+                    current_role = ctx.guild.get_role(int(current_role_id)) if current_role_id else None
+                    
+                    embed.add_field(
+                        name="Current Military Rank",
+                        value=(
+                            f"**{current_rank.get('name')}**\n"
+                            f"{current_role.mention if current_role else 'Role not found'}\n"
+                            f"Required: {current_rank.get('required_hours')} hours"
+                        ),
+                        inline=False
+                    )
+                
+                # Display next rank and progress
+                if next_rank:
+                    next_role_id = next_rank.get('discord_role_id')
+                    next_role = ctx.guild.get_role(int(next_role_id)) if next_role_id else None
+                    
+                    current_hours = current_rank.get('required_hours', 0) if current_rank else 0
+                    next_hours = next_rank.get('required_hours', 0)
+                    
+                    if next_hours > current_hours:
+                        progress = min(100, ((total_hours - current_hours) / (next_hours - current_hours)) * 100)
+                        remaining_hours = max(0, next_hours - total_hours)
+                        
+                        progress_bar = self._generate_progress_bar(progress)
+                        
+                        embed.add_field(
+                            name="Next Military Rank",
+                            value=(
+                                f"**{next_rank.get('name')}**\n"
+                                f"{next_role.mention if next_role else 'Role not found'}\n"
+                                f"{progress_bar} **{progress:.1f}%**\n"
+                                f"Remaining: **{remaining_hours:.1f}** hours"
+                            ),
+                            inline=False
+                        )
+                    else:
+                        embed.add_field(
+                            name="Next Military Rank",
+                            value="Error: Next rank has lower or equal hours to current rank",
+                            inline=False
+                        )
+                elif current_rank:
+                    embed.add_field(
+                        name="Next Military Rank",
+                        value="You have reached the highest rank! 🎖️",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Military Rank",
+                        value="No military ranks configured or eligible",
+                        inline=False
+                    )
+                    
+            except Exception as e:
+                embed.add_field(
+                    name="Military Rank Error",
+                    value=f"An error occurred processing military ranks: {str(e)}",
+                    inline=False
+                )
+        
+        await ctx.send(embed=embed)
 
-    cog = ActivityTracker(bot)
-    await bot.add_cog(cog)
-    # Register the periodic check function with the scheduler after the cog is loaded
-    # The scheduler tool call already handled the scheduling, this ensures the function exists for it.
-    bot.add_dev_env_value("activitytracker_periodic_check", lambda: cog._periodic_role_check)
+    def _generate_progress_bar(self, percent, length=10):
+        """Generate a text-based progress bar."""
+        filled_length = int(length * percent / 100)
+        bar = '█' * filled_length + '░' * (length - filled_length)
+        return f"[{bar}]"
+
+    @activityset.command(name="runcheck")
+    @commands.admin_or_permissions(administrator=True)
+    async def run_role_check(self, ctx):
+        """
+        Manually trigger a full role check for all members.
+        This will check and update roles based on activity time.
+        """
+        await ctx.send("Starting full role check for all members. This may take some time...")
+        
+        # Create a task to run the check
+        self.bot.loop.create_task(self._periodic_role_check(ctx.guild.id))
+        
+        await ctx.send("Role check has been initiated. Results will be logged and role changes will be made automatically.")
