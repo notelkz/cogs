@@ -1,20 +1,20 @@
-import discord
-import asyncio
-import aiohttp
-import os
-import json
-from datetime import datetime
+    import discord
+    import asyncio
+    import aiohttp
+    import os
+    import json
+    from datetime import datetime
 
-from redbot.core import commands, Config
-from aiohttp import web
-from redbot.core.utils.chat_formatting import humanize_list
-from redbot.core.utils.views import ConfirmView
+    from redbot.core import commands, Config
+    from aiohttp import web
+    from redbot.core.utils.chat_formatting import humanize_list
+    from redbot.core.utils.views import ConfirmView
 
-import logging
+    import logging
 
-log = logging.getLogger("red.activitytracker")
+    log = logging.getLogger("red.activitytracker")
 
-class ActivityTracker(commands.Cog):
+    class ActivityTracker(commands.Cog):
     """
     Tracks user voice activity, handles Discord role promotions (Recruit/Member, Military Ranks),
     and exposes an API for a Django website to query member initial role assignment and military rank definitions.
@@ -573,5 +573,5 @@ class ActivityTracker(commands.Cog):
         embed.set_footer(text=f"ActivityTracker Cog | Discord.py {discord.__version__}")
         await ctx.send(embed=embed)
 
-def setup(bot):
+    def setup(bot):
     bot.add_cog(ActivityTracker(bot))
