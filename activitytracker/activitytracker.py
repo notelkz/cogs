@@ -581,7 +581,7 @@ class ActivityTracker(commands.Cog):
                 await ctx.send(f"Military rank `{role.name}` (`{role.id}`) not found in config.")
 
     @military_ranks_group.command(name="list")
-        async def list_military_ranks(self, ctx):
+    async def list_military_ranks(self, ctx):
         """Lists all configured military ranks in order of required hours."""
         military_ranks = await self.config.guild(ctx.guild).military_ranks()
         
