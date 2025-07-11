@@ -287,7 +287,7 @@ class GameCounter(commands.Cog):
             
             # Notify the website about the role change
             try:
-                api_url = "http://87.106.44.164:8000/api/update_role/"
+                api_url = "http://87.106.44.164:5001/api/update_role/"
                 async with aiohttp.ClientSession() as session:
                     async with session.post(api_url, json={
                         "user_id": str(member.id),
