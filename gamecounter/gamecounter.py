@@ -54,9 +54,6 @@ class GameCounter(commands.Cog):
             "/api/get_time_ranks/", self.get_time_ranks_handler
         )
 
-        # Define the counter_loop task here
-        self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
-
     def cog_unload(self):
         asyncio.create_task(self._shutdown_web_server()) 
         if self.counter_loop.is_running():
@@ -470,7 +467,7 @@ class GameCounter(commands.Cog):
                 existing_role_display = existing_role.name if existing_role else f"ID: {existing_role_id_str}"
                 view = ConfirmView(ctx.author)
                 view.message = await ctx.send(f"Warning: The Django game name `{django_game_name}` is already mapped to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\nAre you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?\nThis is unusual and might lead to conflicting counts if both roles represent the same game.\nConfirm to proceed.", view=view)
-                await view.wait()
+                                await view.wait()
                 if not view.result:
                     return await ctx.send("Mapping addition cancelled.")
         current_mappings[str(role_id)] = django_game_name
@@ -680,6 +677,7 @@ class GameCounter(commands.Cog):
             except Exception as e:
                 log.error(f"Error during GameCounter startup: {e}")
 
+    @tasks.loop(minutes=5)
     async def counter_loop(self):
         """Loop to count players and update the API."""
         interval = await self.config.interval()
