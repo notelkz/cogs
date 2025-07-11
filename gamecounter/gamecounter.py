@@ -680,7 +680,6 @@ class GameCounter(commands.Cog):
             except Exception as e:
                 log.error(f"Error during GameCounter startup: {e}")
 
-    @tasks.loop(minutes=5)
     async def counter_loop(self):
         """Loop to count players and update the API."""
         interval = await self.config.interval()
