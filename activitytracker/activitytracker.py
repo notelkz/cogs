@@ -5,7 +5,7 @@ import os
 import json
 from datetime import datetime
 
-from redbot.core import commands, Config, app_commands # Added app_commands
+from redbot.core import commands, Config, app_commands
 from aiohttp import web
 from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.views import ConfirmView 
@@ -16,9 +16,10 @@ log = logging.getLogger("red.Elkz.activitytracker")
 
 class ActivityTracker(commands.Cog):
     """
-    Tracks user voice activity, handles Discord role promotions (Recruit/Member, Military Ranks),
-    and exposes an API for a Django website to query member initial role assignment and military rank definitions.
-    Also includes a periodic role check.
+    Tracks user voice activity internally, pushes total activity data to a Django website,
+    and handles Discord role promotions (Recruit/Member, Military Ranks).
+    Also exposes an API for a Django website to query member initial role assignment and military rank definitions.
+    Includes a periodic role check.
     """
 
     def __init__(self, bot):
@@ -34,11 +35,12 @@ class ActivityTracker(commands.Cog):
             "promotion_threshold_hours": 24.0, # Recruit to Member threshold
             "promotion_channel_id": None,
             "military_ranks": [], # List of dicts for military ranks, configured via bot commands
-            "promotion_update_url": None # Specific URL for role update notifications (e.g., http://your.site:8000/api/update_role/)
+            "promotion_update_url": None, # Specific URL for role update notifications (e.g., http://your.site:8000/api/update_role/)
+            "activity_data": {} # NEW: Store user voice activity data locally
         }
         self.config.register_guild(**default_guild)
         
-        self.voice_tracking = {}
+        self.voice_tracking = {} # Temporary storage for session start times
         self.session = aiohttp.ClientSession()
         
         self.web_app = web.Application()
@@ -50,12 +52,10 @@ class ActivityTracker(commands.Cog):
         self.web_app.router.add_get("/api/get_military_ranks", self.get_military_ranks_handler)
         self.web_app.router.add_get("/health", self.health_check_handler)
 
-        # The web server is now started in on_ready
-
+    # Helper for cog_unload to ensure tasks complete
     async def _perform_unload_cleanup(self, pending_activity_updates: list):
         """Helper to await pending tasks and close the session during cog unload."""
         if pending_activity_updates:
-            # Use return_exceptions=True to ensure all tasks run even if one fails
             results = await asyncio.gather(*pending_activity_updates, return_exceptions=True)
             for res in results:
                 if isinstance(res, Exception):
@@ -78,18 +78,23 @@ class ActivityTracker(commands.Cog):
                 for member_id, join_time in members_tracking.items():
                     member = guild.get_member(member_id)
                     if member:
-                        duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
+                        duration_seconds = (datetime.utcnow() - join_time).total_seconds()
+                        duration_minutes = duration_seconds / 60
                         # Only log durations of at least 1 minute to avoid spam for quick joins/leaves
                         if duration_minutes >= 1:
                             log.info(f"Unloading: Logging {duration_minutes:.2f} minutes for {member.name} ({member.id}) due to cog unload.")
-                            # Add to a list of coroutines to be awaited later
-                            pending_activity_updates.append(self._update_website_activity(guild, member, int(duration_minutes)))
+                            # Update local config and then prepare to send to Django
+                            # Use an internal helper that mimics _update_website_activity's core logic
+                            # but ensures it works with current member/guild data from unload context
+                            pending_activity_updates.append(
+                                self._update_local_and_remote_activity(
+                                    guild, member, int(duration_minutes), is_unload=True
+                                )
+                            )
         self.voice_tracking.clear() # Clear tracking after gathering all data
 
-        # Ensure these tasks are run. Use ensure_future to schedule them without blocking cog_unload
-        # as cog_unload must return quickly. The cleanup helper will then await them.
+        # Ensure these tasks are run.
         asyncio.ensure_future(self._perform_unload_cleanup(pending_activity_updates))
-
 
     async def _shutdown_web_server(self):
         if self.web_runner:
@@ -103,9 +108,18 @@ class ActivityTracker(commands.Cog):
             self.web_runner = None
             self.web_site = None
 
+    async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
+        """Removes all activity data for a given user from the config."""
+        for guild_id in await self.config.all_guilds():
+            activity_data = await self.config.guild_from_id(guild_id).activity_data()
+            if str(user_id) in activity_data:
+                del activity_data[str(user_id)]
+                await self.config.guild_from_id(guild_id).activity_data.set(activity_data)
+                log.info(f"Removed activity data for user {user_id} from guild {guild_id}.")
+        return
+
     async def _authenticate_web_request(self, request: web.Request):
         """Authenticates incoming web API requests based on X-API-Key header."""
-        # Ensure 'guild' is available in request.app from on_ready
         guild = request.app.get("guild")
         if not guild:
             log.critical("Web API received request before guild context was set.")
@@ -204,54 +218,64 @@ class ActivityTracker(commands.Cog):
         log.debug(f"Returning {len(sorted_ranks)} military ranks from bot config via API.")
         return web.json_response(sorted_ranks)
 
-    async def _get_total_minutes_from_django(self, guild: discord.Guild, member_id: int) -> int | None:
+    async def _update_local_and_remote_activity(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int, is_unload: bool = False):
         """
-        Fetches the total voice minutes for a specific Discord user from the Django backend.
-        This assumes Django has an endpoint like /api/get_user_activity/<discord_id>/
+        Updates the member's local activity data and pushes the new total to the Django website.
+        `is_unload` flag helps with logging context during cog unload.
         """
+        user_id_str = str(member.id)
+        
+        # 1. Update local activity data
+        async with self.config.guild(guild).activity_data() as activity_data:
+            if user_id_str not in activity_data:
+                activity_data[user_id_str] = {"total_minutes": 0}
+            
+            activity_data[user_id_str]["total_minutes"] += minutes_to_add
+            current_total_minutes = activity_data[user_id_str]["total_minutes"]
+            log.debug(f"Local activity for {member.name} ({member.id}) updated to {current_total_minutes} minutes.")
+
+        # 2. Push the new total to Django
         guild_settings = await self.config.guild(guild).all()
         api_url = guild_settings.get("api_url")
         api_key = guild_settings.get("api_key")
 
-        if not api_url or not api_key:
-            log.warning(f"Django API URL or Key not configured for guild {guild.id}. Cannot fetch user activity.")
-            return None
-
-        # Construct the endpoint for fetching a specific user's activity
-        endpoint = f"{api_url}/api/get_user_activity/{member_id}/" 
+        if not api_url or not api_key: 
+            log.warning(f"Django API URL or Key not configured for guild {guild.id}. Skipping remote activity update for {member.name}.")
+            await self._check_for_promotion(guild, member, current_total_minutes) # Still check local for promotion
+            return
+        
+        # Ensure the URL has a trailing slash if it's expecting one for correct path resolution
+        endpoint = f"{api_url.rstrip('/')}/api/update_activity/"
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        payload = {"discord_id": user_id_str, "voice_minutes": current_total_minutes} # Sending total, not just incremental
+        
+        log_prefix = "Unload sync: " if is_unload else ""
 
         try:
-            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+            async with self.session.post(endpoint, headers=headers, json=payload, timeout=10) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    total_minutes = data.get("total_minutes")
-                    if isinstance(total_minutes, (int, float)):
-                        log.debug(f"Fetched {total_minutes} minutes for user {member_id} from Django.")
-                        return int(total_minutes)
-                    else:
-                        log.error(f"Django API for user {member_id} returned invalid 'total_minutes': {total_minutes}")
-                        return None
-                elif resp.status == 404:
-                    log.info(f"User {member_id} not found in Django activity records. Assuming 0 minutes.")
-                    return 0 # User not found, assume 0 minutes
+                    log.info(f"{log_prefix}Successfully synced total {current_total_minutes} minutes for user {member.id} to Django.")
+                    # Although Django should be primary, we re-check with local total
+                    await self._check_for_promotion(guild, member, current_total_minutes)
                 else:
-                    log.error(f"Failed to fetch activity for {member_id} from Django: {resp.status} - {await resp.text()}")
-                    return None
+                    log.error(f"{log_prefix}Failed to update total activity for {member.id}: {resp.status} - {await resp.text()}")
+                    # Still check for promotion even if remote sync failed, using local total
+                    await self._check_for_promotion(guild, member, current_total_minutes)
         except aiohttp.ClientConnectorError as e:
-            log.error(f"Network error fetching activity for {member_id} from Django: {e}. Is the server running and accessible?")
-            return None
+            log.error(f"{log_prefix}Network error sending activity to Django API for {member.id}: {e}. Is the server running and accessible?")
+            await self._check_for_promotion(guild, member, current_total_minutes) # Check local for promotion
         except asyncio.TimeoutError:
-            log.error(f"Timeout fetching activity for {member_id} from Django.")
-            return None
+            log.error(f"{log_prefix}Timeout sending activity to Django API for {member.id}.")
+            await self._check_for_promotion(guild, member, current_total_minutes) # Check local for promotion
         except Exception as e:
-            log.exception(f"An unexpected error occurred fetching activity for {member_id} from Django: {e}")
-            return None
+            log.exception(f"{log_prefix}An unexpected error occurred sending activity to Django API for {member.id}: {e}")
+            await self._check_for_promotion(guild, member, current_total_minutes) # Check local for promotion
+
 
     async def _periodic_role_check(self, guild_id: int):
         """
-        Performs a periodic check of all guild members' roles based on their total voice activity.
-        This function is intended to be called by the Redbot scheduler.
+        Performs a periodic check of all guild members' roles based on their total voice activity
+        stored in the bot's config.
         """
         log.info(f"Starting periodic role check for guild ID: {guild_id}")
         guild = self.bot.get_guild(guild_id)
@@ -261,20 +285,21 @@ class ActivityTracker(commands.Cog):
 
         members_checked = 0
         promotions_made = 0
+        
+        activity_data = await self.config.guild(guild).activity_data()
 
-        # Fetch all members to check. Using fetch_members() for full list, but be mindful of large guilds.
         try:
-            # Added a small delay per 100 members to reduce Discord API load for large guilds
-            member_count_for_delay = 0
-            async for member in guild.fetch_members(limit=None): # Fetch all members
+            # Fetch all members to check. Using fetch_members() for full list, but be mindful of large guilds.
+            member_counter = 0
+            async for member in guild.fetch_members(limit=None):
                 if member.bot:
-                    continue # Skip bots
+                    continue 
                 
-                members_checked += 1
-                total_minutes = await self._get_total_minutes_from_django(guild, member.id)
+                user_id_str = str(member.id)
+                total_minutes = activity_data.get(user_id_str, {}).get("total_minutes", 0)
 
-                if total_minutes is not None:
-                    # _check_for_promotion handles both Recruit->Member and Military Ranks
+                members_checked += 1
+                if total_minutes is not None: # Should always be not None with default 0
                     initial_roles = {r.id for r in member.roles}
                     await self._check_for_promotion(guild, member, total_minutes)
                     final_roles = {r.id for r in member.roles}
@@ -283,11 +308,11 @@ class ActivityTracker(commands.Cog):
                         promotions_made += 1
                         log.info(f"Role change detected for {member.name} ({member.id}) during periodic check.")
                 else:
-                    log.warning(f"Could not get total minutes for {member.name} ({member.id}) during periodic check. Skipping.")
+                    log.warning(f"Could not get total minutes for {member.name} ({member.id}) from local config during periodic check. Skipping.")
                 
-                member_count_for_delay += 1
-                if member_count_for_delay % 100 == 0:
-                    await asyncio.sleep(0.5) # Small delay to avoid hitting Discord/API rate limits too hard for large guilds
+                member_counter += 1
+                if member_counter % 100 == 0: # Small delay every 100 members
+                    await asyncio.sleep(0.5)
 
         except discord.Forbidden:
             log.error(f"Bot lacks permissions to fetch members in guild {guild.id} for periodic check. Ensure 'Members Intent' is enabled.")
@@ -299,7 +324,6 @@ class ActivityTracker(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         """Initialize the web server when the bot is ready."""
-        # Check if web server is already running (e.g., if cog reloaded)
         if self.web_runner:
             log.debug("ActivityTracker web API already running from previous load.")
             return
@@ -319,7 +343,7 @@ class ActivityTracker(commands.Cog):
             log.critical(f"CRITICAL ERROR: Guild with ID {guild_id_str} not found. Web API will not function. Is the bot in this guild?")
             return
 
-        self.web_app["guild"] = guild # Store guild object in app for handlers
+        self.web_app["guild"] = guild 
         log.debug(f"Assigned guild {guild.name} ({guild.id}) to web_app context.")
 
         try:
@@ -341,31 +365,31 @@ class ActivityTracker(commands.Cog):
         if member.bot:
             return
         
-        # Only track for the specific guild defined by DISCORD_GUILD_ID
         guild_id_str = os.environ.get("DISCORD_GUILD_ID")
         if not guild_id_str:
-            # If the env var isn't set, we can't determine the target guild, so skip.
-            # This critical error is already logged in on_ready/initialize_webserver.
             return
         
         try:
             target_guild_id = int(guild_id_str)
         except ValueError:
-            # Already logged in on_ready, but defensive check
             return 
 
         if member.guild.id != target_guild_id:
-            return # Not the target guild
+            return
 
         # User joined voice channel
         if before.channel is None and after.channel is not None:
-            # Only track if they are not muted by themselves (server mute is fine)
-            # This is optional, but often bots ignore afk users or those explicitly muted
-            # if not member.self_mute and not member.self_deaf:
+            # Optionally: Add a check for AFK channels or muted users if you don't want to track that time
+            # if member.self_mute or member.self_deaf: # If you DON'T want to track AFK/muted
+            #     return 
+            
             if after.channel.guild.id not in self.voice_tracking:
                 self.voice_tracking[after.channel.guild.id] = {}
-            self.voice_tracking[after.channel.guild.id][member.id] = datetime.utcnow()
-            log.debug(f"User {member.name} ({member.id}) joined voice in {after.channel.name}. Starting session.")
+            
+            # Check if they are already being tracked (e.g., bot restarted mid-session)
+            if member.id not in self.voice_tracking[after.channel.guild.id]:
+                self.voice_tracking[after.channel.guild.id][member.id] = datetime.utcnow()
+                log.debug(f"User {member.name} ({member.id}) joined voice in {after.channel.name}. Starting session.")
 
         # User left voice channel
         elif before.channel is not None and after.channel is None:
@@ -374,46 +398,17 @@ class ActivityTracker(commands.Cog):
                 duration_seconds = (datetime.utcnow() - join_time).total_seconds()
                 duration_minutes = duration_seconds / 60
                 
-                # Only log durations of at least 1 minute to avoid spam and noise from quick joins/leaves
-                if duration_minutes < 1:
+                if duration_minutes < 1: # Minimum 1 minute to record
                     log.debug(f"User {member.name} ({member.id}) left voice. Duration too short ({duration_minutes:.2f}m). Skipping sync.")
                     return
                 
-                log.info(f"User {member.name} ({member.id}) left voice. Duration: {duration_minutes:.2f} minutes.")
-                await self._update_website_activity(member.guild, member, int(duration_minutes))
-
-    async def _update_website_activity(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int):
-        guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("api_url")
-        api_key = guild_settings.get("api_key")
-        if not api_url or not api_key: 
-            log.warning(f"Django API URL or Key not configured for guild {guild.id}. Skipping activity update for {member.name}.")
-            return
-        
-        # Ensure the URL has a trailing slash if it's expecting one for correct path resolution
-        endpoint = f"{api_url.rstrip('/')}/api/update_activity/"
-        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"discord_id": str(member.id), "voice_minutes": minutes_to_add}
-        try:
-            async with self.session.post(endpoint, headers=headers, json=payload, timeout=10) as resp:
-                if resp.status == 200:
-                    log.info(f"Successfully synced {minutes_to_add} minutes for user {member.id}.")
-                    data = await resp.json()
-                    total_minutes = data.get("total_minutes", 0)
-                    # Important: Use the total_minutes returned by Django, as it's the authoritative source
-                    await self._check_for_promotion(guild, member, total_minutes)
-                else:
-                    log.error(f"Failed to update activity for {member.id}: {resp.status} - {await resp.text()}")
-        except aiohttp.ClientConnectorError as e:
-            log.error(f"Network error sending activity to Django API for {member.id}: {e}. Is the server running and accessible?")
-        except asyncio.TimeoutError:
-            log.error(f"Timeout sending activity to Django API for {member.id}.")
-        except Exception as e:
-            log.exception(f"An unexpected error occurred sending activity to Django API for {member.id}: {e}")
+                log.info(f"User {member.name} ({member.id}) left voice. Duration: {duration_minutes:.2f} minutes. Updating local and remote.")
+                await self._update_local_and_remote_activity(member.guild, member, int(duration_minutes))
 
     async def _check_for_promotion(self, guild: discord.Guild, member: discord.Member, total_minutes: int):
         """
         Checks for both Member promotion and Military Rank promotion based on total_minutes.
+        This function now assumes total_minutes is coming from the bot's local config.
         """
         guild_settings = await self.config.guild(guild).all()
         
@@ -455,11 +450,10 @@ class ActivityTracker(commands.Cog):
             return
 
         try:
-            # Sort in reverse order to find the highest rank achieved
             sorted_ranks = sorted(
                 [r for r in military_ranks_config if isinstance(r.get('required_hours'), (int, float))], 
                 key=lambda x: x['required_hours'], 
-                reverse=True
+                reverse=True # Find the highest rank earned
             )
         except Exception as e:
             log.error(f"RANKING ERROR: Malformed rank data in bot config. Could not sort: {e}")
@@ -497,8 +491,6 @@ class ActivityTracker(commands.Cog):
             if r.get('discord_role_id') is not None and str(r['discord_role_id']).isdigit()
         }
         
-        # Start with roles that are NOT military ranks, nor the recruit/member roles
-        # This prevents removing unrelated roles and handles the base membership roles.
         current_roles_to_keep = {
             role for role in member.roles 
             if role.id not in all_military_rank_ids 
@@ -506,7 +498,6 @@ class ActivityTracker(commands.Cog):
             and role.id != member_role_id
         }
         
-        # Add the newly earned military rank
         new_rank_role = guild.get_role(earned_role_id)
         if not new_rank_role:
             log.error(f"RANKING ERROR: Configured role ID {earned_role_id} for rank '{earned_role_name}' not found in guild {guild.id}. Please ensure the role exists in Discord.")
@@ -514,20 +505,17 @@ class ActivityTracker(commands.Cog):
 
         current_roles_to_keep.add(new_rank_role)
 
-        # Ensure Recruit role is removed if they earned a military rank (and it's not the recruit role itself)
-        # and ensure Member role is kept if they have it and it's not a military rank itself
         recruit_role = guild.get_role(recruit_role_id)
         member_role = guild.get_role(member_role_id)
 
         if recruit_role and recruit_role in member.roles and new_rank_role.id != recruit_role.id:
             log.debug(f"Removing Recruit role from {member.name} as they now qualify for a military rank.")
-            current_roles_to_keep.discard(recruit_role) # Ensure it's not in the set
+            current_roles_to_keep.discard(recruit_role)
 
         if member_role and member_role in member.roles and member_role.id not in all_military_rank_ids:
-            current_roles_to_keep.add(member_role) # Ensure member role is present if they should have it
+            current_roles_to_keep.add(member_role)
 
         try:
-            # Use await member.edit to set all roles at once for efficiency and atomicity
             await member.edit(roles=list(current_roles_to_keep), reason=f"Automatic time rank update to {earned_rank_data['name']}")
             log.info(f"RANKING SUCCESS: {member.name} ({member.id}) is now {earned_role_name}.")
             await self._notify_website_of_promotion(guild, member.id, earned_role_name)
@@ -553,7 +541,6 @@ class ActivityTracker(commands.Cog):
             log.warning(f"Promotion update URL or API Key not configured for guild {guild.id}. Skipping promotion notification for {discord_id}.")
             return
         
-        # Ensure the URL has a trailing slash if it's expecting one for correct path resolution
         endpoint = f"{promotion_update_url.rstrip('/')}/api/update_role/"
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
         payload = {"discord_id": str(discord_id), "new_role_name": new_role_name}
@@ -572,29 +559,29 @@ class ActivityTracker(commands.Cog):
 
     @commands.group(name="activityset")
     @commands.admin_or_permissions(manage_guild=True)
-    async def activityset(self, ctx: commands.Context): # Added type hint for ctx
+    async def activityset(self, ctx: commands.Context):
         """Manage ActivityTracker settings."""
         pass
     
     @activityset.command(name="api")
-    @app_commands.describe(url="The Django API endpoint URL (e.g., http://your.site:8000/api/update_activity/)")
+    @app_commands.describe(url="The Django API endpoint URL for sending activity updates (e.g., http://your.site:8000).")
     @app_commands.describe(key="The secret API key for your Django endpoint.")
     async def set_api(self, ctx: commands.Context, url: str, key: str):
-        """Sets the Django API URL (for activity sync) and Key."""
+        """Sets the Django API base URL (for activity sync) and Key."""
         if not url.startswith("http"):
             return await ctx.send("The URL must start with `http://` or `https://`.")
         await self.config.guild(ctx.guild).api_url.set(url)
         await self.config.guild(ctx.guild).api_key.set(key)
-        await ctx.send("Django API URL and Key for activity tracking have been set.")
+        await ctx.send("Django API URL and Key for outbound activity tracking have been set.")
 
     @activityset.command(name="promotionurl")
-    @app_commands.describe(url="The Django API URL for notifying about role promotions (e.g., http://your.site:8000/api/update_role/).")
+    @app_commands.describe(url="The Django API endpoint URL for notifying about role promotions (e.g., http://your.site:8000).")
     async def set_promotion_url(self, ctx: commands.Context, url: str):
-        """Sets the Django API URL for notifying about role promotions (e.g., /api/update_role/)."""
+        """Sets the Django API base URL for notifying about role promotions (e.g., /api/update_role/)."""
         if not url.startswith("http"):
             return await ctx.send("The URL must start with `http://` or `https://`.")
         await self.config.guild(ctx.guild).promotion_update_url.set(url)
-        await ctx.send(f"Promotion update URL set to: `{url}`")
+        await ctx.send(f"Promotion update base URL set to: `{url}`")
 
     @activityset.command(name="webapikey")
     @app_commands.describe(key="The secret API key for YOUR Django website to authenticate with THIS bot's API.")
@@ -742,16 +729,16 @@ class ActivityTracker(commands.Cog):
         # API Settings
         api_url = settings.get("api_url")
         api_key = settings.get("api_key")
-        web_api_key = settings.get("web_api_key") # Added for display
+        web_api_key = settings.get("web_api_key")
         promotion_url = settings.get("promotion_update_url")
         
         embed.add_field(
             name="API Configuration",
             value=(
-                f"Django API URL (Outbound): `{api_url or 'Not set'}`\n"
+                f"Django API Base URL (Outbound): `{api_url or 'Not set'}`\n"
                 f"Django API Key (Outbound): `{'✓ Set' if api_key else '✗ Not set'}`\n"
-                f"Web API Key (Inbound): `{'✓ Set' if web_api_key else '✗ Not set'}`\n" # Added
-                f"Promotion URL: `{promotion_url or 'Not set'}`"
+                f"Web API Key (Inbound to bot): `{'✓ Set' if web_api_key else '✗ Not set'}`\n"
+                f"Promotion API Base URL: `{promotion_url or 'Not set'}`"
             ),
             inline=False
         )
@@ -807,22 +794,19 @@ class ActivityTracker(commands.Cog):
         Shows total voice minutes and progress toward promotions.
         """
         target = member or ctx.author
+        user_id_str = str(target.id)
         
-        # Get the total minutes from Django
-        total_minutes = await self._get_total_minutes_from_django(ctx.guild, target.id)
-        
-        if total_minutes is None:
-            return await ctx.send("❌ Unable to fetch activity data. The website may be down or not properly configured, or the API key is invalid.")
+        # Get the total minutes from the bot's local config
+        activity_data = await self.config.guild(ctx.guild).activity_data()
+        total_minutes = activity_data.get(user_id_str, {}).get("total_minutes", 0)
         
         embed = discord.Embed(
             title=f"Activity Status for {target.display_name}",
             color=target.color
         )
         
-        # Add user avatar
         embed.set_thumbnail(url=target.display_avatar.url)
         
-        # Basic stats
         total_hours = total_minutes / 60
         embed.add_field(
             name="Voice Activity",
@@ -880,39 +864,17 @@ class ActivityTracker(commands.Cog):
                     key=lambda x: x['required_hours']
                 )
                 
-                # Find current and next rank
                 current_rank_data = None
                 next_rank_data = None
                 
-                # Find the highest rank the user currently HAS the Discord role for
-                highest_current_rank_role = None
-                for role in target.roles:
-                    for r_data in sorted_ranks:
-                        if str(role.id) == str(r_data.get('discord_role_id')):
-                            if highest_current_rank_role is None or r_data['required_hours'] > highest_current_rank_role['required_hours']:
-                                highest_current_rank_role = r_data
-                
-                # Now, find the highest rank data based on total_minutes
-                # This ensures we suggest the correct next promotion based on actual earned time
-                earned_rank_by_time = None
+                # Find the highest rank data based on total_minutes
                 for r_data in reversed(sorted_ranks): # Iterate from highest hours down
-                    if total_hours >= r_data['required_hours']:
-                        earned_rank_by_time = r_data
-                        break
-                        
-                # If the user has a role for a rank, but they don't yet qualify by time for it,
-                # their 'current rank' for display purposes should be the highest one they *qualify* for by time.
-                # However, the question here is about what they *currently have* vs what they *can get*.
-                # Let's adjust current_rank_data to be the highest one they *qualify* for based on their hours.
-                current_rank_data = None
-                for r_data in reversed(sorted_ranks):
                     if total_hours >= r_data['required_hours']:
                         current_rank_data = r_data
                         break
 
-                # Find the next rank
+                # Find the next rank for display
                 if current_rank_data:
-                    # Find the next rank in the sorted list after the current_rank_data
                     for i, r_data in enumerate(sorted_ranks):
                         if r_data['required_hours'] > current_rank_data['required_hours']:
                             next_rank_data = r_data
@@ -926,7 +888,7 @@ class ActivityTracker(commands.Cog):
                     current_role = ctx.guild.get_role(int(current_role_id)) if current_role_id else None
                     
                     embed.add_field(
-                        name="Current Military Rank (by time)",
+                        name="Current Military Rank",
                         value=(
                             f"**{current_rank_data.get('name')}**\n"
                             f"{current_role.mention if current_role else 'Role not found'}\n"
@@ -943,35 +905,39 @@ class ActivityTracker(commands.Cog):
                     current_hours_for_progress_base = current_rank_data.get('required_hours', 0) if current_rank_data else 0
                     next_hours = next_rank_data.get('required_hours', 0)
                     
-                    if next_hours > current_hours_for_progress_base: # Ensure valid range for percentage
-                        progress = min(100, ((total_hours - current_hours_for_progress_base) / (next_hours - current_hours_for_progress_base)) * 100)
+                    if next_hours > current_hours_for_progress_base:
+                        # Progress relative to the range between current and next rank
+                        progress_in_range = total_hours - current_hours_for_progress_base
+                        total_range = next_hours - current_hours_for_progress_base
+                        
+                        progress_percent = min(100, (progress_in_range / total_range) * 100)
                         remaining_hours = max(0, next_hours - total_hours)
                         
-                        progress_bar = self._generate_progress_bar(progress)
+                        progress_bar = self._generate_progress_bar(progress_percent)
                         
                         embed.add_field(
                             name="Next Military Rank",
                             value=(
                                 f"**{next_rank_data.get('name')}**\n"
                                 f"{next_role.mention if next_role else 'Role not found'}\n"
-                                f"{progress_bar} **{progress:.1f}%**\n"
+                                f"{progress_bar} **{progress_percent:.1f}%**\n"
                                 f"Remaining: **{remaining_hours:.1f}** hours"
                             ),
                             inline=False
                         )
-                    else: # This case means next_rank_data's hours are not strictly greater, which shouldn't happen with proper sorting
+                    else: # This case implies a logic error in rank configuration if next_hours is not strictly greater
                         embed.add_field(
                             name="Next Military Rank",
-                            value="Error: Next rank hours issue.", # Should be rare with correct sorting
+                            value="Error in rank progression logic.", 
                             inline=False
                         )
-                elif current_rank_data: # If no next rank and current_rank_data exists, they are at max
+                elif current_rank_data: # If no next rank, and current_rank_data exists, they are at max
                     embed.add_field(
                         name="Next Military Rank",
                         value="You have reached the highest rank! 🎖️",
                         inline=False
                     )
-                else: # No military ranks configured or eligible
+                else: # No military ranks configured or user doesn't qualify for the lowest
                     embed.add_field(
                         name="Military Rank",
                         value="No military ranks configured or eligible yet.",
@@ -1010,7 +976,6 @@ class ActivityTracker(commands.Cog):
         """
         await ctx.send("Starting full role check for all members. This may take some time...")
         
-        # Create a task to run the check
         self.bot.loop.create_task(self._periodic_role_check(ctx.guild.id))
         
         await ctx.send("Role check has been initiated. Results will be logged and role changes will be made automatically.")
