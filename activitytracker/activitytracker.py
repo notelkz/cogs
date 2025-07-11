@@ -300,7 +300,7 @@ class ActivityTracker(commands.Cog):
             inline=False
         )
         # Membership progress
-                recruit_role_id = await self.config.guild(ctx.guild).recruit_role_id()
+        recruit_role_id = await self.config.guild(ctx.guild).recruit_role_id()
         member_role_id = await self.config.guild(ctx.guild).member_role_id()
         threshold_hours = await self.config.guild(ctx.guild).promotion_threshold_hours()
         if recruit_role_id and member_role_id and threshold_hours:
