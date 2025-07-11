@@ -16,10 +16,8 @@ log = logging.getLogger("red.Elkz.activitytracker")
 
 class ActivityTracker(commands.Cog):
     """
-    Tracks user voice activity incrementally, pushes it to a Django website which aggregates totals,
-    receives the updated total back, and uses that total for Discord role promotions.
-    Also exposes an API for a Django website to query member initial role assignment and military rank definitions.
-    Includes a periodic role check that queries Django for totals.
+    Tracks user voice activity internally in Red's config, pushes the total activity data to a Django website
+    for display purposes, and uses the internally stored total for Discord role promotions.
     """
 
     def __init__(self, bot):
@@ -27,8 +25,8 @@ class ActivityTracker(commands.Cog):
         self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
         
         default_guild = {
-            "api_url": None, # Base URL for sending activity updates (e.g., http://your.site:8000)
-            "api_key": None, # Key for RedBot -> Django API (outbound authentication)
+            "api_url": None, # Base URL for PUSHING total activity (e.g., http://your.site:8000)
+            "api_key": None, # Key for RedBot -> Django API (outbound authentication for PUSH)
             "web_api_key": None, # Key for Django -> RedBot API (inbound authentication to bot's API)
             "recruit_role_id": None,
             "member_role_id": None,
@@ -36,7 +34,8 @@ class ActivityTracker(commands.Cog):
             "promotion_channel_id": None,
             "military_ranks": [], # List of dicts for military ranks, configured via bot commands
             "promotion_update_url": None, # Base URL for role update notifications (e.g., http://your.site:8000)
-            "get_user_activity_url": None # NEW: Specific URL for getting user total activity (e.g., http://your.site:8000/api/get_user_activity/)
+            # "get_user_activity_url": None # REMOVED: Bot no longer fetches total activity from Django for its own logic
+            "activity_data": {} # NEW: Store user voice activity data locally in bot's config
         }
         self.config.register_guild(**default_guild)
         
@@ -82,14 +81,58 @@ class ActivityTracker(commands.Cog):
                         duration_minutes = duration_seconds / 60
                         if duration_minutes >= 1: # Only send if minimum 1 minute tracked
                             log.info(f"Unloading: Logging {duration_minutes:.2f} minutes for {member.name} ({member.id}) due to cog unload.")
-                            # Send the incremental minutes to Django
+                            
+                            # Update local config immediately
+                            user_id_str = str(member.id)
+                            asyncio.create_task(self._update_local_activity(guild, user_id_str, int(duration_minutes)))
+
+                            # Prepare to send the *new total* to Django
+                            # Need to fetch the updated total AFTER the local update
+                            # This needs to be slightly refactored for the unload context.
+                            # For unload, we just update local and try to send. The total might not be perfectly fresh if multiple
+                            # updates happen simultaneously, but it's the best effort for graceful shutdown.
+                            
+                            # Instead of calling _send_total_activity_to_django directly,
+                            # we'll create a task that ensures local update then sends.
                             pending_activity_updates.append(
-                                self._update_remote_activity(guild, member, int(duration_minutes), is_unload=True)
+                                self._update_local_and_then_send(guild, member, int(duration_minutes), is_unload=True)
                             )
+
         self.voice_tracking.clear() # Clear temporary tracking data
 
         # Ensure these tasks are run.
         asyncio.ensure_future(self._perform_unload_cleanup(pending_activity_updates))
+
+    async def _update_local_and_then_send(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int, is_unload: bool = False):
+        """Helper to combine local update and remote send, used by unload and voice updates."""
+        user_id_str = str(member.id)
+        
+        # Ensure activity_data structure exists
+        async with self.config.guild(guild).activity_data() as activity_data:
+            if user_id_str not in activity_data:
+                activity_data[user_id_str] = {"total_minutes": 0}
+            activity_data[user_id_str]["total_minutes"] += minutes_to_add
+            current_total_minutes = activity_data[user_id_str]["total_minutes"]
+            log.debug(f"Local activity for {member.name} ({member.id}) updated to {current_total_minutes} minutes.")
+
+        # Now send this total to Django
+        await self._send_total_activity_to_django(guild, member, current_total_minutes, is_unload=is_unload)
+        
+        # Then, check for promotions based on this current total
+        await self._check_for_promotion(guild, member, current_total_minutes)
+
+
+    async def _update_local_activity(self, guild: discord.Guild, user_id_str: str, minutes_to_add: int) -> int:
+        """Updates the member's local activity data and returns the new total."""
+        async with self.config.guild(guild).activity_data() as activity_data:
+            if user_id_str not in activity_data:
+                activity_data[user_id_str] = {"total_minutes": 0}
+            
+            activity_data[user_id_str]["total_minutes"] += minutes_to_add
+            current_total_minutes = activity_data[user_id_str]["total_minutes"]
+            log.debug(f"Local activity for user {user_id_str} updated to {current_total_minutes} minutes.")
+        return current_total_minutes
+
 
     async def _shutdown_web_server(self):
         if self.web_runner:
@@ -104,28 +147,14 @@ class ActivityTracker(commands.Cog):
             self.web_site = None
 
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
-        """
-        RedBot method for GDPR.
-        This cog does not store user activity totals persistently; they are on Django.
-        If you have a Django endpoint to delete user data, call it here.
-        """
-        log.info(f"GDPR: User data deletion requested for {user_id}. "
-                 "ActivityTracker does not store persistent per-user activity totals locally. "
-                 "Ensure your Django backend handles this data deletion.")
-        # OPTIONAL: Add a call to a Django API endpoint to delete user data there
-        # For example:
-        # guild_settings = await self.config.guild(SOME_GUILD_ID).all() # You'd need a way to get the guild
-        # if guild_settings.get("api_url") and guild_settings.get("api_key"):
-        #    delete_endpoint = f"{guild_settings['api_url'].rstrip('/')}/api/delete_user_activity/{user_id}/"
-        #    headers = {"X-API-Key": guild_settings["api_key"]}
-        #    try:
-        #        async with self.session.delete(delete_endpoint, headers=headers, timeout=5) as resp:
-        #            if resp.status == 204: # No Content on successful deletion
-        #                log.info(f"Successfully requested deletion of user {user_id} activity from Django.")
-        #            else:
-        #                log.error(f"Failed to request deletion of user {user_id} activity from Django: {resp.status} - {await resp.text()}")
-        #    except Exception as e:
-        #        log.exception(f"Error requesting Django user data deletion for {user_id}: {e}")
+        """Removes all activity data for a given user from the config."""
+        for guild_id in await self.config.all_guilds():
+            activity_data = await self.config.guild_from_id(guild_id).activity_data()
+            if str(user_id) in activity_data:
+                del activity_data[str(user_id)]
+                await self.config.guild_from_id(guild_id).activity_data.set(activity_data)
+                log.info(f"GDPR: Removed activity data for user {user_id} from guild {guild_id}.")
+        log.info(f"GDPR: Completed data deletion request for user {user_id}.")
         return
 
     async def _authenticate_web_request(self, request: web.Request):
@@ -228,97 +257,45 @@ class ActivityTracker(commands.Cog):
         log.debug(f"Returning {len(sorted_ranks)} military ranks from bot config via API.")
         return web.json_response(sorted_ranks)
 
-    async def _get_total_minutes_from_django(self, guild: discord.Guild, member_id: int) -> int | None:
+    async def _send_total_activity_to_django(self, guild: discord.Guild, member: discord.Member, total_minutes: int, is_unload: bool = False):
         """
-        Fetches the total voice minutes for a specific Discord user from the Django backend.
-        This assumes Django has an endpoint like /api/get_user_activity/<discord_id>/
-        """
-        guild_settings = await self.config.guild(guild).all()
-        get_user_activity_url = guild_settings.get("get_user_activity_url") # NEW URL specifically for GET
-        api_key = guild_settings.get("api_key")
-
-        if not get_user_activity_url or not api_key:
-            log.warning(f"Django 'get_user_activity_url' or API Key not configured for guild {guild.id}. Cannot fetch user activity.")
-            return None
-
-        # Construct the full endpoint URL
-        endpoint = f"{get_user_activity_url.rstrip('/')}/{member_id}/" # Assuming base URL + /ID/
-        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-
-        try:
-            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    total_minutes = data.get("total_minutes")
-                    if isinstance(total_minutes, (int, float)):
-                        log.debug(f"Fetched {total_minutes} minutes for user {member_id} from Django.")
-                        return int(total_minutes)
-                    else:
-                        log.error(f"Django API for user {member_id} returned invalid 'total_minutes': {total_minutes}")
-                        return None
-                elif resp.status == 404:
-                    log.info(f"User {member_id} not found in Django activity records. Returning 0 minutes.")
-                    return 0 # User not found, assume 0 minutes
-                else:
-                    log.error(f"Failed to fetch activity for {member_id} from Django: {resp.status} - {await resp.text()}")
-                    return None
-        except aiohttp.ClientConnectorError as e:
-            log.error(f"Network error fetching activity for {member_id} from Django: {e}. Is the server running and accessible?")
-            return None
-        except asyncio.TimeoutError:
-            log.error(f"Timeout fetching activity for {member_id} from Django.")
-            return None
-        except Exception as e:
-            log.exception(f"An unexpected error occurred fetching activity for {member_id} from Django: {e}")
-            return None
-
-    async def _update_remote_activity(self, guild: discord.Guild, member: discord.Member, minutes_to_add: int, is_unload: bool = False):
-        """
-        Pushes incremental activity data to the Django website and expects the updated total back.
+        Pushes the member's total accumulated activity data to the Django website for display.
+        No longer expects a total back for bot's internal logic.
         `is_unload` flag helps with logging context during cog unload.
         """
         guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("api_url") # Base URL for POSTing increments
+        api_url = guild_settings.get("api_url") # Base URL for POSTing totals
         api_key = guild_settings.get("api_key")
 
         if not api_url or not api_key: 
             log.warning(f"Django API Base URL or Key not configured for guild {guild.id}. Skipping remote activity update for {member.name}.")
-            return # Cannot proceed if config is missing
+            return 
         
-        # This endpoint expects the incremental minutes
+        # This endpoint now expects the total minutes
         endpoint = f"{api_url.rstrip('/')}/api/update_activity/" 
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"discord_id": str(member.id), "voice_minutes": minutes_to_add} # Sending only the increment
+        payload = {"discord_id": str(member.id), "total_voice_minutes": total_minutes} # Sending TOTAL minutes
         
         log_prefix = "Unload sync: " if is_unload else ""
 
         try:
             async with self.session.post(endpoint, headers=headers, json=payload, timeout=10) as resp:
                 if resp.status == 200:
-                    data = await resp.json()
-                    total_minutes_from_django = data.get("total_minutes") # Expecting total back
-                    
-                    if isinstance(total_minutes_from_django, (int, float)):
-                        log.info(f"{log_prefix}Successfully synced {minutes_to_add} minutes for user {member.id}. Django reports total: {total_minutes_from_django} minutes.")
-                        # Use the authoritative total from Django for promotions
-                        await self._check_for_promotion(guild, member, int(total_minutes_from_django))
-                    else:
-                        log.error(f"{log_prefix}Django API for user {member.id} returned invalid 'total_minutes' after update: {total_minutes_from_django}. Cannot check promotions.")
-                        # Cannot proceed with promotions if Django didn't send a valid total
+                    log.info(f"{log_prefix}Successfully pushed total {total_minutes} minutes for user {member.id} to Django.")
                 else:
-                    log.error(f"{log_prefix}Failed to update activity for {member.id} on Django: {resp.status} - {await resp.text()}")
+                    log.error(f"{log_prefix}Failed to push total activity for {member.id} to Django: {resp.status} - {await resp.text()}")
         except aiohttp.ClientConnectorError as e:
-            log.error(f"{log_prefix}Network error sending activity to Django API for {member.id}: {e}. Is the server running and accessible?")
+            log.error(f"{log_prefix}Network error pushing activity to Django API for {member.id}: {e}. Is the server running and accessible?")
         except asyncio.TimeoutError:
-            log.error(f"{log_prefix}Timeout sending activity to Django API for {member.id}.")
+            log.error(f"{log_prefix}Timeout pushing activity to Django API for {member.id}.")
         except Exception as e:
-            log.exception(f"{log_prefix}An unexpected error occurred sending activity to Django API for {member.id}: {e}")
+            log.exception(f"{log_prefix}An unexpected error occurred pushing activity to Django API for {member.id}: {e}")
 
 
     async def _periodic_role_check(self, guild_id: int):
         """
         Performs a periodic check of all guild members' roles based on their total voice activity
-        fetched directly from Django.
+        stored in the bot's config.
         """
         log.info(f"Starting periodic role check for guild ID: {guild_id}")
         guild = self.bot.get_guild(guild_id)
@@ -329,6 +306,8 @@ class ActivityTracker(commands.Cog):
         members_checked = 0
         promotions_made = 0
         
+        activity_data_all = await self.config.guild(guild).activity_data() # Get all activity data once
+
         try:
             member_counter = 0
             async for member in guild.fetch_members(limit=None):
@@ -337,19 +316,16 @@ class ActivityTracker(commands.Cog):
                 
                 members_checked += 1
                 
-                # Fetch total minutes from Django for each member
-                total_minutes = await self._get_total_minutes_from_django(guild, member.id)
+                # Fetch total minutes from bot's local config
+                total_minutes = activity_data_all.get(str(member.id), {}).get("total_minutes", 0)
 
-                if total_minutes is not None:
-                    initial_roles = {r.id for r in member.roles}
-                    await self._check_for_promotion(guild, member, total_minutes) # Use Django's total
-                    final_roles = {r.id for r in member.roles}
+                initial_roles = {r.id for r in member.roles}
+                await self._check_for_promotion(guild, member, total_minutes) # Use bot's local total
+                final_roles = {r.id for r in member.roles}
 
-                    if initial_roles != final_roles:
-                        promotions_made += 1
-                        log.info(f"Role change detected for {member.name} ({member.id}) during periodic check.")
-                else:
-                    log.warning(f"Could not get total minutes for {member.name} ({member.id}) from Django during periodic check. Skipping promotion check for this user.")
+                if initial_roles != final_roles:
+                    promotions_made += 1
+                    log.info(f"Role change detected for {member.name} ({member.id}) during periodic check.")
                 
                 member_counter += 1
                 if member_counter % 100 == 0:
@@ -420,12 +396,11 @@ class ActivityTracker(commands.Cog):
 
         # User joined voice channel
         if before.channel is None and after.channel is not None:
+            if after.channel.guild.id not in self.voice_tracking:
+                self.voice_tracking[after.channel.guild.id] = {}
+            
             # Check if they are already being tracked (e.g., bot restarted mid-session)
-            if member.id not in self.voice_tracking.get(after.channel.guild.id, {}):
-                # Only add if the channel is not AFK or if you choose to track AFK time
-                # if not after.channel.afk: # Example: exclude AFK channel tracking
-                if after.channel.guild.id not in self.voice_tracking:
-                    self.voice_tracking[after.channel.guild.id] = {}
+            if member.id not in self.voice_tracking[after.channel.guild.id]:
                 self.voice_tracking[after.channel.guild.id][member.id] = datetime.utcnow()
                 log.debug(f"User {member.name} ({member.id}) joined voice in {after.channel.name}. Starting session.")
 
@@ -437,16 +412,18 @@ class ActivityTracker(commands.Cog):
                 duration_minutes = duration_seconds / 60
                 
                 if duration_minutes < 1: # Minimum 1 minute to record
-                    log.debug(f"User {member.name} ({member.id}) left voice. Duration too short ({duration_minutes:.2f}m). Skipping sync.")
+                    log.debug(f"User {member.name} ({member.id}) left voice. Duration too short ({duration_minutes:.2f}m). Skipping update.")
                     return
                 
-                log.info(f"User {member.name} ({member.id}) left voice. Duration: {duration_minutes:.2f} minutes. Pushing to Django.")
-                await self._update_remote_activity(member.guild, member, int(duration_minutes))
+                log.info(f"User {member.name} ({member.id}) left voice. Duration: {duration_minutes:.2f} minutes. Updating local config and pushing to Django.")
+                
+                # Update local config, then send the new total to Django, and check for promotions
+                await self._update_local_and_then_send(member.guild, member, int(duration_minutes))
 
     async def _check_for_promotion(self, guild: discord.Guild, member: discord.Member, total_minutes: int):
         """
         Checks for both Member promotion and Military Rank promotion based on total_minutes
-        provided directly as an argument (expected from Django API response).
+        provided directly as an argument (expected from bot's local config).
         """
         guild_settings = await self.config.guild(guild).all()
         
@@ -601,25 +578,18 @@ class ActivityTracker(commands.Cog):
         pass
     
     @activityset.command(name="api")
-    @app_commands.describe(url="The Django API *base* URL for sending activity updates (e.g., http://your.site:8000).")
-    @app_commands.describe(key="The secret API key for your Django endpoint (outbound).")
+    @app_commands.describe(url="The Django API *base* URL for PUSHING TOTAL activity (e.g., http://your.site:8000).")
+    @app_commands.describe(key="The secret API key for your Django endpoint (outbound from bot).")
     async def set_api(self, ctx: commands.Context, url: str, key: str):
-        """Sets the Django API base URL (for activity sync) and Key (outbound)."""
+        """Sets the Django API base URL (for pushing total activity) and Key (outbound)."""
         if not url.startswith("http"):
             return await ctx.send("The URL must start with `http://` or `https://`.")
         await self.config.guild(ctx.guild).api_url.set(url)
         await self.config.guild(ctx.guild).api_key.set(key)
-        await ctx.send("Django API URL and Key for outbound activity tracking have been set.")
+        await ctx.send("Django API URL and Key for pushing total activity have been set.")
 
-    @activityset.command(name="getactivityurl")
-    @app_commands.describe(url="The Django API *base* URL for getting user total activity (e.g., http://your.site:8000/api/get_user_activity/).")
-    async def set_get_activity_url(self, ctx: commands.Context, url: str):
-        """Sets the Django API base URL for getting user total activity."""
-        if not url.startswith("http"):
-            return await ctx.send("The URL must start with `http://` or `https://`.")
-        await self.config.guild(ctx.guild).get_user_activity_url.set(url)
-        await ctx.send(f"Django 'get user activity' base URL set to: `{url}`")
-
+    # Removed: set_get_activity_url as bot no longer fetches totals from Django for its own logic.
+    # If Django needs to GET data from bot, that's via the web_api_key endpoints.
 
     @activityset.command(name="promotionurl")
     @app_commands.describe(url="The Django API *base* URL for notifying about role promotions (e.g., http://your.site:8000).")
@@ -633,7 +603,7 @@ class ActivityTracker(commands.Cog):
     @activityset.command(name="webapikey")
     @app_commands.describe(key="The secret API key for YOUR Django website to authenticate with THIS bot's API.")
     async def set_web_api_key(self, ctx: commands.Context, key: str):
-        """Sets the secret API key for your Django website to authenticate with this bot's API."""
+        """Sets the secret API key for your Django website to authenticate with this bot's API (inbound)."""
         if len(key) < 16:
             return await ctx.send("Please provide a longer, more secure API key (e.g., 16+ characters).")
         await self.config.guild(ctx.guild).web_api_key.set(key)
@@ -778,16 +748,16 @@ class ActivityTracker(commands.Cog):
         api_key = settings.get("api_key")
         web_api_key = settings.get("web_api_key")
         promotion_url = settings.get("promotion_update_url")
-        get_user_activity_url = settings.get("get_user_activity_url") # Added
+        # get_user_activity_url = settings.get("get_user_activity_url") # No longer used by bot
         
         embed.add_field(
             name="API Configuration",
             value=(
-                f"Django Outbound Base URL: `{api_url or 'Not set'}`\n"
+                f"Django Outbound Base URL (Pushing TOTAL): `{api_url or 'Not set'}`\n"
                 f"Django Outbound Key: `{'✓ Set' if api_key else '✗ Not set'}`\n"
                 f"Django Inbound Key (to bot): `{'✓ Set' if web_api_key else '✗ Not set'}`\n"
                 f"Promotion API Base URL: `{promotion_url or 'Not set'}`\n"
-                f"Get User Activity URL: `{get_user_activity_url or 'Not set'}`" # Added
+                # f"Get User Activity URL: `{get_user_activity_url or 'Not set'}`" # No longer displayed/used by bot
             ),
             inline=False
         )
@@ -843,12 +813,11 @@ class ActivityTracker(commands.Cog):
         Shows total voice minutes and progress toward promotions.
         """
         target = member or ctx.author
+        user_id_str = str(target.id)
         
-        # Get the total minutes from Django (the authoritative source)
-        total_minutes = await self._get_total_minutes_from_django(ctx.guild, target.id)
-        
-        if total_minutes is None:
-            return await ctx.send("❌ Unable to fetch activity data. The website may be down or not properly configured (check `[p]activityset settings`).")
+        # Get the total minutes from the bot's local config (source of truth)
+        activity_data = await self.config.guild(ctx.guild).activity_data()
+        total_minutes = activity_data.get(user_id_str, {}).get("total_minutes", 0)
         
         embed = discord.Embed(
             title=f"Activity Status for {target.display_name}",
@@ -956,7 +925,6 @@ class ActivityTracker(commands.Cog):
                     next_hours = next_rank_data.get('required_hours', 0)
                     
                     if next_hours > current_hours_for_progress_base:
-                        # Progress relative to the range between current and next rank
                         progress_in_range = total_hours - current_hours_for_progress_base
                         total_range = next_hours - current_hours_for_progress_base
                         
@@ -1022,7 +990,7 @@ class ActivityTracker(commands.Cog):
     async def run_role_check(self, ctx: commands.Context):
         """
         Manually trigger a full role check for all members.
-        This will check and update roles based on activity time fetched from Django.
+        This will check and update roles based on activity time from the bot's local config.
         """
         await ctx.send("Starting full role check for all members. This may take some time...")
         
