@@ -842,3 +842,8 @@ class GameCounter(commands.Cog):
                 log.info(f"GameCounter web API server started on {host}:{port}")
             except Exception as e:
                 log.error(f"Failed to start web API server: {e}")
+
+async def setup(bot):
+    """Set up the GameCounter cog."""
+    cog = GameCounter(bot)
+    await bot.add_cog(cog)
