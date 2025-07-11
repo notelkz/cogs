@@ -38,7 +38,6 @@ class GameCounter(commands.Cog):
             activity_data={}  # Store user activity data
         )
         
-        self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
@@ -54,6 +53,9 @@ class GameCounter(commands.Cog):
         self.web_app.router.add_get(
             "/api/get_time_ranks/", self.get_time_ranks_handler
         )
+
+        # Define the counter_loop task here
+        self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
 
     def cog_unload(self):
         asyncio.create_task(self._shutdown_web_server()) 
