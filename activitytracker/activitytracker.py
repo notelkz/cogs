@@ -919,3 +919,147 @@ class ActivityTracker(commands.Cog):
         self.bot.loop.create_task(self._periodic_role_check(ctx.guild.id))
         
         await ctx.send("Role check has been initiated. Results will be logged and role changes will be made automatically.")
+    @commands.command()
+    async def myvoicetime(self, ctx):
+        """Shows your total accumulated voice time."""
+        total_minutes = await self._get_total_minutes_from_django(ctx.guild, ctx.author.id)
+        if total_minutes is None:
+            return await ctx.send("Could not retrieve your voice time. Is the website API configured correctly?")
+
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        await ctx.send(f"Your total voice time is {hours} hours and {minutes} minutes.")
+
+    @activityset.command(name="checkuser")
+    @commands.admin_or_permissions(administrator=True)
+    async def check_user_activity(self, ctx, member: discord.Member):
+        """Manually check a specific user's activity and update their roles."""
+        await ctx.send(f"Checking activity for {member.mention}...")
+        
+        total_minutes = await self._get_total_minutes_from_django(ctx.guild, member.id)
+        
+        if total_minutes is None:
+            return await ctx.send("❌ Unable to fetch activity data. The website may be down or not properly configured.")
+        
+        await ctx.send(f"Found {total_minutes} minutes ({total_minutes/60:.1f} hours) of activity for {member.mention}.")
+        
+        # Store original roles for comparison
+        original_roles = set(member.roles)
+        
+        # Process promotions
+        await self._check_for_promotion(ctx.guild, member, total_minutes)
+        
+        # Check if roles changed
+        current_roles = set(member.roles)
+        if original_roles != current_roles:
+            added_roles = [r.mention for r in current_roles - original_roles]
+            removed_roles = [r.mention for r in original_roles - current_roles]
+            
+            result = []
+            if added_roles:
+                result.append(f"Added roles: {humanize_list(added_roles)}")
+            if removed_roles:
+                result.append(f"Removed roles: {humanize_list(removed_roles)}")
+                
+            await ctx.send(f"✅ Updated roles for {member.mention}:\n" + "\n".join(result))
+        else:
+            await ctx.send(f"✅ No role changes needed for {member.mention}.")
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Sets up periodic tasks when the bot is ready."""
+        log.info("ActivityTracker is ready and setting up periodic tasks.")
+        await self._setup_periodic_tasks()
+
+    async def _setup_periodic_tasks(self):
+        """Sets up periodic tasks for role checking."""
+        guild_id_str = os.environ.get("DISCORD_GUILD_ID")
+        if not guild_id_str:
+            log.error("DISCORD_GUILD_ID environment variable not set. Periodic tasks will not be scheduled.")
+            return
+
+        guild_id = int(guild_id_str)
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            log.error(f"Guild with ID {guild_id} not found. Periodic tasks will not be scheduled.")
+            return
+
+        # Schedule the periodic role check every 24 hours
+        self.bot.loop.create_task(self._schedule_periodic_role_check(guild_id))
+
+    async def _schedule_periodic_role_check(self, guild_id: int):
+        """Schedules the periodic role check to run every 24 hours."""
+        while self == self.bot.get_cog("ActivityTracker"):  # Run while cog is loaded
+            try:
+                log.info(f"Running scheduled role check for guild ID: {guild_id}")
+                await self._periodic_role_check(guild_id)
+                log.info(f"Completed scheduled role check for guild ID: {guild_id}")
+            except Exception as e:
+                log.exception(f"An error occurred during the scheduled role check: {e}")
+            await asyncio.sleep(86400)  # Sleep for 24 hours
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member):
+        """Handles when a new member joins the guild."""
+        log.info(f"New member joined: {member.name} ({member.id})")
+        guild = member.guild
+        recruit_role_id = await self.config.guild(guild).recruit_role_id()
+        recruit_role = guild.get_role(recruit_role_id)
+        if recruit_role:
+            try:
+                await member.add_roles(recruit_role, reason="Automatic assignment of Recruit role on join.")
+                log.info(f"Assigned Recruit role to new member: {member.name} ({member.id})")
+            except discord.Forbidden:
+                log.error(f"Missing permissions to assign Recruit role to {member.name} ({member.id}).")
+            except Exception as e:
+                log.exception(f"An error occurred while assigning Recruit role to {member.name} ({member.id}): {e}")
+        else:
+            log.warning(f"Recruit role not configured or not found for guild: {guild.name} ({guild.id})")
+
+    @activityset.command(name="debug")
+    @commands.is_owner()
+    async def debug_info(self, ctx):
+        """Shows debug information about the ActivityTracker cog."""
+        embed = discord.Embed(
+            title="ActivityTracker Debug Information",
+            color=discord.Color.gold()
+        )
+        
+        # Web server status
+        web_status = "Running" if self.web_runner and self.web_site else "Not running"
+        host = os.environ.get("ACTIVITY_WEB_HOST", "0.0.0.0")
+        port = os.environ.get("ACTIVITY_WEB_PORT", "5002")
+        
+        embed.add_field(
+            name="Web API Server",
+            value=f"Status: {web_status}\nHost: {host}\nPort: {port}",
+            inline=False
+        )
+        
+        # Voice tracking stats
+        total_tracked = 0
+        for guild_id, members in self.voice_tracking.items():
+            total_tracked += len(members)
+        
+        embed.add_field(
+            name="Voice Tracking",
+            value=f"Currently tracking: {total_tracked} users",
+            inline=False
+        )
+        
+        # Environment variables
+        guild_id_env = os.environ.get("DISCORD_GUILD_ID", "Not set")
+        
+        embed.add_field(
+            name="Environment Variables",
+            value=f"DISCORD_GUILD_ID: {guild_id_env}\nACTIVITY_WEB_HOST: {host}\nACTIVITY_WEB_PORT: {port}",
+            inline=False
+        )
+        
+        # Version info
+        embed.set_footer(text=f"ActivityTracker Cog v1.2.0 | Discord.py {discord.__version__}")
+        
+        await ctx.send(embed=embed)
+
+def setup(bot):
+    bot.add_cog(ActivityTracker(bot))
