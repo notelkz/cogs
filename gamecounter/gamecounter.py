@@ -2,6 +2,7 @@ import discord
 import asyncio
 import json
 import aiohttp
+import os
 from aiohttp import web
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.menus import DEFAULT_CONTROLS 
@@ -33,7 +34,8 @@ class GameCounter(commands.Cog):
             game_role_mappings={},
             web_api_host="0.0.0.0",
             web_api_port=5001,
-            web_api_key=None
+            web_api_key=None,
+            activity_data={}  # Store user activity data
         )
         
         self.web_app = web.Application()
@@ -45,6 +47,11 @@ class GameCounter(commands.Cog):
         )
         self.web_app.router.add_get(
             "/health", self.health_check_handler
+        )
+        
+        # Add route for getting time ranks
+        self.web_app.router.add_get(
+            "/api/get_time_ranks/", self.get_time_ranks_handler
         )
 
     def cog_unload(self):
@@ -67,6 +74,10 @@ class GameCounter(commands.Cog):
         self.web_site = None
 
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
+        activity_data = await self.config.activity_data()
+        if str(user_id) in activity_data:
+            del activity_data[str(user_id)]
+            await self.config.activity_data.set(activity_data)
         return
 
     async def _authenticate_request(self, request: web.Request):
@@ -90,7 +101,48 @@ class GameCounter(commands.Cog):
         log.debug("Received health check request.")
         return web.Response(text="OK", status=200)
 
-    # --- THIS IS THE UPDATED FUNCTION ---
+    async def get_time_ranks_handler(self, request: web.Request):
+        """Handler for the time ranks API endpoint."""
+        try:
+            await self._authenticate_request(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.warning(f"Authentication failed for /api/get_time_ranks/ endpoint: {e.reason}")
+            return e
+            
+        # Define military ranks with their requirements
+        military_ranks = [
+            {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},  # 10 hours
+            {"name": "Private First Class", "role_id": "1274274696048934965", "minutes_required": 25 * 60},  # 25 hours
+            {"name": "Corporal", "role_id": "1274771534119964813", "minutes_required": 50 * 60},  # 50 hours
+            {"name": "Specialist", "role_id": "1274771654907658402", "minutes_required": 75 * 60},  # 75 hours
+            {"name": "Sergeant", "role_id": "1274771991748022276", "minutes_required": 100 * 60},  # 100 hours
+            {"name": "Staff Sergeant", "role_id": "1274772130424164384", "minutes_required": 150 * 60},  # 150 hours
+            {"name": "Sergeant First Class", "role_id": "1274772191107485706", "minutes_required": 225 * 60},  # 225 hours
+            {"name": "Master Sergeant", "role_id": "1274772252545519708", "minutes_required": 300 * 60},  # 300 hours
+            {"name": "First Sergeant", "role_id": "1274772335689465978", "minutes_required": 375 * 60},  # 375 hours
+            {"name": "Sergeant Major", "role_id": "1274772419927605299", "minutes_required": 450 * 60},  # 450 hours
+            {"name": "Command Sergeant Major", "role_id": "1274772500164640830", "minutes_required": 550 * 60},  # 550 hours
+            {"name": "Sergeant Major of the Army", "role_id": "1274772595031539787", "minutes_required": 650 * 60},  # 650 hours
+            {"name": "Warrant Officer 1", "role_id": "1358212838631407797", "minutes_required": 750 * 60},  # 750 hours
+            {"name": "Chief Warrant Officer 2", "role_id": "1358213159583875172", "minutes_required": 875 * 60},  # 875 hours
+            {"name": "Chief Warrant Officer 3", "role_id": "1358213229112852721", "minutes_required": 1000 * 60},  # 1000 hours
+            {"name": "Chief Warrant Officer 4", "role_id": "1358213408704430150", "minutes_required": 1200 * 60},  # 1200 hours
+            {"name": "Chief Warrant Officer 5", "role_id": "1358213451289460847", "minutes_required": 1400 * 60},  # 1400 hours
+            {"name": "Second Lieutenant", "role_id": "1358213662216814784", "minutes_required": 1600 * 60},  # 1600 hours
+            {"name": "First Lieutenant", "role_id": "1358213759805554979", "minutes_required": 1850 * 60},  # 1850 hours
+            {"name": "Captain", "role_id": "1358213809466118276", "minutes_required": 2100 * 60},  # 2100 hours
+            {"name": "Major", "role_id": "1358213810598449163", "minutes_required": 2400 * 60},  # 2400 hours
+            {"name": "Lieutenant Colonel", "role_id": "1358213812175503430", "minutes_required": 2750 * 60},  # 2750 hours
+            {"name": "Colonel", "role_id": "1358213813140459520", "minutes_required": 3100 * 60},  # 3100 hours
+            {"name": "Brigadier General", "role_id": "1358213814234906786", "minutes_required": 3500 * 60},  # 3500 hours
+            {"name": "Major General", "role_id": "1358213815203795004", "minutes_required": 4000 * 60},  # 4000 hours
+            {"name": "Lieutenant General", "role_id": "1358213817229770783", "minutes_required": 4500 * 60},  # 4500 hours
+            {"name": "General", "role_id": "1358213815983935608", "minutes_required": 5000 * 60},  # 5000 hours
+            {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},  # 6000 hours
+        ]
+        
+        return web.json_response(military_ranks)
+
     async def get_role_members_handler(self, request: web.Request):
         """
         Web API handler to return members of a specific Discord role,
@@ -153,6 +205,122 @@ class GameCounter(commands.Cog):
         
         log.debug(f"Returning {len(members_with_status)} members with status for role {role_id}.")
         return web.json_response(members_with_status)
+
+    async def check_military_rank(self, member, minutes):
+        """Check and assign military rank based on playtime."""
+        try:
+            # Safety check for member object
+            if not member or not member.guild:
+                log.error(f"Invalid member object for military rank check")
+                return
+                
+            log.debug(f"Starting military rank check for {member.name} with {minutes} minutes ({minutes/60:.2f} hours)")
+            
+            # Define military ranks directly in the code with your actual role IDs
+            military_ranks = [
+                {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},  # 10 hours
+                {"name": "Private First Class", "role_id": "1274274696048934965", "minutes_required": 25 * 60},  # 25 hours
+                {"name": "Corporal", "role_id": "1274771534119964813", "minutes_required": 50 * 60},  # 50 hours
+                {"name": "Specialist", "role_id": "1274771654907658402", "minutes_required": 75 * 60},  # 75 hours
+                {"name": "Sergeant", "role_id": "1274771991748022276", "minutes_required": 100 * 60},  # 100 hours
+                {"name": "Staff Sergeant", "role_id": "1274772130424164384", "minutes_required": 150 * 60},  # 150 hours
+                {"name": "Sergeant First Class", "role_id": "1274772191107485706", "minutes_required": 225 * 60},  # 225 hours
+                {"name": "Master Sergeant", "role_id": "1274772252545519708", "minutes_required": 300 * 60},  # 300 hours
+                {"name": "First Sergeant", "role_id": "1274772335689465978", "minutes_required": 375 * 60},  # 375 hours
+                {"name": "Sergeant Major", "role_id": "1274772419927605299", "minutes_required": 450 * 60},  # 450 hours
+                {"name": "Command Sergeant Major", "role_id": "1274772500164640830", "minutes_required": 550 * 60},  # 550 hours
+                {"name": "Sergeant Major of the Army", "role_id": "1274772595031539787", "minutes_required": 650 * 60},  # 650 hours
+                {"name": "Warrant Officer 1", "role_id": "1358212838631407797", "minutes_required": 750 * 60},  # 750 hours
+                {"name": "Chief Warrant Officer 2", "role_id": "1358213159583875172", "minutes_required": 875 * 60},  # 875 hours
+                {"name": "Chief Warrant Officer 3", "role_id": "1358213229112852721", "minutes_required": 1000 * 60},  # 1000 hours
+                {"name": "Chief Warrant Officer 4", "role_id": "1358213408704430150", "minutes_required": 1200 * 60},  # 1200 hours
+                {"name": "Chief Warrant Officer 5", "role_id": "1358213451289460847", "minutes_required": 1400 * 60},  # 1400 hours
+                {"name": "Second Lieutenant", "role_id": "1358213662216814784", "minutes_required": 1600 * 60},  # 1600 hours
+                {"name": "First Lieutenant", "role_id": "1358213759805554979", "minutes_required": 1850 * 60},  # 1850 hours
+                {"name": "Captain", "role_id": "1358213809466118276", "minutes_required": 2100 * 60},  # 2100 hours
+                {"name": "Major", "role_id": "1358213810598449163", "minutes_required": 2400 * 60},  # 2400 hours
+                {"name": "Lieutenant Colonel", "role_id": "1358213812175503430", "minutes_required": 2750 * 60},  # 2750 hours
+                {"name": "Colonel", "role_id": "1358213813140459520", "minutes_required": 3100 * 60},  # 3100 hours
+                {"name": "Brigadier General", "role_id": "1358213814234906786", "minutes_required": 3500 * 60},  # 3500 hours
+                {"name": "Major General", "role_id": "1358213815203795004", "minutes_required": 4000 * 60},  # 4000 hours
+                {"name": "Lieutenant General", "role_id": "1358213817229770783", "minutes_required": 4500 * 60},  # 4500 hours
+                {"name": "General", "role_id": "1358213815983935608", "minutes_required": 5000 * 60},  # 5000 hours
+                {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},  # 6000 hours
+            ]
+            
+            # Find the highest rank the user qualifies for
+            eligible_rank = None
+            for rank in military_ranks:
+                if minutes >= rank["minutes_required"]:
+                    if not eligible_rank or rank["minutes_required"] > eligible_rank["minutes_required"]:
+                        eligible_rank = rank
+                        
+            if not eligible_rank:
+                log.debug(f"User {member.name} does not qualify for any military rank")
+                return
+                
+            log.debug(f"User {member.name} qualifies for military rank: {eligible_rank['name']} with {minutes} minutes ({minutes/60:.2f} hours)")
+            
+            # Check if the user already has this rank
+            role = member.guild.get_role(int(eligible_rank["role_id"]))
+            if not role:
+                log.error(f"Role with ID {eligible_rank['role_id']} not found in guild {member.guild.name}")
+                return
+                
+            if role in member.roles:
+                log.debug(f"User {member.name} already has the {eligible_rank['name']} rank")
+                return
+                
+            # Remove any existing military ranks
+            for rank in military_ranks:
+                existing_role = member.guild.get_role(int(rank["role_id"]))
+                if existing_role and existing_role in member.roles:
+                    await member.remove_roles(existing_role)
+                    log.debug(f"Removed {rank['name']} role from {member.name}")
+                    
+            # Add the new rank
+            await member.add_roles(role)
+            log.info(f"MILITARY SUCCESS: Assigned {eligible_rank['name']} rank to {member.name}")
+            
+            # Notify the website about the role change
+            try:
+                api_url = "http://87.106.44.164:8000/api/update_role/"
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(api_url, json={
+                        "user_id": str(member.id),
+                        "role_name": eligible_rank["name"],
+                        "api_key": os.getenv("WEBSITE_API_KEY", "")
+                    }) as response:
+                        if response.status != 200:
+                            log.error(f"API ERROR: Failed to update military rank on website for {member.id}: {response.status} - {await response.text()}")
+            except Exception as e:
+                log.error(f"API ERROR: Failed to update military rank on website for {member.id}: {str(e)}")
+                
+        except Exception as e:
+            log.error(f"MILITARY ERROR: Failed to check/assign military rank for {member.name}: {str(e)}")
+
+    async def update_member_activity(self, member, minutes_to_add=5):
+        """Update a member's activity time and check for promotions."""
+        if not member or member.bot:
+            return
+            
+        activity_data = await self.config.activity_data()
+        user_id = str(member.id)
+        
+        if user_id not in activity_data:
+            activity_data[user_id] = {"minutes": 0, "last_updated": 0}
+            
+        # Add activity time
+        activity_data[user_id]["minutes"] += minutes_to_add
+        activity_data[user_id]["last_updated"] = int(asyncio.get_event_loop().time())
+        
+        total_minutes = activity_data[user_id]["minutes"]
+        await self.config.activity_data.set(activity_data)
+        
+        log.debug(f"Updated activity for {member.name}: {total_minutes} minutes total")
+        
+        # Check for military rank promotion
+        await self.check_military_rank(member, total_minutes)
 
     @commands.hybrid_group(name="gamecounter", aliases=["gc"])
     async def gamecounter_settings(self, ctx: commands.Context):
@@ -301,254 +469,302 @@ class GameCounter(commands.Cog):
                 view.message = await ctx.send(f"Warning: The Django game name `{django_game_name}` is already mapped to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\nAre you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?\nThis is unusual and might lead to conflicting counts if both roles represent the same game.\nConfirm to proceed.", view=view)
                 await view.wait()
                 if not view.result:
-                    return await ctx.send("Mapping cancelled to avoid potential conflict.")
-                break
+                    return await ctx.send("Mapping addition cancelled.")
         current_mappings[str(role_id)] = django_game_name
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added/updated: Discord Role `{discord_role.name}` (`{role_id}`) -> Django Game `{django_game_name}`")
         self.counter_loop.restart()
 
-    @commands.command(name="addmultiplemappingsbyname", hidden=False) 
-    @commands.is_owner()
-    async def add_multiple_mappings_by_name(self, ctx: commands.Context, *discord_roles: discord.Role):
-        """Adds multiple mappings using Discord roles' names as Django GameCategory names."""
-        if not discord_roles:
-            return await ctx.send("Please provide at least one Discord role to map.")
-        current_mappings = await self.config.game_role_mappings()
-        successful_mappings = []
-        skipped_mappings = []
-        for discord_role in discord_roles:
-            if not discord_role.guild == ctx.guild:
-                skipped_mappings.append(f"`{discord_role.name}` (from another server)")
-                continue
-            role_id = discord_role.id
-            django_game_name = discord_role.name
-            if str(role_id) in current_mappings and current_mappings[str(role_id)] == django_game_name:
-                skipped_mappings.append(f"`{discord_role.name}` (already mapped with same name)")
-                continue
-            if str(role_id) in current_mappings and current_mappings[str(role_id)] != django_game_name:
-                view = ConfirmView(ctx.author)
-                view.message = await ctx.send(f"Discord Role `{discord_role.name}` (`{role_id}`) is already mapped to Django Game `{current_mappings[str(role_id)]}`. Do you want to update it to `{django_game_name}`? (This will interrupt the current batch if cancelled.)", view=view)
-                await view.wait()
-                if not view.result:
-                    skipped_mappings.append(f"`{discord_role.name}` (update cancelled)")
-                    continue
-            for existing_role_id_str, existing_game_name in current_mappings.items():
-                if existing_game_name == django_game_name and int(existing_role_id_str) != role_id:
-                    existing_role = ctx.guild.get_role(int(existing_role_id_str))
-                    existing_role_display = existing_role.name if existing_role else f"ID: {existing_role_id_str}"
-                    view = ConfirmView(ctx.author)
-                    view.message = await ctx.send(f"Warning: The Django game name `{django_game_name}` is already mapped to Discord Role `{existing_role_display}` (`{existing_role_id_str}`).\nAre you sure you want to map `{discord_role.name}` (`{role_id}`) to the *same* Django game name?\nThis is unusual and might lead to conflicting counts if both roles represent the same game.\nConfirm to proceed. (This will interrupt the current batch if cancelled.)", view=view)
-                    await view.wait()
-                    if not view.result:
-                        skipped_mappings.append(f"`{discord_role.name}` (conflict cancelled)")
-                        continue
-                    break
-            current_mappings[str(role_id)] = django_game_name
-            successful_mappings.append(f"`{discord_role.name}` (`{role_id}`)")
-        await self.config.game_role_mappings.set(current_mappings)
-        response_msg = ""
-        if successful_mappings:
-            response_msg += "Successfully added/updated mappings for:\n" + humanize_list(successful_mappings) + "\n"
-        if skipped_mappings:
-            response_msg += "Skipped mappings for:\n" + humanize_list(skipped_mappings) + "\n"
-        if not response_msg:
-            response_msg = "No mappings were added or updated."
-        await ctx.send(response_msg)
-        if successful_mappings:
-            self.counter_loop.restart()
-
     @gamecounter_settings.command(name="removemapping")
     @commands.is_owner()
-    @app_commands.describe(discord_role_id="The Discord ID of the role to remove from mapping.")
+    @app_commands.describe(discord_role_id="The Discord ID of the role to remove from mappings.")
     async def remove_mapping(self, ctx: commands.Context, discord_role_id: int):
-        """Removes a mapping by Discord Role ID."""
+        """Removes a mapping between a Discord Role ID and a Django GameCategory name."""
         current_mappings = await self.config.game_role_mappings()
-        if str(discord_role_id) in current_mappings:
+        if str(discord_role_id) not in current_mappings:
+            return await ctx.send(f"Discord Role ID `{discord_role_id}` is not in the mappings.")
+        django_game_name = current_mappings[str(discord_role_id)]
+        view = ConfirmView(ctx.author)
+        view.message = await ctx.send(f"Are you sure you want to remove the mapping: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`?", view=view)
+        await view.wait()
+        if view.result:
             del current_mappings[str(discord_role_id)]
             await self.config.game_role_mappings.set(current_mappings)
-            await ctx.send(f"Mapping for Discord Role ID `{discord_role_id}` removed.")
+            await ctx.send(f"Mapping removed: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
             self.counter_loop.restart()
         else:
-            await ctx.send(f"No mapping found for Discord Role ID `{discord_role_id}`.")
+            await ctx.send("Mapping removal cancelled.")
 
-    @gamecounter_settings.command(name="mappings")
-    async def show_mappings(self, ctx: commands.Context):
-        """Shows all configured Discord Role ID to Django Game mappings."""
-        mappings = await self.config.game_role_mappings()
-        if not mappings:
-            return await ctx.send("No game role mappings configured.")
+    @gamecounter_settings.command(name="listmappings")
+    @commands.is_owner()
+    async def list_mappings(self, ctx: commands.Context):
+        """Lists all mappings between Discord Role IDs and Django GameCategory names."""
+        current_mappings = await self.config.game_role_mappings()
+        if not current_mappings:
+            return await ctx.send("No mappings configured.")
         guild_id = await self.config.guild_id()
         guild = self.bot.get_guild(guild_id) if guild_id else None
-        msg = "**Configured Game Role Mappings:**\n"
-        for role_id_str, game_name in mappings.items():
+        
+        embed = discord.Embed(title="Game Role Mappings", color=discord.Color.blue())
+        embed.add_field(name="Counting Guild", value=f"{guild.name} (`{guild.id}`)" if guild else "Not set", inline=False)
+        
+        for role_id_str, game_name in current_mappings.items():
             role_id = int(role_id_str)
-            role = guild.get_role(role_id) if guild and guild.get_role(role_id) else None
-            role_name = role.name if role else f"ID: {role_id_str} (Role not found in guild)"
-            msg += f"`{role_name}` -> Django Game: **{game_name}**\n"
-        await ctx.send(msg)
+            role = guild.get_role(role_id) if guild else None
+            role_display = f"{role.name} (`{role_id}`)" if role else f"Unknown Role (`{role_id}`)"
+            embed.add_field(name=role_display, value=f"Django Game: `{game_name}`", inline=False)
+        
+        await ctx.send(embed=embed)
 
     @gamecounter_settings.command(name="status")
+    @commands.is_owner()
     async def show_status(self, ctx: commands.Context):
-        """Shows the current GameCounter settings and status."""
+        """Shows the current status and settings of the GameCounter."""
         api_url = await self.config.api_url()
         api_key_set = "Yes" if await self.config.api_key() else "No"
         interval = await self.config.interval()
         guild_id = await self.config.guild_id()
         guild = self.bot.get_guild(guild_id) if guild_id else None
-        mappings = await self.config.game_role_mappings()
-        web_api_host = await self.config.web_api_host()
-        web_api_port = await self.config.web_api_port()
+        mappings_count = len(await self.config.game_role_mappings())
+        loop_status = "Running" if self.counter_loop.is_running() else "Stopped"
+        web_api_status = "Running" if self.web_runner else "Stopped"
+        web_host = await self.config.web_api_host()
+        web_port = await self.config.web_api_port()
         web_api_key_set = "Yes" if await self.config.web_api_key() else "No"
-        status_msg = (f"**GameCounter Status:**\n"
-            f"  API URL (RedBot->Django): `{api_url or 'Not set'}`\n"
-            f"  API Key Set (RedBot->Django): `{api_key_set}`\n"
-            f"  Web API Host (Django->RedBot): `{web_api_host}`\n"
-            f"  Web API Port (Django->RedBot): `{web_api_port}`\n"
-            f"  Web API Key Set (Django->RedBot): `{web_api_key_set}`\n"
-            f"  Update Interval: `{interval} minutes`\n"
-            f"  Counting Guild: `{guild.name}` (`{guild.id}`)" if guild else "`Not set`")
-        if mappings:
-            status_msg += "\n\n**Configured Mappings:**\n"
-            for role_id_str, game_name in mappings.items():
-                role_id = int(role_id_str)
-                role = guild.get_role(role_id) if guild and guild.get_role(role_id) else None
-                role_display = role.name if role else f"ID: {role_id_str}"
-                status_msg += f"  - Discord Role: `{role_display}` -> Django Game: **{game_name}**\n"
-        else:
-            status_msg += "\n\nNo game role mappings configured."
-        await ctx.send(status_msg)
+        
+        embed = discord.Embed(title="GameCounter Status", color=discord.Color.green())
+        embed.add_field(name="Django API URL", value=f"`{api_url}`" if api_url else "Not set", inline=False)
+        embed.add_field(name="Django API Key Set", value=api_key_set, inline=True)
+        embed.add_field(name="Counter Interval", value=f"{interval} minutes", inline=True)
+        embed.add_field(name="Counter Loop Status", value=loop_status, inline=True)
+        embed.add_field(name="Counting Guild", value=f"{guild.name} (`{guild.id}`)" if guild else "Not set", inline=False)
+        embed.add_field(name="Role Mappings", value=f"{mappings_count} mappings configured", inline=True)
+        embed.add_field(name="Web API Status", value=web_api_status, inline=True)
+        embed.add_field(name="Web API Host:Port", value=f"`{web_host}:{web_port}`", inline=True)
+        embed.add_field(name="Web API Key Set", value=web_api_key_set, inline=True)
+        
+        await ctx.send(embed=embed)
 
-    @gamecounter_settings.command(name="forcerun")
+    @gamecounter_settings.command(name="forcecount")
     @commands.is_owner()
-    async def force_run(self, ctx: commands.Context):
-        """Forces an immediate run of the game counter and updates the website."""
-        await ctx.send("Forcing immediate game count update...")
+    async def force_count(self, ctx: commands.Context):
+        """Forces an immediate count and API update."""
+        await ctx.send("Forcing an immediate count and API update...")
         try:
-            await self._run_update()
-            await ctx.send("Game count update forced successfully!")
+            await self.count_and_update()
+            await ctx.send("Count and API update completed successfully.")
         except Exception as e:
-            await ctx.send(f"An error occurred during force update: `{e}`")
+            await ctx.send(f"Error during count and API update: {str(e)}")
 
-    async def _get_game_counts(self, guild: discord.Guild):
-        """Counts members per configured game role."""
-        game_counts = {}
-        role_mappings = await self.config.game_role_mappings()
-        if not guild.chunked:
-            try:
-                await guild.chunk()
-            except asyncio.TimeoutError:
-                log.error(f"Failed to chunk guild {guild.id} for game count update within timeout.")
-                return {}
-            except Exception as e:
-                log.error(f"Error chunking guild {guild.id} for game count update: {e}")
-                return {}
-        for role_id_str, game_name in role_mappings.items():
-            role = guild.get_role(int(role_id_str))
-            if role:
-                member_count = len(role.members)
-                game_counts[game_name] = member_count
-            else:
-                log.warning(f"Role with ID {role_id_str} not found in guild {guild.id}. Skipping count.")
-        return game_counts
-
-    async def _send_counts_to_django(self, game_counts: dict):
-        """Sends the game counts to the Django API endpoint."""
-        api_url = await self.config.api_url()
-        api_key = await self.config.api_key()
-        if not api_url or not api_key:
-            log.warning("Django API URL or Key not configured. Skipping sending counts.")
-            return False
-        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"game_counts": game_counts}
-        try:
-            async with self.session.post(api_url, headers=headers, json=payload, timeout=10) as response:
-                response.raise_for_status()
-                response_json = await response.json()
-                log.info(f"Successfully sent game counts to Django. Response: {response_json}")
-                return True
-        except aiohttp.ClientError as e:
-            log.error(f"Error sending counts to Django API at {api_url}: {e}")
-            return False
-        except Exception as e:
-            log.error(f"An unexpected error occurred sending counts to Django API: {e}")
-            return False
-
-    async def _run_update(self):
-        """Fetches counts and sends them to Django."""
-        guild_id = await self.config.guild_id()
-        if not guild_id:
-            log.debug("No guild ID configured for game counter. Skipping update.")
-            return
-        guild = self.bot.get_guild(guild_id)
-        if not guild:
-            log.warning(f"Configured guild with ID {guild_id} not found. Skipping update.")
-            return
-        if not self.bot.intents.members:
-            log.error("Bot does not have the 'members' intent enabled! Cannot count members.")
-            return
-        game_counts = await self._get_game_counts(guild)
-        if game_counts:
-            success = await self._send_counts_to_django(game_counts)
-            if not success:
-                log.error("Failed to send game counts to Django.")
+    @commands.hybrid_command(name="playtime")
+    @app_commands.describe(member="The member to check playtime for (defaults to yourself)")
+    async def check_playtime(self, ctx: commands.Context, member: discord.Member = None):
+        """Check your or another member's playtime and rank."""
+        if not member:
+            member = ctx.author
+            
+        activity_data = await self.config.activity_data()
+        user_id = str(member.id)
+        
+        if user_id not in activity_data:
+            return await ctx.send(f"{member.mention} has no recorded playtime yet.")
+            
+        minutes = activity_data[user_id]["minutes"]
+        hours = minutes / 60
+        
+        # Define military ranks
+        military_ranks = [
+            {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},  # 10 hours
+            {"name": "Private First Class", "role_id": "1274274696048934965", "minutes_required": 25 * 60},  # 25 hours
+            {"name": "Corporal", "role_id": "1274771534119964813", "minutes_required": 50 * 60},  # 50 hours
+            {"name": "Specialist", "role_id": "1274771654907658402", "minutes_required": 75 * 60},  # 75 hours
+            {"name": "Sergeant", "role_id": "1274771991748022276", "minutes_required": 100 * 60},  # 100 hours
+            {"name": "Staff Sergeant", "role_id": "1274772130424164384", "minutes_required": 150 * 60},  # 150 hours
+            {"name": "Sergeant First Class", "role_id": "1274772191107485706", "minutes_required": 225 * 60},  # 225 hours
+            {"name": "Master Sergeant", "role_id": "1274772252545519708", "minutes_required": 300 * 60},  # 300 hours
+            {"name": "First Sergeant", "role_id": "1274772335689465978", "minutes_required": 375 * 60},  # 375 hours
+            {"name": "Sergeant Major", "role_id": "1274772419927605299", "minutes_required": 450 * 60},  # 450 hours
+            {"name": "Command Sergeant Major", "role_id": "1274772500164640830", "minutes_required": 550 * 60},  # 550 hours
+            {"name": "Sergeant Major of the Army", "role_id": "1274772595031539787", "minutes_required": 650 * 60},  # 650 hours
+            {"name": "Warrant Officer 1", "role_id": "1358212838631407797", "minutes_required": 750 * 60},  # 750 hours
+            {"name": "Chief Warrant Officer 2", "role_id": "1358213159583875172", "minutes_required": 875 * 60},  # 875 hours
+            {"name": "Chief Warrant Officer 3", "role_id": "1358213229112852721", "minutes_required": 1000 * 60},  # 1000 hours
+            {"name": "Chief Warrant Officer 4", "role_id": "1358213408704430150", "minutes_required": 1200 * 60},  # 1200 hours
+            {"name": "Chief Warrant Officer 5", "role_id": "1358213451289460847", "minutes_required": 1400 * 60},  # 1400 hours
+            {"name": "Second Lieutenant", "role_id": "1358213662216814784", "minutes_required": 1600 * 60},  # 1600 hours
+            {"name": "First Lieutenant", "role_id": "1358213759805554979", "minutes_required": 1850 * 60},  # 1850 hours
+            {"name": "Captain", "role_id": "1358213809466118276", "minutes_required": 2100 * 60},  # 2100 hours
+            {"name": "Major", "role_id": "1358213810598449163", "minutes_required": 2400 * 60},  # 2400 hours
+            {"name": "Lieutenant Colonel", "role_id": "1358213812175503430", "minutes_required": 2750 * 60},  # 2750 hours
+            {"name": "Colonel", "role_id": "1358213813140459520", "minutes_required": 3100 * 60},  # 3100 hours
+            {"name": "Brigadier General", "role_id": "1358213814234906786", "minutes_required": 3500 * 60},  # 3500 hours
+            {"name": "Major General", "role_id": "1358213815203795004", "minutes_required": 4000 * 60},  # 4000 hours
+            {"name": "Lieutenant General", "role_id": "1358213817229770783", "minutes_required": 4500 * 60},  # 4500 hours
+            {"name": "General", "role_id": "1358213815983935608", "minutes_required": 5000 * 60},  # 5000 hours
+            {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},  # 6000 hours
+        ]
+        
+        # Find current and next rank
+        current_rank = None
+        next_rank = None
+        
+        for rank in military_ranks:
+            if minutes >= rank["minutes_required"]:
+                if not current_rank or rank["minutes_required"] > current_rank["minutes_required"]:
+                    current_rank = rank
+        
+        # Find next rank
+        for rank in military_ranks:
+            if rank["minutes_required"] > minutes:
+                if not next_rank or rank["minutes_required"] < next_rank["minutes_required"]:
+                    next_rank = rank
+        
+        embed = discord.Embed(
+            title=f"Playtime for {member.display_name}",
+            color=member.color
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="Total Playtime", value=f"{hours:.2f} hours ({minutes} minutes)", inline=False)
+        
+        if current_rank:
+            embed.add_field(name="Current Rank", value=current_rank["name"], inline=True)
         else:
-            log.debug("No game counts to send or error getting counts.")
+            embed.add_field(name="Current Rank", value="No rank yet", inline=True)
+            
+        if next_rank:
+            minutes_needed = next_rank["minutes_required"] - minutes
+            hours_needed = minutes_needed / 60
+            embed.add_field(name="Next Rank", value=f"{next_rank['name']} (needs {hours_needed:.2f} more hours)", inline=True)
+        else:
+            embed.add_field(name="Next Rank", value="Maximum rank achieved!", inline=True)
+            
+        await ctx.send(embed=embed)
 
     @commands.Cog.listener()
-    async def on_member_update(self, before: discord.Member, after: discord.Member):
-        """Triggers an update if a member's roles change in the configured guild."""
-        guild_id = await self.config.guild_id()
-        if after.guild.id == guild_id and before.roles != after.roles:
-            log.debug(f"Roles changed for member {after.display_name}. Restarting counter loop.")
-            self.counter_loop.restart()
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        """Ensures loops and web server start when the bot is fully ready."""
-        log.info("GameCounter cog is ready.")
-        if not self.counter_loop.is_running():
-            self.counter_loop.start()
-            log.info("GameCounter update loop started.")
-        web_api_host = await self.config.web_api_host()
-        web_api_port = await self.config.web_api_port()
-        if not self.web_runner:
+    async def on_cog_add(self, cog):
+        """Start the counter loop and web server when the cog is loaded."""
+        if cog == self:
+            log.info("GameCounter cog loaded. Starting services...")
             try:
-                self.web_runner = web.AppRunner(self.web_app)
-                await self.web_runner.setup()
-                self.web_site = web.TCPSite(self.web_runner, host=web_api_host, port=web_api_port)
-                await self.web_site.start()
-                log.info(f"GameCounter web API server started on http://{web_api_host}:{web_api_port}/")
+                # Start the web server
+                host = await self.config.web_api_host()
+                port = await self.config.web_api_port()
+                
+                if not host or not port:
+                    log.warning("Web API host or port not configured. Web API will not start.")
+                else:
+                    try:
+                        self.web_runner = web.AppRunner(self.web_app)
+                        await self.web_runner.setup()
+                        self.web_site = web.TCPSite(self.web_runner, host, port)
+                        await self.web_site.start()
+                        log.info(f"GameCounter web API server started on {host}:{port}")
+                    except Exception as e:
+                        log.error(f"Failed to start GameCounter web API server: {e}")
+                
+                # Start the counter loop if configured
+                api_url = await self.config.api_url()
+                api_key = await self.config.api_key()
+                guild_id = await self.config.guild_id()
+                mappings = await self.config.game_role_mappings()
+                
+                if api_url and api_key and guild_id and mappings:
+                    if not self.counter_loop.is_running():
+                        self.counter_loop.start()
+                        log.info("GameCounter loop started automatically.")
+                else:
+                    log.info("GameCounter loop not started: missing configuration.")
             except Exception as e:
-                log.error(f"Failed to start GameCounter web API server: {e}")
-        else:
-            log.debug("GameCounter web API server already running.")
+                log.error(f"Error during GameCounter startup: {e}")
 
-    @tasks.loop(minutes=None)
+    @tasks.loop(minutes=5)
     async def counter_loop(self):
-        """Main loop that periodically updates game counts."""
-        await self.bot.wait_until_ready()
+        """Loop to count players and update the API."""
         interval = await self.config.interval()
-        if interval is None:
-            log.debug("Counter interval not set, waiting 60s.")
-            await asyncio.sleep(60) 
-            return
-        if self.counter_loop.minutes != interval:
-            self.counter_loop.change_interval(minutes=interval)
-            log.info(f"Counter loop interval changed to {interval} minutes.")
-        log.debug(f"Running game count update (interval: {interval} mins).")
-        await self._run_update()
+        self.counter_loop.change_interval(minutes=interval)
+        
+        try:
+            await self.count_and_update()
+        except Exception as e:
+            log.error(f"Error in counter loop: {e}")
 
     @counter_loop.before_loop
     async def before_counter_loop(self):
-        """Hook that runs before the first iteration of the loop."""
+        """Wait until the bot is ready before starting the loop."""
         await self.bot.wait_until_ready()
 
-# --- THIS IS THE UPDATED SETUP FUNCTION ---
-async def setup(bot: Red):
-    """Adds the GameCounter cog to the bot."""
-    # To detect streaming status, both Members and Presences intents are required.
-    if not bot.intents.members or not bot.intents.presences:
-        log.critical("Members and Presences intents are NOT enabled! GameCounter cannot detect streaming status. Please enable them in your bot's application settings.")
-        raise RuntimeError("Members and Presences intents are not enabled.")
-    await bot.add_cog(GameCounter(bot))
+    async def count_and_update(self):
+        """Count players with specific roles and update the API."""
+        guild_id = await self.config.guild_id()
+        if not guild_id:
+            log.error("Guild ID not set. Cannot count players.")
+            return
+        
+        guild = self.bot.get_guild(guild_id)
+        if not guild:
+            log.error(f"Could not find guild with ID {guild_id}. Is the bot still in that guild?")
+            return
+        
+        # Ensure guild is chunked to have all members available
+        if not guild.chunked:
+            log.debug(f"Chunking guild {guild.id} for role counting.")
+            try:
+                await guild.chunk()
+            except Exception as e:
+                log.error(f"Error chunking guild {guild.id}: {e}")
+                return
+        
+        mappings = await self.config.game_role_mappings()
+        if not mappings:
+            log.error("No role mappings configured. Cannot count players.")
+            return
+        
+        counts = {}
+        for role_id_str, game_name in mappings.items():
+            try:
+                role_id = int(role_id_str)
+                role = guild.get_role(role_id)
+                if not role:
+                    log.warning(f"Role with ID {role_id} not found in guild {guild.id}.")
+                    continue
+                
+                # Count members with this role
+                member_count = len(role.members)
+                
+                # Initialize game in counts dict if not exists
+                if game_name not in counts:
+                    counts[game_name] = 0
+                
+                # Add this role's count to the game's total
+                counts[game_name] += member_count
+                
+                # Update activity for members with this role
+                for member in role.members:
+                    await self.update_member_activity(member)
+                
+                log.debug(f"Counted {member_count} members with role {role.name} ({role_id}) for game {game_name}")
+            except Exception as e:
+                log.error(f"Error counting role {role_id_str}: {e}")
+        
+        # Send counts to API
+        api_url = await self.config.api_url()
+        api_key = await self.config.api_key()
+        
+        if not api_url or not api_key:
+            log.error("API URL or key not set. Cannot update counts.")
+            return
+        
+        try:
+            payload = {
+                "api_key": api_key,
+                "counts": [{"game": game, "count": count} for game, count in counts.items()]
+            }
+            
+            async with self.session.post(api_url, json=payload) as response:
+                if response.status == 200:
+                    log.info(f"Successfully updated counts for {len(counts)} games.")
+                    log.debug(f"Counts: {counts}")
+                else:
+                    log.error(f"API update failed with status {response.status}: {await response.text()}")
+        except Exception as e:
+            log.error(f"Error updating API: {e}")
