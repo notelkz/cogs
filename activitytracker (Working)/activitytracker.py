@@ -304,34 +304,18 @@ class ActivityTracker(commands.Cog):
             log.error(f"Exception updating website activity for {member.id}: {str(e)}")
 
     async def _notify_website_of_promotion(self, guild, discord_id, new_role_name):
-        """Notify the website of a role promotion."""
         promotion_update_url = await self.config.guild(guild).promotion_update_url()
         api_key = await self.config.guild(guild).api_key()
-        
-        log.info(f"Notifying website of promotion for {discord_id} to {new_role_name}")
-        
-        if not promotion_update_url or not api_key: 
-            log.warning(f"Promotion update URL or API Key not configured for guild {guild.id}. Skipping promotion notification for {discord_id}.")
+        if not promotion_update_url or not api_key:
             return
-        
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
         payload = {"discord_id": str(discord_id), "new_role_name": new_role_name}
-        
-        log.info(f"Sending request to {promotion_update_url} with payload: {payload}")
-        
         try:
             async with self.session.post(promotion_update_url, headers=headers, json=payload, timeout=5) as resp:
-                log.info(f"API response status: {resp.status}")
-                
-                if resp.status == 200:
-                    response_data = await resp.json()
-                    log.info(f"API response data: {response_data}")
-                    log.info(f"Successfully notified website of promotion for {discord_id} to {new_role_name}.")
-                else:
-                    error_text = await resp.text()
-                    log.error(f"Failed to notify website of promotion for {discord_id} to {new_role_name}: {resp.status} - {error_text}")
+                if resp.status != 200:
+                    log.warning(f"Failed to notify Django of promotion: {resp.status} {await resp.text()}")
         except Exception as e:
-            log.error(f"Exception notifying website of promotion for {discord_id}: {str(e)}")
+            log.warning(f"Failed to notify Django of promotion: {e}")
 
     # --- PERIODIC TASKS ---
 
@@ -640,7 +624,7 @@ class ActivityTracker(commands.Cog):
                         inline=False
                     )
                 else:
-                    embed.add_field(
+                        embed.add_field(
                         name="Military Rank",
                         value="No military ranks configured or eligible",
                         inline=False
@@ -774,63 +758,6 @@ class ActivityTracker(commands.Cog):
             inline=False
         )
         await ctx.send(embed=embed)
-
-    # --- NEW SYNCROLES COMMAND ---
-    @activityset.command(name="syncroles")
-    @commands.admin_or_permissions(administrator=True)
-    async def sync_roles(self, ctx):
-        """Sync all user roles from Discord to the website database."""
-        await ctx.send("Starting role sync from Discord to website...")
-        
-        guild = ctx.guild
-        guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("api_url")
-        api_key = guild_settings.get("api_key")
-        promotion_update_url = guild_settings.get("promotion_update_url")
-        
-        if not api_url or not api_key or not promotion_update_url:
-            return await ctx.send("API URL, API Key, or Promotion Update URL not configured.")
-        
-        # Get all members with the Member role
-        member_role_id = guild_settings.get("member_role_id")
-        if not member_role_id:
-            return await ctx.send("Member role not configured.")
-        
-        member_role = guild.get_role(member_role_id)
-        if not member_role:
-            return await ctx.send(f"Member role with ID {member_role_id} not found.")
-        
-        members_with_role = [m for m in guild.members if member_role in m.roles]
-        await ctx.send(f"Found {len(members_with_role)} members with the Member role.")
-        
-        # Get all military ranks
-        military_ranks = guild_settings.get("military_ranks", [])
-        military_role_ids = {int(r['discord_role_id']) for r in military_ranks if 'discord_role_id' in r}
-        
-        # Sync each member
-        synced = 0
-        for member in members_with_role:
-            # Set base role to "member"
-            role_name = "member"
-            
-            # Check if they have any military rank
-            for role in member.roles:
-                if role.id in military_role_ids:
-                    # Find the rank name
-                    for rank in military_ranks:
-                        if str(role.id) == str(rank.get('discord_role_id')):
-                            role_name = rank.get('name')
-                            break
-                    break
-            
-            # Notify website
-            await self._notify_website_of_promotion(guild, member.id, role_name)
-            synced += 1
-            
-            # Add a small delay to avoid rate limits
-            await asyncio.sleep(0.1)
-        
-        await ctx.send(f"Sync complete. Synced {synced} members.")
 
     # --- DEBUG/UTILITY ---
 

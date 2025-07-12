@@ -1,0 +1,12 @@
+{
+    "author": ["elkz"],
+    "install_msg": "Thank you for installing UserTracker!",
+    "name": "UserTracker",
+    "short": "Tracks user activity (join date, voice time, messages)",
+    "description": "Tracks when a user joined, their voice time, and messages sent over a period.",
+    "requirements": [],
+    "tags": ["user", "activity", "tracking", "voice", "messages"],
+    "min_bot_version": "3.5.0",
+    "end_user_data_statement": "This cog stores user activity data for tracking purposes."
+  }
+  
