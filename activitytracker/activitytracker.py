@@ -620,7 +620,6 @@ class ActivityTracker(commands.Cog):
                 else:
                     embed.add_field(
                         name="Membership Status",
-                        name="Membership Status",
                         value="Not in membership track (missing Recruit role)",
                         inline=False
                     )
