@@ -32,6 +32,7 @@ class ActivityTracker(commands.Cog):
             "api_url": None,
             "api_key": None,
             "promotion_update_url": None,
+            "military_rank_update_url": None,  # New URL for military rank updates
             "promotion_channel_id": None,
         }
         self.config.register_guild(**default_guild)
@@ -304,18 +305,18 @@ class ActivityTracker(commands.Cog):
             log.error(f"Exception updating website activity for {member.id}: {str(e)}")
 
     async def _notify_website_of_promotion(self, guild, discord_id, new_role_name):
-        """Notify the website of a role promotion."""
+        """Notify the website of a community role promotion."""
         promotion_update_url = await self.config.guild(guild).promotion_update_url()
         api_key = await self.config.guild(guild).api_key()
         
-        log.info(f"Notifying website of promotion for {discord_id} to {new_role_name}")
+        log.info(f"Notifying website of community role promotion for {discord_id} to {new_role_name}")
         
         if not promotion_update_url or not api_key: 
             log.warning(f"Promotion update URL or API Key not configured for guild {guild.id}. Skipping promotion notification for {discord_id}.")
             return
         
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"discord_id": str(discord_id), "new_role_name": new_role_name}
+        payload = {"discord_id": str(discord_id), "new_role": new_role_name}
         
         log.info(f"Sending request to {promotion_update_url} with payload: {payload}")
         
@@ -326,12 +327,53 @@ class ActivityTracker(commands.Cog):
                 if resp.status == 200:
                     response_data = await resp.json()
                     log.info(f"API response data: {response_data}")
-                    log.info(f"Successfully notified website of promotion for {discord_id} to {new_role_name}.")
+                    log.info(f"Successfully notified website of community role promotion for {discord_id} to {new_role_name}.")
                 else:
                     error_text = await resp.text()
-                    log.error(f"Failed to notify website of promotion for {discord_id} to {new_role_name}: {resp.status} - {error_text}")
+                    log.error(f"Failed to notify website of community role promotion for {discord_id} to {new_role_name}: {resp.status} - {error_text}")
         except Exception as e:
-            log.error(f"Exception notifying website of promotion for {discord_id}: {str(e)}")
+            log.error(f"Exception notifying website of community role promotion for {discord_id}: {str(e)}")
+
+    async def _notify_website_of_military_rank(self, guild, discord_id, rank_name):
+        """Notify the website of a military rank update."""
+        # First try to use the dedicated military rank URL if set
+        military_rank_update_url = await self.config.guild(guild).military_rank_update_url()
+        api_url = await self.config.guild(guild).api_url()
+        api_key = await self.config.guild(guild).api_key()
+        
+        log.info(f"Notifying website of military rank update for {discord_id} to {rank_name}")
+        
+        if not api_key: 
+            log.warning(f"API Key not configured for guild {guild.id}. Skipping military rank update for {discord_id}.")
+            return
+        
+        # If dedicated URL is set, use it, otherwise construct from api_url
+        if military_rank_update_url:
+            endpoint = military_rank_update_url
+        elif api_url:
+            endpoint = f"{api_url}/api/update_military_rank/"
+        else:
+            log.warning(f"Neither military_rank_update_url nor api_url configured for guild {guild.id}. Skipping military rank update.")
+            return
+        
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        payload = {"discord_id": str(discord_id), "rank_name": rank_name}
+        
+        log.info(f"Sending military rank update to {endpoint} with payload: {payload}")
+        
+        try:
+            async with self.session.post(endpoint, headers=headers, json=payload, timeout=5) as resp:
+                log.info(f"API response status: {resp.status}")
+                
+                if resp.status == 200:
+                    response_data = await resp.json()
+                    log.info(f"API response data: {response_data}")
+                    log.info(f"Successfully updated military rank for {discord_id} to {rank_name}")
+                else:
+                    error_text = await resp.text()
+                    log.error(f"Failed to update military rank: {resp.status} - {error_text}")
+        except Exception as e:
+            log.error(f"Exception updating military rank: {str(e)}")
 
     # --- PERIODIC TASKS ---
 
@@ -473,7 +515,7 @@ class ActivityTracker(commands.Cog):
                 if total_minutes >= threshold_hours * 60:
                     await member.remove_roles(recruit_role, reason="Promotion")
                     await member.add_roles(member_role, reason="Promotion")
-                    await self._notify_website_of_promotion(guild, member.id, member_role.name)
+                    await self._notify_website_of_promotion(guild, member.id, "member")
                     channel_id = await self.config.guild(guild).promotion_channel_id()
                     if channel_id:
                         channel = guild.get_channel(channel_id)
@@ -499,7 +541,17 @@ class ActivityTracker(commands.Cog):
                     remove_roles = [r for r in member.roles if r.id in all_rank_ids]
                     await member.remove_roles(*remove_roles, reason="Rank promotion")
                     await member.add_roles(role, reason="Rank promotion")
-                    await self._notify_website_of_promotion(guild, member.id, rank['name'])
+                    
+                    # Update both systems separately
+                    # 1. Update community role (if not already a member)
+                    if member_role_id:
+                        member_role = guild.get_role(member_role_id)
+                        if member_role and member_role not in member.roles:
+                            await self._notify_website_of_promotion(guild, member.id, "member")
+                    
+                    # 2. Update military rank
+                    await self._notify_website_of_military_rank(guild, member.id, rank['name'])
+                    
                     channel_id = await self.config.guild(guild).promotion_channel_id()
                     if channel_id:
                         channel = guild.get_channel(channel_id)
@@ -567,6 +619,7 @@ class ActivityTracker(commands.Cog):
                     )
                 else:
                     embed.add_field(
+                        name="Membership Status",
                         name="Membership Status",
                         value="Not in membership track (missing Recruit role)",
                         inline=False
@@ -668,28 +721,39 @@ class ActivityTracker(commands.Cog):
 
     @activityset.command()
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
+        """Set the Recruit and Member roles."""
         await self.config.guild(ctx.guild).recruit_role_id.set(recruit.id)
         await self.config.guild(ctx.guild).member_role_id.set(member.id)
-        await ctx.send("Roles set.")
+        await ctx.send("Recruit and Member roles have been set.")
 
     @activityset.command()
     async def threshold(self, ctx, hours: float):
+        """Set the voice hours required to be promoted from Recruit to Member."""
         await self.config.guild(ctx.guild).promotion_threshold_hours.set(hours)
-        await ctx.send("Threshold set.")
+        await ctx.send(f"Promotion threshold set to {hours} hours.")
 
     @activityset.command()
     async def api(self, ctx, url: str, key: str):
+        """Set the base API URL and the API Key for the website."""
         await self.config.guild(ctx.guild).api_url.set(url)
         await self.config.guild(ctx.guild).api_key.set(key)
-        await ctx.send("API settings saved.")
+        await ctx.send("API URL and Key have been saved.")
 
     @activityset.command()
     async def promotionurl(self, ctx, url: str):
+        """Set the full URL for community role promotions."""
         await self.config.guild(ctx.guild).promotion_update_url.set(url)
-        await ctx.send("Promotion update URL set.")
+        await ctx.send("Community role promotion URL set.")
+
+    @activityset.command()
+    async def militaryrankurl(self, ctx, url: str):
+        """Set the full URL for military rank updates."""
+        await self.config.guild(ctx.guild).military_rank_update_url.set(url)
+        await ctx.send("Military rank update URL set.")
 
     @activityset.command()
     async def promotionchannel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for promotion notifications."""
         await self.config.guild(ctx.guild).promotion_channel_id.set(channel.id)
         await ctx.send(f"Promotion notification channel set to {channel.mention}.")
 
@@ -700,26 +764,32 @@ class ActivityTracker(commands.Cog):
 
     @militaryranks.command(name="add")
     async def add_rank(self, ctx, role: discord.Role, required_hours: float):
+        """Add a new military rank."""
         async with self.config.guild(ctx.guild).military_ranks() as ranks:
             ranks.append({
                 "name": role.name,
                 "discord_role_id": str(role.id),
                 "required_hours": required_hours
             })
-        await ctx.send(f"Added {role.name} at {required_hours} hours.")
+        await ctx.send(f"Added military rank: {role.name} at {required_hours} hours.")
 
     @militaryranks.command(name="clear")
     async def clear_ranks(self, ctx):
+        """Clear all configured military ranks."""
         await self.config.guild(ctx.guild).military_ranks.set([])
-        await ctx.send("Ranks cleared.")
+        await ctx.send("All military ranks have been cleared.")
 
     @militaryranks.command(name="list")
     async def list_ranks(self, ctx):
+        """List all configured military ranks."""
         ranks = await self.config.guild(ctx.guild).military_ranks()
         if not ranks:
-            await ctx.send("No ranks set.")
+            await ctx.send("No military ranks have been set.")
             return
-        msg = "\n".join(f"{r['name']}: {r['required_hours']}h (role {r['discord_role_id']})" for r in ranks)
+        msg = "**Configured Military Ranks:**\n"
+        sorted_ranks = sorted(ranks, key=lambda r: r['required_hours'])
+        for r in sorted_ranks:
+            msg += f"- **{r['name']}**: {r['required_hours']} hours (Role ID: {r['discord_role_id']})\n"
         await ctx.send(msg)
 
     @activityset.command(name="settings")
@@ -733,12 +803,14 @@ class ActivityTracker(commands.Cog):
         api_url = settings.get("api_url")
         api_key = settings.get("api_key")
         promotion_url = settings.get("promotion_update_url")
+        military_rank_url = settings.get("military_rank_update_url")
         embed.add_field(
             name="API Configuration",
             value=(
-                f"API URL: `{api_url or 'Not set'}`\n"
+                f"Base API URL: `{api_url or 'Not set'}`\n"
                 f"API Key: `{'✓ Set' if api_key else '✗ Not set'}`\n"
-                f"Promotion URL: `{promotion_url or 'Not set'}`"
+                f"Community Role URL: `{promotion_url or 'Not set'}`\n"
+                f"Military Rank URL: `{military_rank_url or 'Not set'}`"
             ),
             inline=False
         )
@@ -775,7 +847,6 @@ class ActivityTracker(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    # --- NEW SYNCROLES COMMAND ---
     @activityset.command(name="syncroles")
     @commands.admin_or_permissions(administrator=True)
     async def sync_roles(self, ctx):
@@ -784,53 +855,53 @@ class ActivityTracker(commands.Cog):
         
         guild = ctx.guild
         guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("api_url")
-        api_key = guild_settings.get("api_key")
-        promotion_update_url = guild_settings.get("promotion_update_url")
         
-        if not api_url or not api_key or not promotion_update_url:
-            return await ctx.send("API URL, API Key, or Promotion Update URL not configured.")
-        
-        # Get all members with the Member role
+        # Get community role IDs
+        recruit_role_id = guild_settings.get("recruit_role_id")
         member_role_id = guild_settings.get("member_role_id")
-        if not member_role_id:
-            return await ctx.send("Member role not configured.")
+        if not recruit_role_id or not member_role_id:
+            return await ctx.send("Recruit or Member role not configured.")
         
+        recruit_role = guild.get_role(recruit_role_id)
         member_role = guild.get_role(member_role_id)
-        if not member_role:
-            return await ctx.send(f"Member role with ID {member_role_id} not found.")
-        
-        members_with_role = [m for m in guild.members if member_role in m.roles]
-        await ctx.send(f"Found {len(members_with_role)} members with the Member role.")
-        
+        if not recruit_role or not member_role:
+            return await ctx.send("Recruit or Member role not found in the server.")
+            
         # Get all military ranks
         military_ranks = guild_settings.get("military_ranks", [])
-        military_role_ids = {int(r['discord_role_id']) for r in military_ranks if 'discord_role_id' in r}
+        military_role_ids = {int(r['discord_role_id']): r['name'] for r in military_ranks if 'discord_role_id' in r}
         
-        # Sync each member
-        synced = 0
-        for member in members_with_role:
-            # Set base role to "member"
-            role_name = "member"
+        synced_community = 0
+        synced_military = 0
+        
+        for member in guild.members:
+            if member.bot:
+                continue
             
-            # Check if they have any military rank
+            # Sync Community Role
+            if member_role in member.roles:
+                await self._notify_website_of_promotion(guild, member.id, "member")
+                synced_community += 1
+            elif recruit_role in member.roles:
+                await self._notify_website_of_promotion(guild, member.id, "recruit")
+                synced_community += 1
+            
+            # Sync Military Rank
+            has_military_rank = False
             for role in member.roles:
                 if role.id in military_role_ids:
-                    # Find the rank name
-                    for rank in military_ranks:
-                        if str(role.id) == str(rank.get('discord_role_id')):
-                            role_name = rank.get('name')
-                            break
+                    rank_name = military_role_ids[role.id]
+                    await self._notify_website_of_military_rank(guild, member.id, rank_name)
+                    synced_military += 1
+                    has_military_rank = True
                     break
             
-            # Notify website
-            await self._notify_website_of_promotion(guild, member.id, role_name)
-            synced += 1
+            # If user has no military rank, we could optionally send a "None" update
+            # For now, we'll just skip if they don't have one.
             
-            # Add a small delay to avoid rate limits
             await asyncio.sleep(0.1)
         
-        await ctx.send(f"Sync complete. Synced {synced} members.")
+        await ctx.send(f"Sync complete. Synced {synced_community} community roles and {synced_military} military ranks.")
 
     # --- DEBUG/UTILITY ---
 
