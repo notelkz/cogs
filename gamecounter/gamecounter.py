@@ -707,5 +707,17 @@ class GameCounter(commands.Cog):
             
         await ctx.send(embed=embed)
 
+    @gamecounter_settings.command(name="runnow")
+    @commands.is_owner()
+    async def run_now(self, ctx: commands.Context):
+        """Manually trigger the count and update process."""
+        await ctx.send("Running count and update process...")
+        try:
+            await self.count_and_update()
+            await ctx.send("Count and update process completed successfully.")
+        except Exception as e:
+            await ctx.send(f"Error during count and update process: {e}")
+            log.error(f"Manual count and update failed: {e}")
+
 def setup(bot):
     bot.add_cog(GameCounter(bot))
