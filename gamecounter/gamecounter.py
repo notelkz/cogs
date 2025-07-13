@@ -1,7 +1,7 @@
 import discord
 import asyncio
 import json
-from aiohttp.web import Request # Corrected: Added explicit import for Request
+from aiohttp.web import Request
 import aiohttp
 import os
 from datetime import datetime, timedelta
@@ -12,7 +12,7 @@ from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
 from discord.ext import tasks
-from aiohttp import web # Corrected: Ensure aiohttp.web is imported as 'web'
+from aiohttp import web
 
 import logging
 
@@ -53,13 +53,11 @@ class GameCounter(commands.Cog):
         self.web_app.router.add_get(
             "/health", self.health_check_handler
         )
-        
-        self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
 
     def cog_unload(self):
         asyncio.create_task(self._shutdown_web_server()) 
-        if self.counter_loop.is_running():
-            self.counter_loop.cancel()
+        if self.count_and_update.is_running():
+            self.count_and_update.cancel()
         asyncio.create_task(self.session.close())
 
     async def _shutdown_web_server(self):
@@ -83,7 +81,7 @@ class GameCounter(commands.Cog):
         log.info(f"User data for {user_id} has been deleted.")
         return
 
-    async def _authenticate_request(self, request: Request): # Type hint corrected to Request
+    async def _authenticate_request(self, request: Request):
         """Authenticates incoming web API requests based on X-API-Key header."""
         expected_key = await self.config.web_api_key()
         if not expected_key:
@@ -99,12 +97,12 @@ class GameCounter(commands.Cog):
         
         return True
 
-    async def health_check_handler(self, request: Request): # Type hint corrected to Request
+    async def health_check_handler(self, request: Request):
         """Simple health check endpoint for the web API."""
         log.debug("Received health check request for GameCounter.")
         return web.Response(text="OK", status=200)
 
-    async def get_role_members_handler(self, request: Request): # Type hint corrected to Request
+    async def get_role_members_handler(self, request: Request):
         """
         Web API handler to return members of a specific Discord role,
         including their live streaming status and Twitch URL.
@@ -177,10 +175,10 @@ class GameCounter(commands.Cog):
         """Start the counter loop and web server when the bot is ready."""
         await self.bot.wait_until_ready() 
         
-        if not self.counter_loop.is_running():
+        if not self.count_and_update.is_running():
             interval = await self.config.interval()
-            self.counter_loop.change_interval(minutes=interval)
-            self.counter_loop.start()
+            self.count_and_update.change_interval(minutes=interval)
+            self.count_and_update.start()
             log.info(f"Started game counter loop with {interval} minute interval")
         
         if not self.web_runner:
@@ -360,10 +358,10 @@ class GameCounter(commands.Cog):
         if minutes < 1:
             return await ctx.send("Interval must be at least 1 minute.")
         await self.config.interval.set(minutes)
-        if self.counter_loop.is_running():
-            self.counter_loop.restart()
+        if self.count_and_update.is_running():
+            self.count_and_update.restart()
         else:
-            self.counter_loop.start()
+            self.count_and_update.start()
         await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
         log.info(f"Counter interval set to {minutes} minutes by {ctx.author}. Loop restarted.")
 
@@ -382,8 +380,8 @@ class GameCounter(commands.Cog):
             await self.config.guild_id.set(guild_id)
             await ctx.send(f"Counting guild set to **{guild.name}** (`{guild.id}`).")
             log.info(f"Counting guild set to {guild.name} ({guild.id}) by {ctx.author}.")
-            if self.counter_loop.is_running():
-                self.counter_loop.restart()
+            if self.count_and_update.is_running():
+                self.count_and_update.restart()
         else:
             await ctx.send("Guild setting cancelled.")
             log.info(f"Guild setting cancelled by {ctx.author}.")
@@ -404,7 +402,7 @@ class GameCounter(commands.Cog):
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added/updated: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
         log.info(f"Mapping added/updated: {discord_role_id} -> {django_game_name} by {ctx.author}.")
-        self.counter_loop.restart()
+        self.count_and_update.restart()
 
     @gamecounter_settings.command(name="addmappingbyname")
     @commands.is_owner()
@@ -438,7 +436,7 @@ class GameCounter(commands.Cog):
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added/updated: Discord Role `{discord_role.name}` (`{role_id}`) -> Django Game `{django_game_name}`")
         log.info(f"Mapping added/updated: {discord_role.name} ({role_id}) -> {django_game_name} by {ctx.author}.")
-        self.counter_loop.restart()
+        self.count_and_update.restart()
 
     @gamecounter_settings.command(name="removemapping")
     @commands.is_owner()
@@ -458,7 +456,7 @@ class GameCounter(commands.Cog):
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping removed for Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
         log.info(f"Mapping removed for {discord_role_id} -> {django_game_name} by {ctx.author}.")
-        self.counter_loop.restart()
+        self.count_and_update.restart()
 
     @gamecounter_settings.command(name="listmappings")
     @commands.is_owner()
@@ -516,7 +514,7 @@ class GameCounter(commands.Cog):
         embed.add_field(name="Web API Key", value=web_api_key_masked, inline=True)
         
         # Add loop status
-        loop_status = "Running" if self.counter_loop.is_running() else "Stopped"
+        loop_status = "Running" if self.count_and_update.is_running() else "Stopped"
         embed.add_field(name="Counter Loop Status", value=loop_status, inline=False)
         
         # Add web server status
@@ -529,7 +527,7 @@ class GameCounter(commands.Cog):
     @commands.is_owner()
     async def start_counter(self, ctx: commands.Context):
         """Starts the game counter loop if it's not already running."""
-        if self.counter_loop.is_running():
+        if self.count_and_update.is_running():
             return await ctx.send("The counter loop is already running.")
         
         # Check if required settings are configured
@@ -552,7 +550,7 @@ class GameCounter(commands.Cog):
             return await ctx.send(f"Cannot start counter loop. Missing required settings: {humanize_list(missing_settings)}")
         
         try:
-            self.counter_loop.start()
+            self.count_and_update.start()
             await ctx.send("Game counter loop started successfully.")
         except Exception as e:
             await ctx.send(f"Error starting counter loop: {e}")
@@ -561,11 +559,11 @@ class GameCounter(commands.Cog):
     @commands.is_owner()
     async def stop_counter(self, ctx: commands.Context):
         """Stops the game counter loop if it's running."""
-        if not self.counter_loop.is_running():
+        if not self.count_and_update.is_running():
             return await ctx.send("The counter loop is not running.")
         
         try:
-            self.counter_loop.cancel()
+            self.count_and_update.cancel()
             await ctx.send("Game counter loop stopped successfully.")
         except Exception as e:
             await ctx.send(f"Error stopping counter loop: {e}")
