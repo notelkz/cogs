@@ -3,8 +3,7 @@ import asyncio
 import json
 import aiohttp
 import os
-from datetime import datetime, timedelta # Import timedelta for consistency with activitytracker
-
+from aiohttp import web
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.menus import DEFAULT_CONTROLS 
 from redbot.core.utils.chat_formatting import humanize_list 
@@ -25,36 +24,35 @@ class GameCounter(commands.Cog):
         self.bot = bot
         self.session = aiohttp.ClientSession()
         self.config = Config.get_conf(
-            self, identifier=123456789012345, force_registration=True # Ensure force_registration is True for dev
+            self, identifier=123456789012345, force_registration=True
         )
         self.config.register_global(
-            api_url=None, # Django API URL for game counts, e.g., https://zerolivesleft.net/api/update-game-counts/
-            api_key=None, # API Key for Django API
+            api_url=None,
+            api_key=None,
             interval=15,
-            guild_id=None, # The main guild to count roles in
-            game_role_mappings={}, # discord_role_id: django_game_name
-            web_api_host="0.0.0.0", # Host for this cog's internal web API
-            web_api_port=5001, # Port for this cog's internal web API
-            web_api_key=None, # API key for Django to authenticate with this cog's web API
-            activity_data={} # Deprecated by activitytracker, but keeping for now if used elsewhere
+            guild_id=None,
+            game_role_mappings={},
+            web_api_host="0.0.0.0",
+            web_api_port=5001,
+            web_api_key=None,
+            activity_data={}  # Store user activity data
         )
         
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
         
-        # Internal web API routes for Django to query THIS BOT
         self.web_app.router.add_get(
             "/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler
         )
         self.web_app.router.add_get(
             "/health", self.health_check_handler
         )
-        # Note: get_time_ranks_handler is now in ActivityTracker,
-        # but if you need a copy in GameCounter, ensure its logic matches.
-        # self.web_app.router.add_get(
-        #     "/api/get_time_ranks/", self.get_time_ranks_handler
-        # ) 
+        
+        # Add route for getting time ranks
+        self.web_app.router.add_get(
+            "/api/get_time_ranks/", self.get_time_ranks_handler
+        )
         
         # Initialize the counter_loop here but don't start it yet
         self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
@@ -79,20 +77,17 @@ class GameCounter(commands.Cog):
         self.web_site = None
 
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
-        # If activity_data is global, delete from global config
-        # If activity_data is per-guild, iterate guilds
-        activity_data = await self.config.activity_data() # Assuming activity_data is global config
+        activity_data = await self.config.activity_data()
         if str(user_id) in activity_data:
             del activity_data[str(user_id)]
             await self.config.activity_data.set(activity_data)
-        log.info(f"User data for {user_id} has been deleted.")
         return
 
     async def _authenticate_request(self, request: web.Request):
         """Authenticates incoming web API requests based on X-API-Key header."""
         expected_key = await self.config.web_api_key()
         if not expected_key:
-            log.warning("Web API key is not set in config, all requests will fail authentication for this cog's internal API.")
+            log.warning("Web API key is not set in config, all requests will fail authentication.")
             raise web.HTTPUnauthorized(reason="Web API Key not configured on RedBot.")
         
         provided_key = request.headers.get("X-API-Key")
@@ -106,12 +101,50 @@ class GameCounter(commands.Cog):
 
     async def health_check_handler(self, request: web.Request):
         """Simple health check endpoint for the web API."""
-        log.debug("Received health check request for GameCounter.")
+        log.debug("Received health check request.")
         return web.Response(text="OK", status=200)
 
-    # Note: Removed get_time_ranks_handler as it's typically in ActivityTracker now,
-    # or should fetch from Django's API rather than hardcoding.
-    # If you need it, add it back and ensure it fetches from Django.
+    async def get_time_ranks_handler(self, request: web.Request):
+        """Handler for the time ranks API endpoint."""
+        try:
+            await self._authenticate_request(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.warning(f"Authentication failed for /api/get_time_ranks/ endpoint: {e.reason}")
+            return e
+            
+        # Define military ranks with their requirements
+        military_ranks = [
+            {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},  # 10 hours
+            {"name": "Private First Class", "role_id": "1274274696048934965", "minutes_required": 25 * 60},  # 25 hours
+            {"name": "Corporal", "role_id": "1274771534119964813", "minutes_required": 50 * 60},  # 50 hours
+            {"name": "Specialist", "role_id": "1274771654907658402", "minutes_required": 75 * 60},  # 75 hours
+            {"name": "Sergeant", "role_id": "1274771991748022276", "minutes_required": 100 * 60},  # 100 hours
+            {"name": "Staff Sergeant", "role_id": "1274772130424164384", "minutes_required": 150 * 60},  # 150 hours
+            {"name": "Sergeant First Class", "role_id": "1274772191107485706", "minutes_required": 225 * 60},  # 225 hours
+            {"name": "Master Sergeant", "role_id": "1274772252545519708", "minutes_required": 300 * 60},  # 300 hours
+            {"name": "First Sergeant", "role_id": "1274772335689465978", "minutes_required": 375 * 60},  # 375 hours
+            {"name": "Sergeant Major", "role_id": "1274772419927605299", "minutes_required": 450 * 60},  # 450 hours
+            {"name": "Command Sergeant Major", "role_id": "1274772500164640830", "minutes_required": 550 * 60},  # 550 hours
+            {"name": "Sergeant Major of the Army", "role_id": "1274772595031539787", "minutes_required": 650 * 60},  # 650 hours
+            {"name": "Warrant Officer 1", "role_id": "1358212838631407797", "minutes_required": 750 * 60},  # 750 hours
+            {"name": "Chief Warrant Officer 2", "role_id": "1358213159583875172", "minutes_required": 875 * 60},  # 875 hours
+            {"name": "Chief Warrant Officer 3", "role_id": "1358213229112852721", "minutes_required": 1000 * 60},  # 1000 hours
+            {"name": "Chief Warrant Officer 4", "role_id": "1358213408704430150", "minutes_required": 1200 * 60},  # 1200 hours
+            {"name": "Chief Warrant Officer 5", "role_id": "1358213451289460847", "minutes_required": 1400 * 60},  # 1400 hours
+            {"name": "Second Lieutenant", "role_id": "1358213662216814784", "minutes_required": 1600 * 60},  # 1600 hours
+            {"name": "First Lieutenant", "role_id": "1358213759805554979", "minutes_required": 1850 * 60},  # 1850 hours
+            {"name": "Captain", "role_id": "1358213809466118276", "minutes_required": 2100 * 60},  # 2100 hours
+            {"name": "Major", "role_id": "1358213810598449163", "minutes_required": 2400 * 60},  # 2400 hours
+            {"name": "Lieutenant Colonel", "role_id": "1358213812175503430", "minutes_required": 2750 * 60},  # 2750 hours
+            {"name": "Colonel", "role_id": "1358213813140459520", "minutes_required": 3100 * 60},  # 3100 hours
+            {"name": "Brigadier General", "role_id": "1358213814234906786", "minutes_required": 3500 * 60},  # 3500 hours
+            {"name": "Major General", "role_id": "1358213815203795004", "minutes_required": 4000 * 60},  # 4000 hours
+            {"name": "Lieutenant General", "role_id": "1358213817229770783", "minutes_required": 4500 * 60},  # 4500 hours
+            {"name": "General", "role_id": "1358213815983935608", "minutes_required": 5000 * 60},  # 5000 hours
+            {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},  # 6000 hours
+        ]
+        
+        return web.json_response(military_ranks)
 
     async def get_role_members_handler(self, request: web.Request):
         """
@@ -154,6 +187,7 @@ class GameCounter(commands.Cog):
 
         members_with_status = []
         for member in role.members:
+            
             # Find the streaming activity, if it exists
             streaming_activity = next((a for a in member.activities if isinstance(a, discord.Streaming)), None)
             
@@ -175,124 +209,121 @@ class GameCounter(commands.Cog):
         log.debug(f"Returning {len(members_with_status)} members with status for role {role_id}.")
         return web.json_response(members_with_status)
 
-    # Removed check_military_rank as it's better handled in ActivityTracker
-    # and should fetch ranks from the website's TimeRank API
-    # async def check_military_rank(self, member, minutes):
-    #    pass 
-
-    # Removed update_member_activity as it's now handled by ActivityTracker
-    # async def update_member_activity(self, member, minutes_to_add=5):
-    #    pass
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        """Start the counter loop and web server when the bot is ready."""
-        # Ensure the bot has awaited until ready before trying to get config
-        await self.bot.wait_until_ready() 
-        
-        # Start the counter loop if it's not already running
-        if not self.counter_loop.is_running():
-            interval = await self.config.interval()
-            self.counter_loop.change_interval(minutes=interval)
-            self.counter_loop.start()
-            log.info(f"Started game counter loop with {interval} minute interval")
-        
-        # Start the web API server if it's not already running
-        if not self.web_runner:
-            host = await self.config.web_api_host()
-            port = await self.config.web_api_port()
-            try:
-                self.web_runner = web.AppRunner(self.web_app)
-                await self.web_runner.setup()
-                self.web_site = web.TCPSite(self.web_runner, host, port)
-                await self.web_site.start()
-                log.info(f"GameCounter web API server started on {host}:{port}")
-            except Exception as e:
-                log.error(f"Failed to start web API server: {e}")
-
-    @tasks.loop(minutes=5) # Decorator for the task
-    async def count_and_update(self):
-        """Periodically count users with specific roles and update the Django website."""
-        log.info("Running GameCounter count_and_update loop.")
+    async def check_military_rank(self, member, minutes):
+        """Check and assign military rank based on playtime."""
         try:
-            guild_id = await self.config.guild_id()
-            if not guild_id:
-                log.warning("Guild ID not set for GameCounter, skipping count_and_update.")
+            # Safety check for member object
+            if not member or not member.guild:
+                log.error(f"Invalid member object for military rank check")
                 return
+                
+            log.debug(f"Starting military rank check for {member.name} with {minutes} minutes ({minutes/60:.2f} hours)")
             
-            guild = self.bot.get_guild(guild_id)
-            if not guild:
-                log.error(f"GameCounter: Could not find guild with ID {guild_id}.")
+            # Define military ranks directly in the code with your actual role IDs
+            military_ranks = [
+                {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},  # 10 hours
+                {"name": "Private First Class", "role_id": "1274274696048934965", "minutes_required": 25 * 60},  # 25 hours
+                {"name": "Corporal", "role_id": "1274771534119964813", "minutes_required": 50 * 60},  # 50 hours
+                {"name": "Specialist", "role_id": "1274771654907658402", "minutes_required": 75 * 60},  # 75 hours
+                {"name": "Sergeant", "role_id": "1274771991748022276", "minutes_required": 100 * 60},  # 100 hours
+                {"name": "Staff Sergeant", "role_id": "1274772130424164384", "minutes_required": 150 * 60},  # 150 hours
+                {"name": "Sergeant First Class", "role_id": "1274772191107485706", "minutes_required": 225 * 60},  # 225 hours
+                {"name": "Master Sergeant", "role_id": "1274772252545519708", "minutes_required": 300 * 60},  # 300 hours
+                {"name": "First Sergeant", "role_id": "1274772335689465978", "minutes_required": 375 * 60},  # 375 hours
+                {"name": "Sergeant Major", "role_id": "1274772419927605299", "minutes_required": 450 * 60},  # 450 hours
+                {"name": "Command Sergeant Major", "role_id": "1274772500164640830", "minutes_required": 550 * 60},  # 550 hours
+                {"name": "Sergeant Major of the Army", "role_id": "1274772595031539787", "minutes_required": 650 * 60},  # 650 hours
+                {"name": "Warrant Officer 1", "role_id": "1358212838631407797", "minutes_required": 750 * 60},  # 750 hours
+                {"name": "Chief Warrant Officer 2", "role_id": "1358213159583875172", "minutes_required": 875 * 60},  # 875 hours
+                {"name": "Chief Warrant Officer 3", "role_id": "1358213229112852721", "minutes_required": 1000 * 60},  # 1000 hours
+                {"name": "Chief Warrant Officer 4", "role_id": "1358213408704430150", "minutes_required": 1200 * 60},  # 1200 hours
+                {"name": "Chief Warrant Officer 5", "role_id": "1358213451289460847", "minutes_required": 1400 * 60},  # 1400 hours
+                {"name": "Second Lieutenant", "role_id": "1358213662216814784", "minutes_required": 1600 * 60},  # 1600 hours
+                {"name": "First Lieutenant", "role_id": "1358213759805554979", "minutes_required": 1850 * 60},  # 1850 hours
+                {"name": "Captain", "role_id": "1358213809466118276", "minutes_required": 2100 * 60},  # 2100 hours
+                {"name": "Major", "role_id": "1358213810598449163", "minutes_required": 2400 * 60},  # 2400 hours
+                {"name": "Lieutenant Colonel", "role_id": "1358213812175503430", "minutes_required": 2750 * 60},  # 2750 hours
+                {"name": "Colonel", "role_id": "1358213813140459520", "minutes_required": 3100 * 60},  # 3100 hours
+                {"name": "Brigadier General", "role_id": "1358213814234906786", "minutes_required": 3500 * 60},  # 3500 hours
+                {"name": "Major General", "role_id": "1358213815203795004", "minutes_required": 4000 * 60},  # 4000 hours
+                {"name": "Lieutenant General", "role_id": "1358213817229770783", "minutes_required": 4500 * 60},  # 4500 hours
+                {"name": "General", "role_id": "1358213815983935608", "minutes_required": 5000 * 60},  # 5000 hours
+                {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},  # 6000 hours
+            ]
+            
+            # Find the highest rank the user qualifies for
+            eligible_rank = None
+            for rank in military_ranks:
+                if minutes >= rank["minutes_required"]:
+                    if not eligible_rank or rank["minutes_required"] > eligible_rank["minutes_required"]:
+                        eligible_rank = rank
+                        
+            if not eligible_rank:
+                log.debug(f"User {member.name} does not qualify for any military rank")
                 return
+                
+            log.debug(f"User {member.name} qualifies for military rank: {eligible_rank['name']} with {minutes} minutes ({minutes/60:.2f} hours)")
             
-            # Ensure guild members are cached (for role.members)
-            if not guild.chunked:
-                log.debug(f"GameCounter: Chunking guild {guild.id} for role counting.")
-                try:
-                    await guild.chunk()
-                except discord.Forbidden:
-                    log.error(f"GameCounter: Bot lacks permissions to chunk guild {guild.id}. Enable Server Members Intent.")
-                    return
-                except Exception as e:
-                    log.error(f"GameCounter: Error chunking guild {guild.id}: {e}")
-                    return
-            
-            mappings = await self.config.game_role_mappings()
-            if not mappings:
-                log.warning("No role-to-game mappings configured for GameCounter, skipping update.")
+            # Check if the user already has this rank
+            role = member.guild.get_role(int(eligible_rank["role_id"]))
+            if not role:
+                log.error(f"Role with ID {eligible_rank['role_id']} not found in guild {member.guild.name}")
                 return
-            
-            game_counts = {}
-            
-            # First, count users in each game role
-            for role_id_str, game_name in mappings.items():
-                try:
-                    role_id = int(role_id_str)
-                    role = guild.get_role(role_id)
-                    if not role:
-                        log.warning(f"GameCounter: Could not find role with ID {role_id} for game '{game_name}'.")
-                        continue
+                
+            if role in member.roles:
+                log.debug(f"User {member.name} already has the {eligible_rank['name']} rank")
+                return
+                
+            # Remove any existing military ranks
+            for rank in military_ranks:
+                existing_role = member.guild.get_role(int(rank["role_id"]))
+                if existing_role and existing_role in member.roles:
+                    await member.remove_roles(existing_role)
+                    log.debug(f"Removed {rank['name']} role from {member.name}")
                     
-                    member_count = len(role.members) # This relies on Server Members Intent
-                    game_counts[game_name] = member_count
-                    
-                    log.debug(f"GameCounter: Counted {member_count} users with role '{role.name}' for game '{game_name}'")
-                except Exception as e:
-                    log.error(f"GameCounter: Error counting role {role_id_str} for game {game_name}: {e}")
+            # Add the new rank
+            await member.add_roles(role)
+            log.info(f"MILITARY SUCCESS: Assigned {eligible_rank['name']} rank to {member.name}")
             
-            # Send the counts to the Django API
-            api_url = await self.config.api_url()
-            api_key = await self.config.api_key()
-            
-            if not api_url or not api_key:
-                log.warning("GameCounter: Django API URL or API Key not set, skipping API update.")
-                return
-            
-            # FIX: Use the specific endpoint for update_game_counts
-            # Assuming api_url is the base like 'https://zerolivesleft.net/api/'
-            endpoint = f"{api_url}update-game-counts/" # Corrected to use dash
-            headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-            payload = {"game_counts": game_counts}
-            
-            log.info(f"GameCounter: Sending game counts to {endpoint} with payload: {payload}")
-            
-            async with self.session.post(endpoint, json=payload, headers=headers, timeout=10) as response:
-                log.info(f"GameCounter: API response status: {response.status}")
-                if response.status == 200:
-                    response_data = await response.json()
-                    log.info(f"GameCounter: Successfully sent game counts to API: {response_data}")
-                else:
-                    error_text = await response.text()
-                    log.error(f"GameCounter: Failed to send game counts to API. Status: {response.status}, Response: {error_text}")
-                    
-        except asyncio.TimeoutError:
-            log.error("GameCounter: API request timed out during count_and_update.")
-        except aiohttp.ClientError as e:
-            log.error(f"GameCounter: HTTP client error during count_and_update: {e}")
+            # Notify the website about the role change
+            try:
+                api_url = "http://87.106.44.164:5001/api/update_role/"
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(api_url, json={
+                        "user_id": str(member.id),
+                        "role_name": eligible_rank["name"],
+                        "api_key": os.getenv("WEBSITE_API_KEY", "")
+                    }) as response:
+                        if response.status != 200:
+                            log.error(f"API ERROR: Failed to update military rank on website for {member.id}: {response.status} - {await response.text()}")
+            except Exception as e:
+                log.error(f"API ERROR: Failed to update military rank on website for {member.id}: {str(e)}")
+                
         except Exception as e:
-            log.exception(f"GameCounter: Unhandled error in count_and_update loop: {e}")
+            log.error(f"MILITARY ERROR: Failed to check/assign military rank for {member.name}: {str(e)}")
 
-    # --- ADMIN/CONFIG COMMANDS for GameCounter ---
+    async def update_member_activity(self, member, minutes_to_add=5):
+        """Update a member's activity time and check for promotions."""
+        if not member or member.bot:
+            return
+            
+        activity_data = await self.config.activity_data()
+        user_id = str(member.id)
+        
+        if user_id not in activity_data:
+            activity_data[user_id] = {"minutes": 0, "last_updated": 0}
+            
+        # Add activity time
+        activity_data[user_id]["minutes"] += minutes_to_add
+        activity_data[user_id]["last_updated"] = int(asyncio.get_event_loop().time())
+        
+        total_minutes = activity_data[user_id]["minutes"]
+        await self.config.activity_data.set(activity_data)
+        
+        log.debug(f"Updated activity for {member.name}: {total_minutes} minutes total")
+        
+        # Check for military rank promotion
+        await self.check_military_rank(member, total_minutes)
 
     @commands.hybrid_group(name="gamecounter", aliases=["gc"])
     async def gamecounter_settings(self, ctx: commands.Context):
@@ -350,16 +381,13 @@ class GameCounter(commands.Cog):
 
     @gamecounter_settings.command(name="setapiurl")
     @commands.is_owner()
-    @app_commands.describe(url="The Django API URL for sending game counts (e.g., https://your.site.com/api/update-game-counts/).")
+    @app_commands.describe(url="The Django API endpoint URL (e.g., http://your.site:8000/api/update_game_counts/)")
     async def set_api_url(self, ctx: commands.Context, url: str):
-        """Sets the Django API URL for sending game counts."""
-        if not url.startswith("http://") and not url.startswith("https://"):
+        """Sets the Django API endpoint URL."""
+        if not url.startswith("http"):
             return await ctx.send("Please provide a valid URL starting with `http://` or `https://`.")
-        # Ensure trailing slash for consistent path joining IF IT'S A BASE URL
-        # For this specific endpoint, it should be the full URL, so no trailing slash enforce
         await self.config.api_url.set(url)
         await ctx.send(f"Django API URL set to: `{url}`")
-        log.info(f"Django API URL set to {url} by {ctx.author}.")
 
     @gamecounter_settings.command(name="setapikey")
     @commands.is_owner()
@@ -368,7 +396,6 @@ class GameCounter(commands.Cog):
         """Sets the secret API key for your Django endpoint."""
         await self.config.api_key.set(key)
         await ctx.send("Django API Key has been set.")
-        log.info(f"Django API Key set by {ctx.author}.")
 
     @gamecounter_settings.command(name="setinterval")
     @commands.is_owner()
@@ -383,7 +410,6 @@ class GameCounter(commands.Cog):
         else:
             self.counter_loop.start()
         await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
-        log.info(f"Counter interval set to {minutes} minutes by {ctx.author}. Loop restarted.")
 
     @gamecounter_settings.command(name="setguild")
     @commands.is_owner()
@@ -399,13 +425,9 @@ class GameCounter(commands.Cog):
         if view.result:
             await self.config.guild_id.set(guild_id)
             await ctx.send(f"Counting guild set to **{guild.name}** (`{guild.id}`).")
-            log.info(f"Counting guild set to {guild.name} ({guild.id}) by {ctx.author}.")
-            # Restart loop to apply new guild_id if already running
-            if self.counter_loop.is_running():
-                self.counter_loop.restart()
+            self.counter_loop.restart()
         else:
             await ctx.send("Guild setting cancelled.")
-            log.info(f"Guild setting cancelled by {ctx.author}.")
 
     @gamecounter_settings.command(name="addmapping")
     @commands.is_owner()
@@ -422,8 +444,7 @@ class GameCounter(commands.Cog):
         current_mappings[str(discord_role_id)] = django_game_name
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added/updated: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
-        log.info(f"Mapping added/updated: {discord_role_id} -> {django_game_name} by {ctx.author}.")
-        self.counter_loop.restart() # Restart to apply new mapping
+        self.counter_loop.restart()
 
     @gamecounter_settings.command(name="addmappingbyname")
     @commands.is_owner()
@@ -456,7 +477,6 @@ class GameCounter(commands.Cog):
         current_mappings[str(role_id)] = django_game_name
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added/updated: Discord Role `{discord_role.name}` (`{role_id}`) -> Django Game `{django_game_name}`")
-        log.info(f"Mapping added/updated: {discord_role.name} ({role_id}) -> {django_game_name} by {ctx.author}.")
         self.counter_loop.restart()
 
     @gamecounter_settings.command(name="removemapping")
@@ -476,7 +496,6 @@ class GameCounter(commands.Cog):
         del current_mappings[str(discord_role_id)]
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping removed for Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
-        log.info(f"Mapping removed for {discord_role_id} -> {django_game_name} by {ctx.author}.")
         self.counter_loop.restart()
 
     @gamecounter_settings.command(name="listmappings")
@@ -670,34 +689,34 @@ class GameCounter(commands.Cog):
         
         # Find the user's current military rank
         military_ranks = [
-            {"name": "Private", "role_id": 1274274605435060224, "minutes_required": 10 * 60},  # 10 hours
-            {"name": "Private First Class", "role_id": 1274274696048934965, "minutes_required": 25 * 60},  # 25 hours
-            {"name": "Corporal", "role_id": 1274771534119964813, "minutes_required": 50 * 60},  # 50 hours
-            {"name": "Specialist", "role_id": 1274771654907658402, "minutes_required": 75 * 60},  # 75 hours
-            {"name": "Sergeant", "role_id": 1274771991748022276, "minutes_required": 100 * 60},  # 100 hours
-            {"name": "Staff Sergeant", "role_id": 1274772130424164384, "minutes_required": 150 * 60},  # 150 hours
-            {"name": "Sergeant First Class", "role_id": 1274772191107485706, "minutes_required": 225 * 60},  # 225 hours
-            {"name": "Master Sergeant", "role_id": 1274772252545519708, "minutes_required": 300 * 60},  # 300 hours
-            {"name": "First Sergeant", "role_id": 1274772335689465978, "minutes_required": 375 * 60},  # 375 hours
-            {"name": "Sergeant Major", "role_id": 1274772419927605299, "minutes_required": 450 * 60},  # 450 hours
-            {"name": "Command Sergeant Major", "role_id": 1274772500164640830, "minutes_required": 550 * 60},  # 550 hours
-            {"name": "Sergeant Major of the Army", "role_id": 1274772595031539787, "minutes_required": 650 * 60},  # 650 hours
-            {"name": "Warrant Officer 1", "role_id": 1358212838631407797, "minutes_required": 750 * 60},  # 750 hours
-            {"name": "Chief Warrant Officer 2", "role_id": 1358213159583875172, "minutes_required": 875 * 60},  # 875 hours
-            {"name": "Chief Warrant Officer 3", "role_id": 1358213229112852721, "minutes_required": 1000 * 60},  # 1000 hours
-            {"name": "Chief Warrant Officer 4", "role_id": 1358213408704430150, "minutes_required": 1200 * 60},  # 1200 hours
-            {"name": "Chief Warrant Officer 5", "role_id": 1358213451289460847, "minutes_required": 1400 * 60},  # 1400 hours
-            {"name": "Second Lieutenant", "role_id": 1358213662216814784, "minutes_required": 1600 * 60},  # 1600 hours
-            {"name": "First Lieutenant", "role_id": 1358213759805554979, "minutes_required": 1850 * 60},  # 1850 hours
-            {"name": "Captain", "role_id": 1358213809466118276, "minutes_required": 2100 * 60},  # 2100 hours
-            {"name": "Major", "role_id": 1358213810598449163, "minutes_required": 2400 * 60},  # 2400 hours
-            {"name": "Lieutenant Colonel", "role_id": 1358213812175503430, "minutes_required": 2750 * 60},  # 2750 hours
-            {"name": "Colonel", "role_id": 1358213813140459520, "minutes_required": 3100 * 60},  # 3100 hours
-            {"name": "Brigadier General", "role_id": 1358213814234906786, "minutes_required": 3500 * 60},  # 3500 hours
-            {"name": "Major General", "role_id": 1358213815203795004, "minutes_required": 4000 * 60},  # 4000 hours
-            {"name": "Lieutenant General", "role_id": 1358213817229770783, "minutes_required": 4500 * 60},  # 4500 hours
-            {"name": "General", "role_id": 1358213815983935608, "minutes_required": 5000 * 60},  # 5000 hours
-            {"name": "General of the Army", "role_id": 1358213816617275483, "minutes_required": 6000 * 60},  # 6000 hours
+            {"name": "Private", "role_id": 1274274605435060224, "minutes_required": 10 * 60},
+            {"name": "Private First Class", "role_id": 1274274696048934965, "minutes_required": 25 * 60},
+            {"name": "Corporal", "role_id": 1274771534119964813, "minutes_required": 50 * 60},
+            {"name": "Specialist", "role_id": 1274771654907658402, "minutes_required": 75 * 60},
+            {"name": "Sergeant", "role_id": 1274771991748022276, "minutes_required": 100 * 60},
+            {"name": "Staff Sergeant", "role_id": 1274772130424164384, "minutes_required": 150 * 60},
+            {"name": "Sergeant First Class", "role_id": 1274772191107485706, "minutes_required": 225 * 60},
+            {"name": "Master Sergeant", "role_id": 1274772252545519708, "minutes_required": 300 * 60},
+            {"name": "First Sergeant", "role_id": 1274772335689465978, "minutes_required": 375 * 60},
+            {"name": "Sergeant Major", "role_id": 1274772419927605299, "minutes_required": 450 * 60},
+            {"name": "Command Sergeant Major", "role_id": 1274772500164640830, "minutes_required": 550 * 60},
+            {"name": "Sergeant Major of the Army", "role_id": 1274772595031539787, "minutes_required": 650 * 60},
+            {"name": "Warrant Officer 1", "role_id": 1358212838631407797, "minutes_required": 750 * 60},
+            {"name": "Chief Warrant Officer 2", "role_id": 1358213159583875172, "minutes_required": 875 * 60},
+            {"name": "Chief Warrant Officer 3", "role_id": 1358213229112852721, "minutes_required": 1000 * 60},
+            {"name": "Chief Warrant Officer 4", "role_id": 1358213408704430150, "minutes_required": 1200 * 60},
+            {"name": "Chief Warrant Officer 5", "role_id": 1358213451289460847, "minutes_required": 1400 * 60},
+            {"name": "Second Lieutenant", "role_id": 1358213662216814784, "minutes_required": 1600 * 60},
+            {"name": "First Lieutenant", "role_id": 1358213759805554979, "minutes_required": 1850 * 60},
+            {"name": "Captain", "role_id": 1358213809466118276, "minutes_required": 2100 * 60},
+            {"name": "Major", "role_id": 1358213810598449163, "minutes_required": 2400 * 60},
+            {"name": "Lieutenant Colonel", "role_id": 1358213812175503430, "minutes_required": 2750 * 60},
+            {"name": "Colonel", "role_id": 1358213813140459520, "minutes_required": 3100 * 60},
+            {"name": "Brigadier General", "role_id": 1358213814234906786, "minutes_required": 3500 * 60},
+            {"name": "Major General", "role_id": 1358213815203795004, "minutes_required": 4000 * 60},
+            {"name": "Lieutenant General", "role_id": 1358213817229770783, "minutes_required": 4500 * 60},
+            {"name": "General", "role_id": 1358213815983935608, "minutes_required": 5000 * 60},
+            {"name": "General of the Army", "role_id": 1358213816617275483, "minutes_required": 6000 * 60},
         ]
         
         current_rank = None
