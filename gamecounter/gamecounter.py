@@ -1,6 +1,7 @@
 import discord
 import asyncio
 import json
+from aiohttp.web import Request
 import aiohttp
 import os
 from datetime import datetime, timedelta # Import timedelta for consistency with activitytracker
