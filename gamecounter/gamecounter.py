@@ -4,7 +4,7 @@ import json
 from aiohttp.web import Request
 import aiohttp
 import os
-from datetime import datetime, timedelta # Import timedelta for consistency with activitytracker
+from datetime import datetime, timedelta
 
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.menus import DEFAULT_CONTROLS 
@@ -26,7 +26,7 @@ class GameCounter(commands.Cog):
         self.bot = bot
         self.session = aiohttp.ClientSession()
         self.config = Config.get_conf(
-            self, identifier=123456789012345, force_registration=True # Ensure force_registration is True for dev
+            self, identifier=123456789012345, force_registration=True
         )
         self.config.register_global(
             api_url=None, # Django API URL for game counts, e.g., https://zerolivesleft.net/api/update-game-counts/
@@ -37,27 +37,20 @@ class GameCounter(commands.Cog):
             web_api_host="0.0.0.0", # Host for this cog's internal web API
             web_api_port=5001, # Port for this cog's internal web API
             web_api_key=None, # API key for Django to authenticate with this cog's web API
-            activity_data={} # Deprecated by activitytracker, but keeping for now if used elsewhere
+            activity_data={} 
         )
         
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
         
-        # Internal web API routes for Django to query THIS BOT
         self.web_app.router.add_get(
             "/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler
         )
         self.web_app.router.add_get(
             "/health", self.health_check_handler
         )
-        # Note: get_time_ranks_handler is now in ActivityTracker,
-        # but if you need a copy in GameCounter, ensure its logic matches.
-        # self.web_app.router.add_get(
-        #     "/api/get_time_ranks/", self.get_time_ranks_handler
-        # ) 
         
-        # Initialize the counter_loop here but don't start it yet
         self.counter_loop = tasks.loop(minutes=5)(self.count_and_update)
 
     def cog_unload(self):
@@ -80,9 +73,7 @@ class GameCounter(commands.Cog):
         self.web_site = None
 
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
-        # If activity_data is global, delete from global config
-        # If activity_data is per-guild, iterate guilds
-        activity_data = await self.config.activity_data() # Assuming activity_data is global config
+        activity_data = await self.config.activity_data()
         if str(user_id) in activity_data:
             del activity_data[str(user_id)]
             await self.config.activity_data.set(activity_data)
@@ -109,10 +100,6 @@ class GameCounter(commands.Cog):
         """Simple health check endpoint for the web API."""
         log.debug("Received health check request for GameCounter.")
         return web.Response(text="OK", status=200)
-
-    # Note: Removed get_time_ranks_handler as it's typically in ActivityTracker now,
-    # or should fetch from Django's API rather than hardcoding.
-    # If you need it, add it back and ensure it fetches from Django.
 
     async def get_role_members_handler(self, request: web.Request):
         """
@@ -155,11 +142,9 @@ class GameCounter(commands.Cog):
 
         members_with_status = []
         for member in role.members:
-            # Find the streaming activity, if it exists
             streaming_activity = next((a for a in member.activities if isinstance(a, discord.Streaming)), None)
             
             is_live = streaming_activity is not None
-            # Use the real Twitch URL if available, otherwise fall back to guessing from their username
             twitch_url = streaming_activity.url if is_live else f"https://www.twitch.tv/{member.name}"
 
             member_data = {
@@ -176,29 +161,24 @@ class GameCounter(commands.Cog):
         log.debug(f"Returning {len(members_with_status)} members with status for role {role_id}.")
         return web.json_response(members_with_status)
 
-    # Removed check_military_rank as it's better handled in ActivityTracker
-    # and should fetch ranks from the website's TimeRank API
-    # async def check_military_rank(self, member, minutes):
-    #    pass 
+    async def check_military_rank(self, member, minutes):
+        log.warning("GameCounter: check_military_rank called. This logic should be in ActivityTracker.")
+        return # Do not execute this logic, as ActivityTracker handles it
 
-    # Removed update_member_activity as it's now handled by ActivityTracker
-    # async def update_member_activity(self, member, minutes_to_add=5):
-    #    pass
+    async def update_member_activity(self, member, minutes_to_add=5):
+        log.warning("GameCounter: update_member_activity called. This logic should be in ActivityTracker.")
+        return
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Start the counter loop and web server when the bot is ready."""
-        # Ensure the bot has awaited until ready before trying to get config
         await self.bot.wait_until_ready() 
         
-        # Start the counter loop if it's not already running
         if not self.counter_loop.is_running():
             interval = await self.config.interval()
             self.counter_loop.change_interval(minutes=interval)
             self.counter_loop.start()
             log.info(f"Started game counter loop with {interval} minute interval")
         
-        # Start the web API server if it's not already running
         if not self.web_runner:
             host = await self.config.web_api_host()
             port = await self.config.web_api_port()
@@ -211,14 +191,13 @@ class GameCounter(commands.Cog):
             except Exception as e:
                 log.error(f"Failed to start web API server: {e}")
 
-    @tasks.loop(minutes=5) # Decorator for the task
+    @tasks.loop(minutes=5)
     async def count_and_update(self):
-        """Periodically count users with specific roles and update the Django website."""
         log.info("Running GameCounter count_and_update loop.")
         try:
             guild_id = await self.config.guild_id()
             if not guild_id:
-                log.warning("Guild ID not set for GameCounter, skipping count_and_update.")
+                log.warning("GameCounter: Guild ID not set, skipping count_and_update.")
                 return
             
             guild = self.bot.get_guild(guild_id)
@@ -226,7 +205,6 @@ class GameCounter(commands.Cog):
                 log.error(f"GameCounter: Could not find guild with ID {guild_id}.")
                 return
             
-            # Ensure guild members are cached (for role.members)
             if not guild.chunked:
                 log.debug(f"GameCounter: Chunking guild {guild.id} for role counting.")
                 try:
@@ -245,7 +223,6 @@ class GameCounter(commands.Cog):
             
             game_counts = {}
             
-            # First, count users in each game role
             for role_id_str, game_name in mappings.items():
                 try:
                     role_id = int(role_id_str)
@@ -254,44 +231,43 @@ class GameCounter(commands.Cog):
                         log.warning(f"GameCounter: Could not find role with ID {role_id} for game '{game_name}'.")
                         continue
                     
-                    member_count = len(role.members) # This relies on Server Members Intent
+                    member_count = len(role.members)
                     game_counts[game_name] = member_count
                     
                     log.debug(f"GameCounter: Counted {member_count} users with role '{role.name}' for game '{game_name}'")
                 except Exception as e:
-                    log.error(f"GameCounter: Error counting role {role_id_str} for game {game_name}: {e}")
+                    log.error(f"GameCounter: Error counting role {role_id_str}: {e}")
             
-            # Send the counts to the Django API
-            api_url = await self.config.api_url()
+            api_url = await self.config.api_url() # This should be the full Django endpoint for game counts
             api_key = await self.config.api_key()
             
             if not api_url or not api_key:
                 log.warning("GameCounter: Django API URL or API Key not set, skipping API update.")
                 return
             
-            # FIX: Use the specific endpoint for update_game_counts
-            # Assuming api_url is the base like 'https://zerolivesleft.net/api/'
-            endpoint = f"{api_url}update-game-counts/" # Corrected to use dash
+            # FIX: Use X-API-Key header for authentication, not Authorization: Token
             headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
             payload = {"game_counts": game_counts}
             
-            log.info(f"GameCounter: Sending game counts to {endpoint} with payload: {payload}")
+            log.info(f"GameCounter: Sending game counts to {api_url} with payload: {payload}")
             
-            async with self.session.post(endpoint, json=payload, headers=headers, timeout=10) as response:
-                log.info(f"GameCounter: API response status: {response.status}")
-                if response.status == 200:
-                    response_data = await response.json()
-                    log.info(f"GameCounter: Successfully sent game counts to API: {response_data}")
-                else:
-                    error_text = await response.text()
-                    log.error(f"GameCounter: Failed to send game counts to API. Status: {response.status}, Response: {error_text}")
-                    
-        except asyncio.TimeoutError:
-            log.error("GameCounter: API request timed out during count_and_update.")
-        except aiohttp.ClientError as e:
-            log.error(f"GameCounter: HTTP client error during count_and_update: {e}")
-        except Exception as e:
-            log.exception(f"GameCounter: Unhandled error in count_and_update loop: {e}")
+            # FIX: Ensure aiohttp makes HTTPS call if URL is HTTPS, and handles errors explicitly
+            try:
+                async with self.session.post(api_url, json=payload, headers=headers, timeout=10) as response:
+                    log.info(f"GameCounter: API response status: {response.status}")
+                    if response.status == 200:
+                        response_data = await response.json()
+                        log.info(f"GameCounter: Successfully sent game counts to API: {response_data}")
+                    else:
+                        error_text = await response.text()
+                        log.error(f"GameCounter: Failed to send game counts to API. Status: {response.status}, Response: {error_text}")
+            except asyncio.TimeoutError:
+                log.error("GameCounter: API request timed out during count_and_update.")
+            except aiohttp.ClientError as e:
+                log.error(f"GameCounter: HTTP client error during count_and_update: {e}. Check URL and server accessibility.")
+                # This could be connection refused, SSL errors, etc.
+            except Exception as e:
+                log.exception(f"GameCounter: Unhandled error in count_and_update loop: {e}")
 
     # --- ADMIN/CONFIG COMMANDS for GameCounter ---
 
@@ -356,8 +332,8 @@ class GameCounter(commands.Cog):
         """Sets the Django API URL for sending game counts."""
         if not url.startswith("http://") and not url.startswith("https://"):
             return await ctx.send("Please provide a valid URL starting with `http://` or `https://`.")
-        # Ensure trailing slash for consistent path joining IF IT'S A BASE URL
-        # For this specific endpoint, it should be the full URL, so no trailing slash enforce
+        # This API URL is expected to be the FULL endpoint for update-game-counts,
+        # not a base URL. So, no trailing slash enforcement is needed here.
         await self.config.api_url.set(url)
         await ctx.send(f"Django API URL set to: `{url}`")
         log.info(f"Django API URL set to {url} by {ctx.author}.")
@@ -401,7 +377,6 @@ class GameCounter(commands.Cog):
             await self.config.guild_id.set(guild_id)
             await ctx.send(f"Counting guild set to **{guild.name}** (`{guild.id}`).")
             log.info(f"Counting guild set to {guild.name} ({guild.id}) by {ctx.author}.")
-            # Restart loop to apply new guild_id if already running
             if self.counter_loop.is_running():
                 self.counter_loop.restart()
         else:
@@ -424,7 +399,7 @@ class GameCounter(commands.Cog):
         await self.config.game_role_mappings.set(current_mappings)
         await ctx.send(f"Mapping added/updated: Discord Role ID `{discord_role_id}` -> Django Game `{django_game_name}`")
         log.info(f"Mapping added/updated: {discord_role_id} -> {django_game_name} by {ctx.author}.")
-        self.counter_loop.restart() # Restart to apply new mapping
+        self.counter_loop.restart()
 
     @gamecounter_settings.command(name="addmappingbyname")
     @commands.is_owner()
@@ -746,6 +721,9 @@ class GameCounter(commands.Cog):
                 log.debug(f"Chunking guild {guild.id} for role counting.")
                 try:
                     await guild.chunk()
+                except discord.Forbidden:
+                    log.error(f"Bot lacks permissions to chunk guild {guild.id}. Enable Server Members Intent.")
+                    return
                 except Exception as e:
                     log.error(f"Error chunking guild {guild.id}: {e}")
                     return
@@ -756,9 +734,7 @@ class GameCounter(commands.Cog):
                 return
             
             game_counts = {}
-            active_users = set()
             
-            # First, count users in each game role
             for role_id_str, game_name in mappings.items():
                 try:
                     role_id = int(role_id_str)
@@ -767,40 +743,34 @@ class GameCounter(commands.Cog):
                         log.warning(f"Could not find role with ID {role_id} in guild {guild.name}.")
                         continue
                     
-                    # Count members with this role
                     member_count = len(role.members)
                     game_counts[game_name] = member_count
                     
-                    # Track active users for activity updates
-                    for member in role.members:
-                        if not member.bot:
-                            active_users.add(member)
-                            
                     log.debug(f"Counted {member_count} users with role '{role.name}' for game '{game_name}'")
                 except Exception as e:
                     log.error(f"Error counting role {role_id_str}: {e}")
             
-            # Update activity for all active users
-            for member in active_users:
-                await self.update_member_activity(member)
-            
-            # Send the counts to the Django API
-            api_url = await self.config.api_url()
+            api_url = await self.config.api_url() # This is the Django API URL for sending game counts
             api_key = await self.config.api_key()
             
             if not api_url or not api_key:
                 log.warning("API URL or API Key not set, skipping API update.")
                 return
             
-            headers = {"Authorization": f"Token {api_key}"}
-            async with self.session.post(api_url, json=game_counts, headers=headers) as response:
+            headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+            async with self.session.post(api_url, json=game_counts, headers=headers, timeout=10) as response:
                 if response.status == 200:
                     log.info(f"Successfully sent game counts to API: {game_counts}")
                 else:
-                    log.error(f"Failed to send game counts to API. Status: {response.status}, Response: {await response.text()}")
+                    error_text = await response.text()
+                    log.error(f"Failed to send game counts to API. Status: {response.status}, Response: {error_text}")
                     
+        except asyncio.TimeoutError:
+            log.error("API request timed out during count_and_update.")
+        except aiohttp.ClientError as e:
+            log.error(f"HTTP client error during count_and_update: {e}")
         except Exception as e:
-            log.error(f"Error in count_and_update: {e}")
+            log.exception(f"Unhandled error in count_and_update loop: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
