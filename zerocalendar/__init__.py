@@ -1,6 +1,3 @@
-# zerocalendar/__init__.py
+# __init__.py (inside the zerocalendar directory)
 
-from .zerocalendar import ZeroCalendar
-
-def setup(bot):
-    bot.add_cog(ZeroCalendar(bot))
+from .zerocalendar import setup
