@@ -1,4 +1,4 @@
-def setup(bot):
-    # Import the class directly inside the setup function
-    from zerocalendar.zerocalendar import ZeroCalendar
-    bot.add_cog(ZeroCalendar(bot))
+from .zerocalendar import ZeroCalendar
+
+async def setup(bot):
+    await bot.add_cog(ZeroCalendar(bot))
