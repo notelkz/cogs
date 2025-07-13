@@ -5,7 +5,7 @@ import logging
 import datetime
 from discord.ext import commands, tasks
 from typing import Optional, Dict, List, Any
-from redbot.core import Config
+from redbot.core import Config, checks
 
 log = logging.getLogger("red.zerocogs.zerocalendar")
 
@@ -213,7 +213,7 @@ class ZeroCalendar(commands.Cog):
     
     @commands.group(name="calendar")
     @commands.guild_only()
-    @commands.admin_or_permissions(manage_guild=True)
+    @checks.admin_or_permissions(manage_guild=True)
     async def calendar(self, ctx):
         """Calendar management commands"""
         if ctx.invoked_subcommand is None:
