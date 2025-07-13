@@ -3,7 +3,7 @@ import asyncio
 import aiohttp
 import os
 import json
-from datetime import datetime, timedelta # Import timedelta
+from datetime import datetime, timedelta
 
 from redbot.core import commands, Config
 from aiohttp import web
@@ -28,10 +28,11 @@ class ActivityTracker(commands.Cog):
             "recruit_role_id": None,
             "member_role_id": None,
             "promotion_threshold_hours": 24.0,
-            "military_ranks": [],  # list of dicts: {name, discord_role_id, required_hours, role_order (optional)}
+            "military_ranks": [],  # list of dicts: {name, discord_role_id, required_hours}
             "api_url": None, # Base URL for Django API, e.g., https://zerolivesleft.net/api/
             "api_key": None,
-            # promotion_update_url and military_rank_update_url are now optional, constructed from api_url if not set
+            "promotion_update_url": None, # Optional: if not set, constructed from api_url
+            "military_rank_update_url": None,  # Optional: if not set, constructed from api_url
             "promotion_channel_id": None,
         }
         self.config.register_guild(**default_guild)
@@ -261,10 +262,12 @@ class ActivityTracker(commands.Cog):
             log.info(f"Updated voice minutes for {member.name}: added {minutes_to_add}, new total: {user_activity[uid]}")
         
         # After updating internal tracking, send to Django
-        asyncio.create_task(self._update_website_activity(guild, member, minutes_to_add))
+        # FIX: Send the *NEW TOTAL* to Django's API
+        total_minutes_for_website = await self._get_user_voice_minutes(guild, member.id) # Get the latest total
+        asyncio.create_task(self._update_website_activity(guild, member, total_minutes_for_website))
         
         # Check for promotion based on updated minutes
-        total_minutes = await self._get_user_voice_minutes(guild, member.id)
+        total_minutes = await self._get_user_voice_minutes(guild, member.id) # Re-fetch or use total_minutes_for_website
         await self._check_for_promotion(guild, member, total_minutes)
 
     async def _get_user_voice_minutes(self, guild, user_id):
@@ -281,13 +284,13 @@ class ActivityTracker(commands.Cog):
 
     # --- DJANGO SYNC (API Calls OUT to Django) ---
 
-    async def _update_website_activity(self, guild, member, minutes_to_add):
-        """Sends activity updates to the Django website."""
+    async def _update_website_activity(self, guild, member, total_minutes_to_send): # Renamed arg for clarity
+        """Sends *total* activity updates to the Django website."""
         guild_settings = await self.config.guild(guild).all()
         api_url = guild_settings.get("api_url")
         api_key = guild_settings.get("api_key")
         
-        log.info(f"Attempting to update website activity for {member.name} ({member.id}): {minutes_to_add} minutes")
+        log.info(f"Attempting to update website activity for {member.name} ({member.id}): {total_minutes_to_send} total minutes")
         log.info(f"API URL: {api_url}, API Key set: {'Yes' if api_key else 'No'}")
         
         if not api_url or not api_key: 
@@ -297,7 +300,9 @@ class ActivityTracker(commands.Cog):
         # Construct the endpoint with dashes, assuming api_url is the base like 'https://zerolivesleft.net/api/'
         endpoint = f"{api_url}update-activity/" # Fixed: removed redundant '/api/' and used dash
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-        payload = {"discord_id": str(member.id), "voice_minutes": minutes_to_add}
+        # FIX: Send the total minutes
+        payload = {"discord_id": str(member.id), "voice_minutes": total_minutes_to_send}
+        # --- END FIX ---
         
         log.info(f"Sending request to {endpoint} with payload: {payload}")
         
@@ -308,7 +313,7 @@ class ActivityTracker(commands.Cog):
                 if resp.status == 200:
                     response_data = await resp.json()
                     log.info(f"API response data: {response_data}")
-                    log.info(f"Successfully synced {minutes_to_add} minutes for user {member.id}.")
+                    log.info(f"Successfully synced {total_minutes_to_send} total minutes for user {member.id}.")
                 else:
                     error_text = await resp.text()
                     log.error(f"Failed to update activity for {member.id}: {resp.status} - {error_text}")
@@ -439,7 +444,6 @@ class ActivityTracker(commands.Cog):
             try:
                 log.info(f"Running periodic activity update for guild ID: {guild_id}")
                 await self._update_active_voice_users(guild_id)
-                log.info(f"Completed periodic activity update for guild ID: {guild_id}")
             except Exception as e:
                 log.exception(f"An error occurred during the periodic activity update: {e}")
             await asyncio.sleep(300)  # Sleep for 5 minutes
