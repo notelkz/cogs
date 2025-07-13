@@ -6,7 +6,7 @@ import json
 from datetime import datetime, timedelta
 
 from redbot.core import commands, Config
-from aiohttp import web # Corrected from aiohttp.web
+from aiohttp import web
 from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.views import ConfirmView
 
@@ -28,10 +28,11 @@ class ActivityTracker(commands.Cog):
             "recruit_role_id": None,
             "member_role_id": None,
             "promotion_threshold_hours": 24.0,
-            "military_ranks": [],  # list of dicts: {name, discord_role_id, required_hours, role_order (optional)}
+            "military_ranks": [],  # list of dicts: {name, discord_role_id, required_hours}
             "api_url": None, # Base URL for Django API, e.g., https://zerolivesleft.net/api/
             "api_key": None,
-            # promotion_update_url and military_rank_update_url are now optional, constructed from api_url if not set
+            "promotion_update_url": None, # Optional: if not set, constructed from api_url
+            "military_rank_update_url": None,  # Optional: if not set, constructed from api_url
             "promotion_channel_id": None,
         }
         self.config.register_guild(**default_guild)
@@ -42,7 +43,6 @@ class ActivityTracker(commands.Cog):
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
-        # These internal API routes use underscores by convention in aiohttp web routing
         self.web_app.router.add_post("/api/assign_initial_role", self.assign_initial_role_handler)
         self.web_app.router.add_get("/api/get_military_ranks", self.get_military_ranks_handler)
         self.web_app.router.add_get("/health", self.health_check_handler)
@@ -444,7 +444,6 @@ class ActivityTracker(commands.Cog):
             try:
                 log.info(f"Running periodic activity update for guild ID: {guild_id}")
                 await self._update_active_voice_users(guild_id)
-                log.info(f"Completed periodic activity update for guild ID: {guild_id}")
             except Exception as e:
                 log.exception(f"An error occurred during the periodic activity update: {e}")
             await asyncio.sleep(300)  # Sleep for 5 minutes
@@ -472,7 +471,7 @@ class ActivityTracker(commands.Cog):
                     # Calculate minutes since last update or join
                     minutes_since_join = int((current_time - join_time).total_seconds() / 60)
                     
-                    if minutes_since_join >= 1:  # Only update if at least 1 minute has passed
+                    if minutes_since_join >= 5:  # Only update if at least 5 minutes have passed
                         log.info(f"Periodic update: {member.name} has been in voice for {minutes_since_join} minutes")
                         
                         # Update the user's activity
