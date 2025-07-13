@@ -1,10 +1,9 @@
 import discord
 import asyncio
 import json
-from aiohttp.web import Request
 import aiohttp
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta # Import timedelta for consistency with activitytracker
 
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.menus import DEFAULT_CONTROLS 
@@ -12,6 +11,9 @@ from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.views import ConfirmView
 from redbot.core.bot import Red
 from discord.ext import tasks
+from aiohttp.web import Request # <--- ADDED THIS LINE
+from aiohttp import web # This should be 'from aiohttp import web' as originally.
+
 import logging
 
 log = logging.getLogger("red.Elkz.gamecounter")
@@ -44,6 +46,7 @@ class GameCounter(commands.Cog):
         self.web_runner = None
         self.web_site = None
         
+        # Internal web API routes for Django to query THIS BOT (these use underscores internally)
         self.web_app.router.add_get(
             "/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler
         )
@@ -80,7 +83,7 @@ class GameCounter(commands.Cog):
         log.info(f"User data for {user_id} has been deleted.")
         return
 
-    async def _authenticate_request(self, request: web.Request):
+    async def _authenticate_request(self, request: Request): # Type hint corrected to Request
         """Authenticates incoming web API requests based on X-API-Key header."""
         expected_key = await self.config.web_api_key()
         if not expected_key:
@@ -96,12 +99,12 @@ class GameCounter(commands.Cog):
         
         return True
 
-    async def health_check_handler(self, request: web.Request):
+    async def health_check_handler(self, request: Request): # Type hint corrected to Request
         """Simple health check endpoint for the web API."""
         log.debug("Received health check request for GameCounter.")
         return web.Response(text="OK", status=200)
 
-    async def get_role_members_handler(self, request: web.Request):
+    async def get_role_members_handler(self, request: Request): # Type hint corrected to Request
         """
         Web API handler to return members of a specific Discord role,
         including their live streaming status and Twitch URL.
@@ -163,7 +166,7 @@ class GameCounter(commands.Cog):
 
     async def check_military_rank(self, member, minutes):
         log.warning("GameCounter: check_military_rank called. This logic should be in ActivityTracker.")
-        return # Do not execute this logic, as ActivityTracker handles it
+        return 
 
     async def update_member_activity(self, member, minutes_to_add=5):
         log.warning("GameCounter: update_member_activity called. This logic should be in ActivityTracker.")
@@ -171,6 +174,7 @@ class GameCounter(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
+        """Start the counter loop and web server when the bot is ready."""
         await self.bot.wait_until_ready() 
         
         if not self.counter_loop.is_running():
@@ -193,6 +197,7 @@ class GameCounter(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def count_and_update(self):
+        """Periodically count users with specific roles and update the Django website."""
         log.info("Running GameCounter count_and_update loop.")
         try:
             guild_id = await self.config.guild_id()
@@ -238,22 +243,22 @@ class GameCounter(commands.Cog):
                 except Exception as e:
                     log.error(f"GameCounter: Error counting role {role_id_str}: {e}")
             
-            api_url = await self.config.api_url() # This should be the full Django endpoint for game counts
+            api_url_config = await self.config.api_url() # Retrieve the configured API URL
             api_key = await self.config.api_key()
             
-            if not api_url or not api_key:
+            if not api_url_config or not api_key:
                 log.warning("GameCounter: Django API URL or API Key not set, skipping API update.")
                 return
             
-            # FIX: Use X-API-Key header for authentication, not Authorization: Token
+            # FIX: Use the configured api_url_config directly as the endpoint
+            endpoint_for_game_counts = api_url_config 
             headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
             payload = {"game_counts": game_counts}
             
-            log.info(f"GameCounter: Sending game counts to {api_url} with payload: {payload}")
+            log.info(f"GameCounter: Sending game counts to {endpoint_for_game_counts} with payload: {payload}")
             
-            # FIX: Ensure aiohttp makes HTTPS call if URL is HTTPS, and handles errors explicitly
             try:
-                async with self.session.post(api_url, json=payload, headers=headers, timeout=10) as response:
+                async with self.session.post(endpoint_for_game_counts, json=payload, headers=headers, timeout=10) as response:
                     log.info(f"GameCounter: API response status: {response.status}")
                     if response.status == 200:
                         response_data = await response.json()
@@ -265,7 +270,6 @@ class GameCounter(commands.Cog):
                 log.error("GameCounter: API request timed out during count_and_update.")
             except aiohttp.ClientError as e:
                 log.error(f"GameCounter: HTTP client error during count_and_update: {e}. Check URL and server accessibility.")
-                # This could be connection refused, SSL errors, etc.
             except Exception as e:
                 log.exception(f"GameCounter: Unhandled error in count_and_update loop: {e}")
 
