@@ -3,7 +3,7 @@ import asyncio
 import aiohttp
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timedelta # Import timedelta
 
 from redbot.core import commands, Config
 from aiohttp import web
@@ -28,26 +28,26 @@ class ActivityTracker(commands.Cog):
             "recruit_role_id": None,
             "member_role_id": None,
             "promotion_threshold_hours": 24.0,
-            "military_ranks": [],  # list of dicts: {name, discord_role_id, required_hours}
-            "api_url": None,
+            "military_ranks": [],  # list of dicts: {name, discord_role_id, required_hours, role_order (optional)}
+            "api_url": None, # Base URL for Django API, e.g., https://zerolivesleft.net/api/
             "api_key": None,
-            "promotion_update_url": None,
-            "military_rank_update_url": None,  # New URL for military rank updates
+            # promotion_update_url and military_rank_update_url are now optional, constructed from api_url if not set
             "promotion_channel_id": None,
         }
         self.config.register_guild(**default_guild)
-        self.voice_tracking = {}  # guild_id: {user_id: join_time}
+        self.voice_tracking = {}  # guild_id: {user_id: join_time (datetime.utcnow())}
         self.session = aiohttp.ClientSession()
 
-        # Web API
+        # Web API for incoming requests to the bot (from Django)
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
         self.web_app.router.add_post("/api/assign_initial_role", self.assign_initial_role_handler)
         self.web_app.router.add_get("/api/get_military_ranks", self.get_military_ranks_handler)
         self.web_app.router.add_get("/health", self.health_check_handler)
-        # Add the new endpoint for getting all activity data
         self.web_app.router.add_get("/api/get_all_activity", self.get_all_activity_handler)
+        
+        # Start the webserver initialization task
         self.bot.loop.create_task(self.initialize_webserver())
 
     async def initialize_webserver(self):
@@ -75,10 +75,14 @@ class ActivityTracker(commands.Cog):
             self.web_site = None
 
     def cog_unload(self):
+        # Schedule web server shutdown as a task
         if self.web_runner:
             asyncio.create_task(self._shutdown_web_server())
+        
+        # Schedule session close as a task
         asyncio.create_task(self.session.close())
-        # Save voice time for users still in voice channels
+        
+        # Save voice time for users still in voice channels before unload
         for guild_id, members_tracking in self.voice_tracking.items():
             guild = self.bot.get_guild(guild_id)
             if guild:
@@ -86,10 +90,10 @@ class ActivityTracker(commands.Cog):
                     member = guild.get_member(member_id)
                     if member:
                         duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
-                        if duration_minutes >= 1:
+                        if duration_minutes >= 1: # Only count if at least 1 minute
                             log.info(f"Unloading: Logging {duration_minutes:.2f} minutes for {member.name} due to cog unload.")
                             asyncio.create_task(self._update_user_voice_minutes(guild, member, int(duration_minutes)))
-        self.voice_tracking.clear()
+        self.voice_tracking.clear() # Clear tracking after saving
 
     async def _shutdown_web_server(self):
         if self.web_runner:
@@ -140,11 +144,13 @@ class ActivityTracker(commands.Cog):
                     await member.add_roles(recruit_role, reason="Initial role assignment from website.")
                 return web.Response(text="Role assigned/already present successfully", status=200)
             except discord.Forbidden:
-                return web.Response(text="Missing permissions", status=503)
-            except Exception:
-                return web.Response(text="Internal server error", status=500)
+                log.error(f"Bot lacks permissions to assign role {recruit_role.name} to {member.name} in guild {guild.name}.")
+                return web.Response(text="Bot missing permissions to assign role", status=503)
+            except Exception as e: # Catch all other exceptions during role assignment
+                log.exception(f"Error assigning initial role to {member.name}: {e}")
+                return web.Response(text="Internal server error during role assignment", status=500)
         else:
-            return web.Response(text="Member or role not found", status=404)
+            return web.Response(text="Member or recruit role not found", status=404)
 
     async def get_military_ranks_handler(self, request):
         try:
@@ -156,11 +162,13 @@ class ActivityTracker(commands.Cog):
         if not military_ranks:
             return web.json_response([], status=200)
         try:
+            # Sort by required_hours ascending for consistent API response
             sorted_ranks = sorted(
                 [r for r in military_ranks if 'required_hours' in r and isinstance(r['required_hours'], (int, float))],
                 key=lambda x: x['required_hours']
             )
-        except Exception:
+        except Exception as e:
+            log.exception(f"Internal Server Error: Malformed rank data in config for guild {guild.id}: {e}")
             return web.Response(text="Internal Server Error: Malformed rank data", status=500)
         return web.json_response(sorted_ranks)
 
@@ -173,28 +181,30 @@ class ActivityTracker(commands.Cog):
         
         guild_id_str = os.environ.get("DISCORD_GUILD_ID")
         if not guild_id_str:
+            log.error("DISCORD_GUILD_ID not set in environment for get_all_activity_handler")
             return web.HTTPInternalServerError(reason="DISCORD_GUILD_ID not set")
         
         guild = self.bot.get_guild(int(guild_id_str))
         if not guild:
+            log.error(f"Guild with ID {guild_id_str} not found for get_all_activity_handler.")
             return web.HTTPInternalServerError(reason="Guild not found")
         
-        # Get all user activity data from the bot's config
-        user_activity = await self.config.guild(guild).user_activity()
+        user_activity_config = await self.config.guild(guild).user_activity()
         
-        # Format the data for the response
         activity_data = []
-        for user_id, minutes in user_activity.items():
-            # Add current session time if user is in voice
+        for user_id_str, minutes in user_activity_config.items():
+            user_id = int(user_id_str)
             total_minutes = minutes
-            if guild.id in self.voice_tracking and int(user_id) in self.voice_tracking[guild.id]:
-                join_time = self.voice_tracking[guild.id][int(user_id)]
+            
+            # Add current session time if user is in voice
+            if guild.id in self.voice_tracking and user_id in self.voice_tracking[guild.id]:
+                join_time = self.voice_tracking[guild.id][user_id]
                 current_session_minutes = int((datetime.utcnow() - join_time).total_seconds() / 60)
                 if current_session_minutes >= 1:
                     total_minutes += current_session_minutes
             
             activity_data.append({
-                "discord_id": user_id,
+                "discord_id": user_id_str, # Keep as string for consistency with Discord IDs
                 "minutes": total_minutes
             })
         
@@ -269,7 +279,7 @@ class ActivityTracker(commands.Cog):
                 log.debug(f"Added {current_session_minutes} minutes from current session for user {user_id}")
         return total_minutes
 
-    # --- DJANGO SYNC ---
+    # --- DJANGO SYNC (API Calls OUT to Django) ---
 
     async def _update_website_activity(self, guild, member, minutes_to_add):
         """Sends activity updates to the Django website."""
@@ -284,7 +294,8 @@ class ActivityTracker(commands.Cog):
             log.warning(f"Django API URL or Key not configured for guild {guild.id}. Skipping activity update for {member.name}.")
             return
         
-        endpoint = f"{api_url}/api/update_activity/"
+        # Construct the endpoint with dashes, assuming api_url is the base like 'https://zerolivesleft.net/api/'
+        endpoint = f"{api_url}update-activity/" # Fixed: removed redundant '/api/' and used dash
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
         payload = {"discord_id": str(member.id), "voice_minutes": minutes_to_add}
         
@@ -306,22 +317,32 @@ class ActivityTracker(commands.Cog):
 
     async def _notify_website_of_promotion(self, guild, discord_id, new_role_name):
         """Notify the website of a community role promotion."""
-        promotion_update_url = await self.config.guild(guild).promotion_update_url()
+        # Use promotion_update_url if specifically set, otherwise construct from api_url
+        promotion_update_url_config = await self.config.guild(guild).promotion_update_url()
+        api_url = await self.config.guild(guild).api_url()
         api_key = await self.config.guild(guild).api_key()
         
         log.info(f"Notifying website of community role promotion for {discord_id} to {new_role_name}")
         
-        if not promotion_update_url or not api_key: 
-            log.warning(f"Promotion update URL or API Key not configured for guild {guild.id}. Skipping promotion notification for {discord_id}.")
+        if not api_key: 
+            log.warning(f"API Key not configured for guild {guild.id}. Skipping promotion notification for {discord_id}.")
             return
         
+        if promotion_update_url_config: # Prefer explicitly set URL
+            endpoint = promotion_update_url_config
+        elif api_url: # Otherwise, construct from base api_url
+            endpoint = f"{api_url}update-role/" # Fixed: use dash
+        else:
+            log.warning(f"Neither promotion_update_url nor api_url configured for guild {guild.id}. Skipping promotion notification.")
+            return
+
         headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
         payload = {"discord_id": str(discord_id), "new_role": new_role_name}
         
-        log.info(f"Sending request to {promotion_update_url} with payload: {payload}")
+        log.info(f"Sending request to {endpoint} with payload: {payload}")
         
         try:
-            async with self.session.post(promotion_update_url, headers=headers, json=payload, timeout=5) as resp:
+            async with self.session.post(endpoint, headers=headers, json=payload, timeout=5) as resp:
                 log.info(f"API response status: {resp.status}")
                 
                 if resp.status == 200:
@@ -336,8 +357,8 @@ class ActivityTracker(commands.Cog):
 
     async def _notify_website_of_military_rank(self, guild, discord_id, rank_name):
         """Notify the website of a military rank update."""
-        # First try to use the dedicated military rank URL if set
-        military_rank_update_url = await self.config.guild(guild).military_rank_update_url()
+        # Use dedicated military rank URL if set, otherwise construct from api_url
+        military_rank_update_url_config = await self.config.guild(guild).military_rank_update_url()
         api_url = await self.config.guild(guild).api_url()
         api_key = await self.config.guild(guild).api_key()
         
@@ -347,11 +368,10 @@ class ActivityTracker(commands.Cog):
             log.warning(f"API Key not configured for guild {guild.id}. Skipping military rank update for {discord_id}.")
             return
         
-        # If dedicated URL is set, use it, otherwise construct from api_url
-        if military_rank_update_url:
-            endpoint = military_rank_update_url
-        elif api_url:
-            endpoint = f"{api_url}/api/update_military_rank/"
+        if military_rank_update_url_config: # Prefer explicitly set URL
+            endpoint = military_rank_update_url_config
+        elif api_url: # Otherwise, construct from base api_url
+            endpoint = f"{api_url}update-military-rank/" # Fixed: use dash
         else:
             log.warning(f"Neither military_rank_update_url nor api_url configured for guild {guild.id}. Skipping military rank update.")
             return
@@ -495,7 +515,7 @@ class ActivityTracker(commands.Cog):
                 await asyncio.sleep(0.1) # Small delay to avoid hitting Discord/API rate limits too hard
 
         except discord.Forbidden:
-            log.error(f"Bot lacks permissions to fetch members in guild {guild.id} for periodic check.")
+            log.error(f"Bot lacks permissions to fetch members in guild {guild.id} for periodic check. Ensure 'Server Members Intent' is enabled in bot settings.")
         except Exception as e:
             log.exception(f"An unexpected error occurred during periodic role check for guild {guild.id}: {e}")
 
@@ -527,39 +547,79 @@ class ActivityTracker(commands.Cog):
         military_ranks = await self.config.guild(guild).military_ranks()
         if not military_ranks:
             return
-        sorted_ranks = sorted(
+        
+        # Sort ranks by required_hours ascending for finding next_rank and ensuring correct promotion
+        sorted_ranks_ascending = sorted(
             [r for r in military_ranks if isinstance(r.get('required_hours'), (int, float))],
-            key=lambda x: x['required_hours'],
-            reverse=True
+            key=lambda x: x['required_hours']
         )
+        
         user_hours = total_minutes / 60
-        for rank in sorted_ranks:
-            if user_hours >= rank['required_hours']:
-                role = guild.get_role(int(rank['discord_role_id']))
-                if role and role not in member.roles:
-                    all_rank_ids = [int(r['discord_role_id']) for r in military_ranks if 'discord_role_id' in r]
-                    remove_roles = [r for r in member.roles if r.id in all_rank_ids]
-                    await member.remove_roles(*remove_roles, reason="Rank promotion")
-                    await member.add_roles(role, reason="Rank promotion")
-                    
-                    # Update both systems separately
-                    # 1. Update community role (if not already a member)
-                    if member_role_id:
-                        member_role = guild.get_role(member_role_id)
-                        if member_role and member_role not in member.roles:
-                            await self._notify_website_of_promotion(guild, member.id, "member")
-                    
-                    # 2. Update military rank
-                    await self._notify_website_of_military_rank(guild, member.id, rank['name'])
-                    
+        
+        # Find the highest rank the user is currently eligible for
+        current_highest_eligible_rank = None
+        for rank_data in sorted_ranks_ascending:
+            if user_hours >= rank_data['required_hours']:
+                current_highest_eligible_rank = rank_data
+            else:
+                # If user doesn't meet requirements for this rank, they won't meet for higher ranks (since sorted ascending)
+                break 
+
+        # Get the roles the user currently holds that are military ranks
+        user_current_military_role_ids = {
+            r.id for r in member.roles 
+            if any(str(r.id) == str(rank_data.get('discord_role_id')) for rank_data in military_ranks)
+        }
+
+        # Determine the target role ID for the user
+        target_role_id = None
+        target_rank_name = "None" # Default if no military rank
+        if current_highest_eligible_rank:
+            target_role_id = int(current_highest_eligible_rank['discord_role_id'])
+            target_rank_name = current_highest_eligible_rank['name']
+        
+        # Determine roles to remove and add
+        roles_to_remove = []
+        roles_to_add = []
+
+        all_configured_military_role_ids = {int(r['discord_role_id']) for r in military_ranks if 'discord_role_id' in r}
+
+        for role_obj in member.roles:
+            if role_obj.id in all_configured_military_role_ids and role_obj.id != target_role_id:
+                roles_to_remove.append(role_obj)
+        
+        if target_role_id and target_role_id not in user_current_military_role_ids:
+            add_role_obj = guild.get_role(target_role_id)
+            if add_role_obj:
+                roles_to_add.append(add_role_obj)
+
+        if roles_to_remove or roles_to_add:
+            log.info(f"Processing rank changes for {member.name} ({member.id}). Removing: {[r.name for r in roles_to_remove]}, Adding: {[r.name for r in roles_to_add]}")
+            try:
+                if roles_to_remove:
+                    await member.remove_roles(*roles_to_remove, reason="Military rank update")
+                if roles_to_add:
+                    await member.add_roles(*roles_to_add, reason="Military rank update")
+                
+                # Notify website after Discord roles are updated
+                await self._notify_website_of_military_rank(guild, member.id, target_rank_name)
+
+                # Send promotion message to channel if applicable
+                if target_role_id and current_highest_eligible_rank and roles_to_add: # Only send message if a role was actually added
                     channel_id = await self.config.guild(guild).promotion_channel_id()
                     if channel_id:
                         channel = guild.get_channel(channel_id)
                         if channel:
                             await channel.send(
-                                f"🎖️ Bravo, {member.mention}! You've achieved the rank of **{rank['name']}**!"
+                                f"🎖️ Bravo, {member.mention}! You've achieved the rank of **{current_highest_eligible_rank['name']}**!"
                             )
-                break
+            except discord.Forbidden:
+                log.error(f"Bot lacks permissions to manage roles for {member.name} in guild {guild.name} during military rank update.")
+            except Exception as e:
+                log.exception(f"Error during military rank update for {member.name}: {e}")
+        else:
+            log.debug(f"{member.name} already has the correct military rank or no changes needed.")
+
 
     # --- COMMANDS ---
 
@@ -578,6 +638,8 @@ class ActivityTracker(commands.Cog):
         total_minutes = await self._get_user_voice_minutes(ctx.guild, target.id)
         hours = total_minutes // 60
         minutes = total_minutes % 60
+        user_hours_float = total_minutes / 60.0 # Use float for calculations
+        
         embed = discord.Embed(
             title=f"Activity Status for {target.display_name}",
             color=target.color
@@ -588,10 +650,12 @@ class ActivityTracker(commands.Cog):
             value=f"**{hours}** hours and **{minutes}** minutes",
             inline=False
         )
-        # Membership progress
+
+        # Membership progress (Recruit -> Member)
         recruit_role_id = await self.config.guild(ctx.guild).recruit_role_id()
         member_role_id = await self.config.guild(ctx.guild).member_role_id()
         threshold_hours = await self.config.guild(ctx.guild).promotion_threshold_hours()
+
         if recruit_role_id and member_role_id and threshold_hours:
             recruit_role = ctx.guild.get_role(recruit_role_id)
             member_role = ctx.guild.get_role(member_role_id)
@@ -606,7 +670,7 @@ class ActivityTracker(commands.Cog):
                     threshold_minutes = threshold_hours * 60
                     progress = min(100, (total_minutes / threshold_minutes) * 100)
                     remaining_minutes = max(0, threshold_minutes - total_minutes)
-                    remaining_hours = remaining_minutes / 60
+                    remaining_hours = remaining_minutes / 60.0 # Use float
                     progress_bar = self._generate_progress_bar(progress)
                     embed.add_field(
                         name="Membership Progress",
@@ -623,31 +687,60 @@ class ActivityTracker(commands.Cog):
                         value="Not in membership track (missing Recruit role)",
                         inline=False
                     )
+            else:
+                embed.add_field(
+                    name="Membership Status",
+                    value="Recruit or Member role not found in server.",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="Membership Status",
+                value="Recruit/Member roles or threshold not configured.",
+                inline=False
+            )
+
+
         # Military Rank progress
         military_ranks = await self.config.guild(ctx.guild).military_ranks()
         if military_ranks:
             try:
+                # Sort ranks by required_hours ascending for consistent logic
                 sorted_ranks = sorted(
                     [r for r in military_ranks if isinstance(r.get('required_hours'), (int, float))],
                     key=lambda x: x['required_hours']
                 )
+
                 current_rank = None
                 next_rank = None
-                user_rank_ids = {
+
+                # Find the user's current highest military rank based on *actual roles*
+                user_current_military_role_ids = {
                     role.id for role in target.roles
                     if any(str(role.id) == str(r.get('discord_role_id')) for r in military_ranks)
                 }
-                if user_rank_ids:
-                    user_ranks = [r for r in sorted_ranks if str(r.get('discord_role_id')) in map(str, user_rank_ids)]
-                    if user_ranks:
-                        current_rank = max(user_ranks, key=lambda x: x['required_hours'])
+                
+                # Map actual roles to rank data
+                user_eligible_ranks_from_roles = [
+                    r for r in military_ranks 
+                    if int(r.get('discord_role_id', 0)) in user_current_military_role_ids
+                ]
+
+                if user_eligible_ranks_from_roles:
+                    # Find the highest rank the user actually holds
+                    current_rank = max(user_eligible_ranks_from_roles, key=lambda x: x['required_hours'])
+                
+                # Find the next rank the user is progressing towards
                 if current_rank:
+                    # Look for ranks strictly higher than the current rank
                     higher_ranks = [r for r in sorted_ranks if r['required_hours'] > current_rank['required_hours']]
                     if higher_ranks:
-                        next_rank = min(higher_ranks, key=lambda x: x['required_hours'])
-                else:
+                        next_rank = min(higher_ranks, key=lambda x: x['required_hours']) # Lowest of the higher ranks
+                else: # User holds no military rank, next rank is the lowest configured one
                     if sorted_ranks:
                         next_rank = sorted_ranks[0]
+
+                # Display current rank
                 if current_rank:
                     current_role_id = current_rank.get('discord_role_id')
                     current_role = ctx.guild.get_role(int(current_role_id)) if current_role_id else None
@@ -660,14 +753,17 @@ class ActivityTracker(commands.Cog):
                         ),
                         inline=False
                     )
+
+                # Display next rank progress
                 if next_rank:
                     next_role_id = next_rank.get('discord_role_id')
                     next_role = ctx.guild.get_role(int(next_role_id)) if next_role_id else None
-                    current_hours = current_rank.get('required_hours', 0) if current_rank else 0
-                    next_hours = next_rank.get('required_hours', 0)
-                    if next_hours > current_hours:
-                        progress = min(100, ((hours - current_hours) / (next_hours - current_hours)) * 100)
-                        remaining_hours = max(0, next_hours - hours)
+                    
+                    progress_base_hours = current_rank.get('required_hours', 0) if current_rank else 0
+                    
+                    if next_rank['required_hours'] > progress_base_hours:
+                        progress = min(100, ((user_hours_float - progress_base_hours) / (next_rank['required_hours'] - progress_base_hours)) * 100)
+                        remaining_hours = max(0, next_rank['required_hours'] - user_hours_float)
                         progress_bar = self._generate_progress_bar(progress)
                         embed.add_field(
                             name="Next Military Rank",
@@ -679,30 +775,37 @@ class ActivityTracker(commands.Cog):
                             ),
                             inline=False
                         )
-                    else:
+                    else: # User has reached highest configured rank
                         embed.add_field(
                             name="Next Military Rank",
                             value="You have reached the highest rank! 🎖️",
                             inline=False
                         )
-                elif current_rank:
+                elif current_rank: # User has a rank, but no higher ranks are configured.
                     embed.add_field(
                         name="Next Military Rank",
                         value="You have reached the highest rank! 🎖️",
                         inline=False
                     )
-                else:
+                else: # No military ranks are eligible or configured for user
                     embed.add_field(
                         name="Military Rank",
                         value="No military ranks configured or eligible",
                         inline=False
                     )
-            except Exception as e:
+            except Exception as e: # Catch any errors during military rank processing
+                log.error(f"Error processing military ranks for {target.display_name}: {e}", exc_info=True)
                 embed.add_field(
                     name="Military Rank Error",
-                    value=f"An error occurred processing military ranks: {str(e)}",
+                    value=f"An error occurred processing military ranks. Please check logs.",
                     inline=False
                 )
+        else: # No military ranks defined at all
+            embed.add_field(
+                name="Military Rank",
+                value="No military ranks configured for this server.",
+                inline=False
+            )
         await ctx.send(embed=embed)
 
     def _generate_progress_bar(self, percent, length=10):
@@ -728,12 +831,20 @@ class ActivityTracker(commands.Cog):
     @activityset.command()
     async def threshold(self, ctx, hours: float):
         """Set the voice hours required to be promoted from Recruit to Member."""
+        if hours <= 0:
+            return await ctx.send("Threshold must be a positive number of hours.")
         await self.config.guild(ctx.guild).promotion_threshold_hours.set(hours)
         await ctx.send(f"Promotion threshold set to {hours} hours.")
 
     @activityset.command()
     async def api(self, ctx, url: str, key: str):
         """Set the base API URL and the API Key for the website."""
+        # Validate URL format
+        if not url.startswith("http://") and not url.startswith("https://"):
+            return await ctx.send("API URL must start with http:// or https://")
+        if not url.endswith("/"):
+            url += "/" # Ensure trailing slash for consistent path joining
+        
         await self.config.guild(ctx.guild).api_url.set(url)
         await self.config.guild(ctx.guild).api_key.set(key)
         await ctx.send("API URL and Key have been saved.")
@@ -741,12 +852,18 @@ class ActivityTracker(commands.Cog):
     @activityset.command()
     async def promotionurl(self, ctx, url: str):
         """Set the full URL for community role promotions."""
+        if not url.startswith("http://") and not url.startswith("https://"):
+            return await ctx.send("URL must start with http:// or https://")
+        # No trailing slash enforcement here, as it's assumed to be the full endpoint
         await self.config.guild(ctx.guild).promotion_update_url.set(url)
         await ctx.send("Community role promotion URL set.")
 
     @activityset.command()
     async def militaryrankurl(self, ctx, url: str):
         """Set the full URL for military rank updates."""
+        if not url.startswith("http://") and not url.startswith("https://"):
+            return await ctx.send("URL must start with http:// or https://")
+        # No trailing slash enforcement here, as it's assumed to be the full endpoint
         await self.config.guild(ctx.guild).military_rank_update_url.set(url)
         await ctx.send("Military rank update URL set.")
 
@@ -764,19 +881,55 @@ class ActivityTracker(commands.Cog):
     @militaryranks.command(name="add")
     async def add_rank(self, ctx, role: discord.Role, required_hours: float):
         """Add a new military rank."""
+        if required_hours < 0:
+            return await ctx.send("Required hours cannot be negative.")
         async with self.config.guild(ctx.guild).military_ranks() as ranks:
+            # Check for existing rank with same role ID or name
+            for r in ranks:
+                if str(r.get("discord_role_id")) == str(role.id):
+                    return await ctx.send(f"A rank for role '{role.name}' already exists.")
+                if r.get("name").lower() == role.name.lower():
+                    return await ctx.send(f"A rank with name '{role.name}' already exists.")
+            
             ranks.append({
                 "name": role.name,
-                "discord_role_id": str(role.id),
+                "discord_role_id": str(role.id), # Store as string for consistency
                 "required_hours": required_hours
             })
-        await ctx.send(f"Added military rank: {role.name} at {required_hours} hours.")
+            # Ensure sorting immediately for accurate internal representation
+            ranks.sort(key=lambda r: r['required_hours'])
+        await ctx.send(f"Added military rank: **{role.name}** at **{required_hours}** hours.")
+
+    @militaryranks.command(name="remove")
+    async def remove_rank(self, ctx, role_or_name: str):
+        """Remove a military rank by role ID or name."""
+        async with self.config.guild(ctx.guild).military_ranks() as ranks:
+            initial_len = len(ranks)
+            # Try to remove by role ID first (robust)
+            ranks[:] = [r for r in ranks if str(r.get('discord_role_id')) != role_or_name]
+            # Then try by name (case-insensitive)
+            if len(ranks) == initial_len: # Only try name if not removed by ID
+                ranks[:] = [r for r in ranks if r.get('name').lower() != role_or_name.lower()]
+            
+            if len(ranks) < initial_len:
+                await ctx.send(f"Removed military rank matching '{role_or_name}'.")
+            else:
+                await ctx.send(f"No military rank found matching '{role_or_name}'.")
 
     @militaryranks.command(name="clear")
     async def clear_ranks(self, ctx):
         """Clear all configured military ranks."""
-        await self.config.guild(ctx.guild).military_ranks.set([])
-        await ctx.send("All military ranks have been cleared.")
+        view = ConfirmView(ctx.author, disable_buttons=True)
+        await ctx.send(
+            "Are you sure you want to clear ALL configured military ranks? This cannot be undone.",
+            view=view
+        )
+        await view.wait()
+        if view.result:
+            await self.config.guild(ctx.guild).military_ranks.set([])
+            await ctx.send("All military ranks have been cleared.")
+        else:
+            await ctx.send("Operation cancelled.")
 
     @militaryranks.command(name="list")
     async def list_ranks(self, ctx):
@@ -786,9 +939,12 @@ class ActivityTracker(commands.Cog):
             await ctx.send("No military ranks have been set.")
             return
         msg = "**Configured Military Ranks:**\n"
-        sorted_ranks = sorted(ranks, key=lambda r: r['required_hours'])
+        # Ranks are already sorted by add_rank, but sort again for safety
+        sorted_ranks = sorted(ranks, key=lambda r: r['required_hours']) 
         for r in sorted_ranks:
-            msg += f"- **{r['name']}**: {r['required_hours']} hours (Role ID: {r['discord_role_id']})\n"
+            role_obj = ctx.guild.get_role(int(r['discord_role_id'])) if r.get('discord_role_id') else None
+            role_mention = role_obj.mention if role_obj else f"ID: `{r.get('discord_role_id', 'N/A')}`"
+            msg += f"- **{r['name']}** ({role_mention}): `{r['required_hours']}` hours\n"
         await ctx.send(msg)
 
     @activityset.command(name="settings")
@@ -898,7 +1054,7 @@ class ActivityTracker(commands.Cog):
             # If user has no military rank, we could optionally send a "None" update
             # For now, we'll just skip if they don't have one.
             
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.1) # Small delay to avoid hitting Discord/API rate limits too hard
         
         await ctx.send(f"Sync complete. Synced {synced_community} community roles and {synced_military} military ranks.")
 
