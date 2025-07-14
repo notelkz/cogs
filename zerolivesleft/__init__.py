@@ -230,3 +230,13 @@ class Zerolivesleft(commands.Cog):
     @activityset_group.command()
     async def threshold(self, ctx, hours: float):
         await self.activity_tracking_logic.th
+
+async def setup(bot: Red):
+    """Set up the Zerolivesleft cog."""
+    try:
+        cog = Zerolivesleft(bot)
+        await bot.add_cog(cog)
+        log.info("Zerolivesleft cog loaded successfully")
+    except Exception as e:
+        log.error(f"Error loading Zerolivesleft cog: {e}", exc_info=True)
+        raise
