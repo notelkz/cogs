@@ -35,10 +35,8 @@ class GameCounter(commands.Cog):
         )
         
         self.count_and_update.start()
-        # REMOVED: asyncio.create_task(self.initialize()) - Initialize logic will be handled differently
-        # We need a reference to the WebServer cog for setup, but initialize() is too late.
-
-    # REMOVED: async def initialize(self): - This function is no longer needed in this form
+        # Removed: asyncio.create_task(self.initialize()) as it's no longer needed.
+        # Registration will happen in the setup function.
 
     def cog_unload(self):
         """Cleanup when the cog is unloaded."""
@@ -149,8 +147,8 @@ class GameCounter(commands.Cog):
         except Exception as e:
             log.error(f"Error in count_and_update loop: {e}", exc_info=True)
 
-    # --- Commands ---
-    
+    # --- Commands (omitted for brevity, assume unchanged) ---
+    # ... your existing commands ...
     @commands.hybrid_group(name="gamecounter", aliases=["gc"])
     @commands.is_owner()
     async def gamecounter_settings(self, ctx: commands.Context):
@@ -258,11 +256,28 @@ async def setup(bot: Red):
     cog = GameCounter(bot)
     webserver_cog = bot.get_cog("WebServer")
     if webserver_cog:
-        routes = [
-            web.get("/guilds/{guild_id}/roles/{role_id}/members", cog.get_role_members_handler),
-        ]
-        webserver_cog.add_routes(routes)
-        log.info("Successfully registered GameCounter routes with the WebServer cog.")
+        # Instead of directly adding, which might freeze the router,
+        # we'll wait for WebServer to be ready and then attempt to add.
+        # This requires WebServer to allow adding routes AFTER its initial setup.
+        # A more robust solution might involve a dedicated method in WebServer
+        # that allows dynamic route addition after startup.
+        # For now, let's try a short delay and direct addition.
+        try:
+            routes = [
+                web.get("/guilds/{guild_id}/roles/{role_id}/members", cog.get_role_members_handler),
+            ]
+            # This is still prone to the "frozen router" error if WebServer initializes too fast.
+            # A more robust fix requires changes in WebServer itself to expose a "ready for routes" signal
+            # or a method to add routes *after* its aiohttp application is fully set up.
+            # However, for many RedBot setups, simply waiting a bit can sometimes work.
+            # If this doesn't work, we would need to modify WebServer.
+            await asyncio.sleep(1) # Give WebServer a moment to set up its app
+            webserver_cog.add_routes(routes)
+            log.info("Successfully registered GameCounter routes with the WebServer cog.")
+        except RuntimeError as e:
+            log.error(f"Failed to register GameCounter routes with WebServer: {e}. WebServer router might be frozen.")
+        except Exception as e:
+            log.error(f"An unexpected error occurred during GameCounter route registration: {e}")
     else:
         log.error("WebServer cog not found. GameCounter API endpoints will not be available.")
     await bot.add_cog(cog)
