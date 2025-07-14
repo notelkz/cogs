@@ -7,6 +7,7 @@ import logging
 import datetime
 from discord.ext import commands, tasks
 from typing import Optional, Dict, List, Any
+import os
 
 log = logging.getLogger("red.Elkz.zerolivesleft.calendar_sync")
 
