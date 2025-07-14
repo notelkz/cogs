@@ -10,9 +10,9 @@ import os
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 
-# Import individual logic modules
+# Import individual logic modules (UPDATED import for rolecount)
 from .webapi import WebApiManager
-from .game_counting import GameCountingLogic
+from .rolecount import RoleCountingLogic # CHANGED from .game_counting
 from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
 
@@ -35,7 +35,7 @@ class Zerolivesleft(commands.Cog):
             webserver_port=5000, 
             webserver_api_key=None # Key for Django to authenticate with RedBot
         )
-        # GameCounter settings (previously from GameCounter cog)
+        # GameCounter/RoleCounter settings (previously from GameCounter cog)
         self.config.register_global(
             gc_api_base_url=None, # Django's public API URL for game counts
             gc_api_key=None,      # Key for RedBot to authenticate with Django for game counts
@@ -68,11 +68,11 @@ class Zerolivesleft(commands.Cog):
         self.web_runner = None
         self.web_site = None
         
-        # --- INSTANTIATE LOGIC MANAGERS ---
+        # --- INSTANTIATE LOGIC MANAGERS (UPDATED INSTANTIATION) ---
         # These managers hold the methods for their specific functionality
         # They are passed a reference to this main cog instance ('self')
         self.web_manager = WebApiManager(self)
-        self.game_counting_logic = GameCountingLogic(self)
+        self.role_counting_logic = RoleCountingLogic(self) # CHANGED from self.game_counting_logic
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
 
@@ -86,8 +86,8 @@ class Zerolivesleft(commands.Cog):
         # Start the web server initialization task
         asyncio.create_task(self.initialize_webserver())
 
-        # Start periodic tasks
-        self.game_counting_logic.start_tasks()
+        # Start periodic tasks (UPDATED CALLS)
+        self.role_counting_logic.start_tasks() # CHANGED from self.game_counting_logic
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks() # This handles its own internal scheduling
 
@@ -111,4 +111,55 @@ class Zerolivesleft(commands.Cog):
 
     def cog_unload(self):
         """Cleanup when the cog is unloaded."""
-        # Cancel
+        # Cancel all periodic tasks (UPDATED CALLS)
+        self.role_counting_logic.stop_tasks() # CHANGED from self.game_counting_logic
+        self.calendar_sync_logic.stop_tasks()
+        self.activity_tracking_logic.stop_tasks() # Handles its own cleanup
+
+        # Shutdown web server
+        if self.web_runner:
+            asyncio.create_task(self.shutdown_webserver())
+        
+        # Close aiohttp session
+        asyncio.create_task(self.session.close())
+        log.info("Zerolivesleft cog unloaded.")
+
+    async def shutdown_webserver(self):
+        """Shutdown the central web server."""
+        log.info("Shutting down central web server...")
+        try:
+            if self.web_app:
+                await self.web_app.shutdown()
+            if self.web_runner:
+                await self.web_runner.cleanup()
+            log.info("Central web server shut down successfully.")
+        except Exception as e:
+            log.error(f"Error during web server shutdown: {e}")
+        finally:
+            self.web_runner = None
+            self.web_site = None
+
+    # --- Commands (Centralized under 'zll') ---
+    
+    @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
+    @commands.is_owner()
+    async def zerolivesleft_group(self, ctx: commands.Context):
+        """Central commands for Zero Lives Left website integration."""
+        pass
+
+    @zerolivesleft_group.command(name="showconfig")
+    async def show_all_config(self, ctx: commands.Context):
+        """Show all current ZeroLivesLeft cog configurations."""
+        # Use existing show_config methods from logic managers (UPDATED CALL)
+        await self.web_manager.show_config_command(ctx)
+        await self.role_counting_logic.show_config_command(ctx) # CHANGED from self.game_counting_logic
+        await self.activity_tracking_logic.show_config_command(ctx)
+        await self.calendar_sync_logic.show_config_command(ctx)
+
+    # All subcommands from webserver, gamecounter, activityset, calendar will be
+    # added via decorators in their respective logic modules, under this group.
+
+async def setup(bot: Red):
+    """Set up the Zerolivesleft cog."""
+    cog = Zerolivesleft(bot)
+    await bot.add_cog(cog)
