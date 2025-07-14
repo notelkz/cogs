@@ -5,9 +5,9 @@ import asyncio
 import aiohttp
 import logging
 import datetime
+import os # Ensure os is imported
 from discord.ext import commands, tasks
 from typing import Optional, Dict, List, Any
-import os
 
 log = logging.getLogger("red.Elkz.zerolivesleft.calendar_sync")
 
@@ -196,19 +196,63 @@ class CalendarSyncLogic:
         else:
             end_time = start_time + datetime.timedelta(hours=1)
         
+        # --- FIX: Determine entity_type and channel/location ---
+        event_location_str = event_data.get("location", "Online")
+        discord_channel_id_str = event_data.get("discord_channel_id") # If website stored a Discord channel ID
+
+        channel = None
+        entity_type = discord.EntityType.external # Default to external
+        scheduled_location = event_location_str # Default to external location string
+
+        if discord_channel_id_str:
+            try:
+                channel = guild.get_channel(int(discord_channel_id_str))
+                if isinstance(channel, discord.VoiceChannel):
+                    entity_type = discord.EntityType.voice
+                    scheduled_location = channel # Pass the channel object
+                elif isinstance(channel, discord.StageChannel):
+                    entity_type = discord.EntityType.stage_instance
+                    scheduled_location = channel # Pass the channel object
+                else:
+                    log.warning(f"CalendarSync: discord_channel_id {discord_channel_id_str} is not a voice/stage channel. Treating as external.")
+                    channel = None # Reset channel if not voice/stage
+            except (ValueError, TypeError):
+                log.warning(f"CalendarSync: Invalid discord_channel_id {discord_channel_id_str}. Treating as external.")
+                channel = None # Invalid ID, treat as external
+        
+        # If still no channel, and location is just a string, it's EXTERNAL
+        # Discord API requires external events to have a string location.
+        if entity_type == discord.EntityType.external and not scheduled_location:
+            # Fallback if no specific location provided for an external event
+            scheduled_location = "Online" 
+            log.debug("CalendarSync: Defaulting external event location to 'Online'.")
+
         try:
-            event = await guild.create_scheduled_event(
-                name=event_data["title"],
-                description=event_data.get("description", ""), # Description can be optional
-                start_time=start_time,
-                end_time=end_time,
-                location=event_data.get("location", "Online"),
-                privacy_level=discord.PrivacyLevel.guild_only
-            )
-            log.info(f"CalendarSync: Created Discord event '{event.name}' ({event.id}).")
+            event_kwargs = {
+                "name": event_data["title"],
+                "description": event_data.get("description", ""),
+                "start_time": start_time,
+                "end_time": end_time,
+                "entity_type": entity_type, # Required
+                "privacy_level": discord.PrivacyLevel.guild_only
+            }
+            
+            if scheduled_location:
+                # If it's a channel object, it goes into 'channel' argument
+                # If it's a string, it goes into 'location' argument
+                if isinstance(scheduled_location, (discord.VoiceChannel, discord.StageChannel)):
+                    event_kwargs["channel"] = scheduled_location
+                else:
+                    event_kwargs["location"] = str(scheduled_location) # Ensure it's a string for location
+
+            event = await guild.create_scheduled_event(**event_kwargs)
+            
+            log.info(f"CalendarSync: Created Discord event '{event.name}' ({event.id}). Entity Type: {entity_type.name}.")
             return event
         except discord.HTTPException as e:
             log.error(f"CalendarSync: Failed to create Discord event: {e}", exc_info=True)
+            log.error(f"Discord API errors: {e.text} (Error Code: {e.code})")
+            log.error(f"Payload sent: {event_kwargs}")
             return None
     
     async def create_website_event(self, discord_event: discord.ScheduledEvent):
