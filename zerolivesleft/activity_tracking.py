@@ -443,7 +443,7 @@ class ActivityTrackingLogic:
 
 
     # --- COMMANDS (These are not @commands.command() directly, but are called by main cog) ---
-    # These methods are are designed to be called from the main cog's command definitions.
+    # These methods are designed to be called from the main cog's command definitions.
 
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
         """Set the Recruit and Member roles."""
@@ -596,7 +596,7 @@ class ActivityTrackingLogic:
             value=(
                 f"Total Configured: `{len(military_ranks)}`\n"
                 f"Valid Ranks: `{len(valid_ranks)}`\n"
-                f"Use `{ctx.prefix}zll activityset militaryranks list` for details" # Updated command help
+                f"Use `{ctx.prefix}zll activityset militaryranks list` for details"
             ),
             inline=False
         )

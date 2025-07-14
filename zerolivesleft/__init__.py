@@ -69,17 +69,13 @@ class Zerolivesleft(commands.Cog):
         self.web_site = None
         
         # --- INSTANTIATE LOGIC MANAGERS ---
-        # These managers hold the methods for their specific functionality
-        # They are passed a reference to this main cog instance ('self')
         self.web_manager = WebApiManager(self)
         self.role_counting_logic = RoleCountingLogic(self)
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
 
         # --- WEB SERVER SETUP ---
-        # Add core routes
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
-        # Add routes from other parts of the cog (handled by WebApiManager)
         self.web_manager.register_all_routes() # This method will add all routes from all modules to self.web_app
 
         # Start the web server initialization task
@@ -97,7 +93,6 @@ class Zerolivesleft(commands.Cog):
             host = await self.config.webserver_host()
             port = await self.config.webserver_port()
             try:
-                # Routes are already added to self.web_app.router by WebApiManager.register_all_routes()
                 self.web_runner = web.AppRunner(self.web_app)
                 await self.web_runner.setup()
                 
@@ -148,7 +143,7 @@ class Zerolivesleft(commands.Cog):
 
     @zerolivesleft_group.command(name="showconfig")
     async def show_all_config(self, ctx: commands.Context):
-        """Show all current ZeroLivesLeft cog configurations."""
+        """Show all current ZeroLivesleft cog configurations."""
         await self.web_manager.show_config_command(ctx)
         await self.role_counting_logic.show_config_command(ctx)
         await self.activity_tracking_logic.show_config_command(ctx)
@@ -251,28 +246,20 @@ class Zerolivesleft(commands.Cog):
     async def activity_set_promotion_channel(self, ctx, channel: discord.TextChannel):
         await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
 
-    @activityset_group.group(name="militaryranks")
-    async def activity_militaryranks_group(self, ctx):
-        """Manage military ranks."""
+    # NEW: Define militaryranks as a *command* that takes subcommands to flatten nesting
+    @activityset_group.command(name="militaryranks")
+    async def activity_militaryranks_commands(self, ctx):
+        """Manage military ranks (add, remove, list, clear)."""
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
 
-    @activity_militaryranks_group.command(name="add")
-    async def activity_add_rank(self, ctx, role: discord.Role, required_hours: float):
-        await self.activity_tracking_logic.add_rank(ctx, role, required_hours)
+    # Attach military rank commands directly to activity_militaryranks_commands
+    # The commands themselves will be defined as methods in activity_tracking.py
+    activity_militaryranks_commands.add_command(self.activity_tracking_logic.add_rank)
+    activity_militaryranks_commands.add_command(self.activity_tracking_logic.remove_rank)
+    activity_militaryranks_commands.add_command(self.activity_tracking_logic.clear_ranks)
+    activity_militaryranks_commands.add_command(self.activity_tracking_logic.list_ranks)
 
-    @activity_militaryranks_group.command(name="remove")
-    async def activity_remove_rank(self, ctx, role_or_name: str):
-        await self.activity_tracking_logic.remove_rank(ctx, role_or_name)
-
-    @activity_militaryranks_group.command(name="clear")
-    async def activity_clear_ranks(self, ctx):
-        await self.activity_tracking_logic.clear_ranks(ctx)
-
-    @activity_militaryranks_group.command(name="list")
-    async def activity_list_ranks(self, ctx):
-        await self.activity_tracking_logic.list_ranks(ctx)
-    
     @activityset_group.command(name="debug")
     async def activity_debug_info(self, ctx):
         await self.activity_tracking_logic.debug_info(ctx)
@@ -325,5 +312,3 @@ async def setup(bot: Red):
     """Set up the Zerolivesleft cog."""
     cog = Zerolivesleft(bot)
     await bot.add_cog(cog)
-    # The subcommands are now correctly associated via decorators
-    # within the main cog and call methods on logic managers.

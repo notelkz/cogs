@@ -4,6 +4,7 @@ import logging
 import os
 import json
 from aiohttp import web
+import discord # Import discord for type hints in commands
 
 log = logging.getLogger("red.Elkz.zerolivesleft.webapi")
 
@@ -26,15 +27,15 @@ class WebApiManager:
 
             # Routes from ActivityTracker (for initial role, military ranks, all activity)
             self.web_app.router.add_post(
-                "/api/assign-initial-role", # Renamed to standard hyphen-case for consistency
+                "/api/assign-initial-role", 
                 self.assign_initial_role_handler
             )
             self.web_app.router.add_get(
-                "/api/get-military-ranks", # Renamed to standard hyphen-case
+                "/api/get-military-ranks", 
                 self.get_military_ranks_handler
             )
             self.web_app.router.add_get(
-                "/api/get-all-activity", # Renamed to standard hyphen-case
+                "/api/get-all-activity", 
                 self.get_all_activity_handler
             )
 
@@ -86,7 +87,7 @@ class WebApiManager:
         return web.Response(text="OK", status=200)
 
     async def get_role_members_handler(self, request: web.Request):
-        """Web API handler to return members of a specific Discord role (from GameCounter)."""
+        """Web API handler to return members of a specific Discord role (from RoleCounter)."""
         try:
             await self._authenticate_request_webserver_key(request) # Authenticate using WebServer's key
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
@@ -233,13 +234,19 @@ class WebApiManager:
         user_activity_config = await self.cog.config.guild(main_guild).at_user_activity()
         
         activity_data = []
+        # Ensure cog.activity_tracking_logic is initialized before accessing voice_tracking
+        if self.cog.activity_tracking_logic and hasattr(self.cog.activity_tracking_logic, 'voice_tracking'):
+            voice_tracking_data = self.cog.activity_tracking_logic.voice_tracking
+        else:
+            voice_tracking_data = {} # Fallback if not initialized or attribute missing
+
         for user_id_str, minutes in user_activity_config.items():
             user_id = int(user_id_str)
             total_minutes = minutes
             
             # Add current session time if user is in voice (from ActivityTrackingLogic)
-            if main_guild.id in self.cog.activity_tracking_logic.voice_tracking and user_id in self.cog.activity_tracking_logic.voice_tracking[main_guild.id]:
-                join_time = self.cog.activity_tracking_logic.voice_tracking[main_guild.id][user_id]
+            if main_guild.id in voice_tracking_data and user_id in voice_tracking_data[main_guild.id]:
+                join_time = voice_tracking_data[main_guild.id][user_id]
                 current_session_minutes = int((datetime.utcnow() - join_time).total_seconds() / 60)
                 if current_session_minutes >= 1:
                     total_minutes += current_session_minutes
@@ -251,3 +258,45 @@ class WebApiManager:
         
         log.info(f"Successfully returned {len(activity_data)} activity records for guild {main_guild.id}.")
         return web.json_response(activity_data)
+
+    # --- COMMANDS (These are not @commands.command() directly, but are called by main cog) ---
+    # These methods are designed to be called from the main cog's command definitions.
+
+    async def set_host_command(self, ctx, host: str):
+        """Set the host for the web server."""
+        await self.cog.config.webserver_host.set(host)
+        await ctx.send(f"Web server host set to {host}. Reload the cog for changes to take effect.")
+
+    async def set_port_command(self, ctx, port: int):
+        """Set the port for the web server."""
+        if not (1024 <= port <= 65535):
+            return await ctx.send("Port must be between 1024 and 65535.")
+        await self.cog.config.webserver_port.set(port)
+        await ctx.send(f"Web server port set to {port}. Reload the cog for changes to take effect.")
+
+    async def set_apikey_command(self, ctx, *, api_key: str):
+        """Set the API key for the web server."""
+        await self.cog.config.webserver_api_key.set(api_key)
+        await ctx.send("API key set. This will be used for all cogs that use the web server.")
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+
+    async def restart_server_command(self, ctx):
+        """Restart the web server."""
+        await ctx.send("Restarting web server...")
+        await self.cog.shutdown_webserver() # Call main cog's shutdown
+        await self.cog.initialize_webserver() # Call main cog's initialize
+        await ctx.send("Web server restarted.")
+
+    async def show_config_command(self, ctx):
+        """Show the current web server configuration."""
+        host = await self.cog.config.webserver_host()
+        port = await self.cog.config.webserver_port()
+        api_key = await self.cog.config.webserver_api_key()
+        try:
+            await ctx.author.send(f"**Web Server Configuration**\n- Host: `{host}`\n- Port: `{port}`\n- API Key: `{api_key if api_key else 'Not set'}`")
+            await ctx.send("Configuration sent to your DMs.")
+        except discord.Forbidden:
+            await ctx.send(f"**Web Server Configuration**\n- Host: `{host}`\n- Port: `{port}`\n- API Key: `{'Set' if api_key else 'Not set'}`")

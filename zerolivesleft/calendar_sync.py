@@ -356,7 +356,7 @@ class CalendarSyncLogic:
         except Exception as e:
             log.error(f"CalendarSync: Error handling event deletion for {event.id}: {e}", exc_info=True)
 
-    # --- Commands (these are not @commands.command() directly, but are called by main cog) ---
+    # --- Commands (These are not @commands.command() directly, but are called by main cog) ---
     # These methods are designed to be called from the main cog's command definitions.
 
     async def set_api_url(self, ctx, url: str):
