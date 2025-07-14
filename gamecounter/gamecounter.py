@@ -36,7 +36,7 @@ class GameCounter(commands.Cog):
             guild_id=None,
             game_role_mappings={},
             activity_data={},
-            website_api_url="https://zerolivesleft.net/api/update_role/",
+            website_api_url="https://zerolivesleft.net/api/update-role/",
             website_api_key=None
         )
         
