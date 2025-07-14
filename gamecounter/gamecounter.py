@@ -265,7 +265,7 @@ async def setup(bot: Red):
         # This will now call WebServer's modified add_routes which queues routes
         # if the router is already frozen.
         webserver_cog.add_routes(routes)
-        log.info("Queued GameCounter routes with the WebServer cog.")
+        log.info("Attempted to register GameCounter routes with the WebServer cog.") # Log reflects direct attempt
     else:
         log.error("WebServer cog not found. GameCounter API endpoints will not be available.")
     await bot.add_cog(cog)
