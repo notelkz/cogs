@@ -26,36 +26,19 @@ class GameCounter(commands.Cog):
         self.config = Config.get_conf(
             self, identifier=123456789012345, force_registration=True
         )
-        # --- SIMPLIFIED CONFIG ---
-        # Only the settings needed for counting and reporting are kept.
         self.config.register_global(
-            api_base_url=None,  # e.g., https://zerolivesleft.net/api/
-            api_key=None,       # The one key your Django site expects (REDBOT_API_KEY)
+            api_base_url=None,
+            api_key=None,
             interval=15,
             guild_id=None,
             game_role_mappings={}
         )
         
         self.count_and_update.start()
-        asyncio.create_task(self.initialize())
+        # REMOVED: asyncio.create_task(self.initialize()) - Initialize logic will be handled differently
+        # We need a reference to the WebServer cog for setup, but initialize() is too late.
 
-    async def initialize(self):
-        """Waits for the bot to be ready and then registers API routes."""
-        await self.bot.wait_until_ready()
-        
-        webserver_cog = self.bot.get_cog("WebServer")
-        if not webserver_cog:
-            log.error("WebServer cog not found. GameCounter API endpoints will not be available.")
-            return
-
-        # --- SIMPLIFIED ROUTES ---
-        # Only the route needed to show the roster on the website is kept.
-        routes = [
-            web.get("/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler),
-        ]
-        
-        webserver_cog.add_routes(routes)
-        log.info("Successfully registered GameCounter routes with the WebServer cog.")
+    # REMOVED: async def initialize(self): - This function is no longer needed in this form
 
     def cog_unload(self):
         """Cleanup when the cog is unloaded."""
@@ -121,13 +104,10 @@ class GameCounter(commands.Cog):
         
         return web.json_response(members_data)
 
-    # --- REMOVED: check_military_rank, update_member_activity, red_delete_data_for_user ---
-    # These functions were part of the role management system and are no longer needed.
-
     @tasks.loop(minutes=15)
     async def count_and_update(self):
         """Periodically count users with specific roles and update the Django website."""
-        await self.bot.wait_until_ready()
+        await self.bot.wait_until_ready() # Keep this here for the loop
         try:
             guild_id = await self.config.guild_id()
             if not guild_id:
@@ -273,9 +253,16 @@ class GameCounter(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    # --- REMOVED: resetactivity and viewactivity commands are no longer needed ---
-
 async def setup(bot: Red):
     """Set up the GameCounter cog."""
     cog = GameCounter(bot)
+    webserver_cog = bot.get_cog("WebServer")
+    if webserver_cog:
+        routes = [
+            web.get("/guilds/{guild_id}/roles/{role_id}/members", cog.get_role_members_handler),
+        ]
+        webserver_cog.add_routes(routes)
+        log.info("Successfully registered GameCounter routes with the WebServer cog.")
+    else:
+        log.error("WebServer cog not found. GameCounter API endpoints will not be available.")
     await bot.add_cog(cog)
