@@ -13,7 +13,7 @@ import logging
 # Changed logger name to reflect new module name
 log = logging.getLogger("red.Elkz.zerolivesleft.rolecount")
 
-class RoleCountingLogic: # Class name remains the same as it's descriptive
+class RoleCountingLogic:
     """Manages game role counting and sending data to Django website."""
 
     def __init__(self, cog_instance):
@@ -23,41 +23,56 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
         self.config = cog_instance.config
         self.session = cog_instance.session
 
-        # Task will be started via start_tasks() method
-        self.count_loop = None 
-        
+        # Initialize the loop directly here, it won't start until .start() is called
+        # The @tasks.loop decorator makes count_and_update a Loop object
+        self.count_loop_task = self.count_and_update # Reference the decorated method
+
     def start_tasks(self):
         """Starts the periodic game counting task."""
-        if not self.count_loop or not self.count_loop.is_running():
-            self.count_loop = self.cog.bot.loop.create_task(self._start_count_loop())
+        # Ensure interval is set before starting
+        interval_minutes = 15 # Default, will be updated by config if available
+        # Need to fetch the interval from config here or ensure it's loaded before this call
+        # For a clean start, we can get it from config on startup.
+        # However, tasks.loop is better started in an async function where config can be awaited.
+        # This will be handled by the _start_count_loop_wrapper if re-introduced, or bot.wait_until_ready()
 
-    def stop_tasks(self):
-        """Stops the periodic game counting task."""
-        if self.count_loop and self.count_loop.is_running():
-            self.count_loop.cancel()
+        # Check if the task is already running (e.g., if cog was reloaded)
+        if self.count_loop_task.is_running():
+            log.info("RoleCounting: Task is already running, skipping start.")
+            return
 
-    async def _start_count_loop(self):
-        """Internal method to start the count loop task."""
+        # Fetch interval from config before starting the task
+        self.cog.bot.loop.create_task(self._start_count_loop_wrapper())
+
+    async def _start_count_loop_wrapper(self):
         await self.cog.bot.wait_until_ready()
-        
-        # Access interval from main config
-        interval_minutes = await self.config.gc_interval() # Uses 'gc_interval' from central config
+        interval_minutes = await self.config.gc_interval()
         if interval_minutes < 1:
             log.warning("RoleCounting: Interval is less than 1 minute, defaulting to 1 minute.")
             interval_minutes = 1
-            
-        self.count_loop_task = tasks.loop(minutes=interval_minutes)(self.count_and_update)
+        
+        self.count_loop_task.change_interval(minutes=interval_minutes)
         self.count_loop_task.start()
         log.info(f"RoleCounting: Started count_and_update loop with {interval_minutes} minute interval.")
+
+
+    def stop_tasks(self):
+        """Stops the periodic game counting task."""
+        if self.count_loop_task and self.count_loop_task.is_running():
+            self.count_loop_task.cancel()
+            log.info("RoleCounting: count_and_update loop cancelled.")
+        else:
+            log.info("RoleCounting: count_and_update loop not running or not initialized.")
+
 
     @tasks.loop(minutes=15) # This decorator is here, but the actual interval is set dynamically below
     async def count_and_update(self):
         """Periodically count users with specific roles and update the Django website."""
-        await self.cog.bot.wait_until_ready()
+        await self.cog.bot.wait_until_ready() # Ensure bot is ready before executing loop logic
         try:
             guild_id = await self.config.gc_counting_guild_id() # Use central config
             if not guild_id:
-                if self.count_loop_task.current_loop == 0:
+                if self.count_loop_task.current_loop == 0: # Only warn once at startup
                     log.warning("RoleCounting: Guild ID not set. The loop will not run until it is set.")
                 return
             
@@ -66,6 +81,7 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
                 log.error(f"RoleCounting: Could not find guild with ID {guild_id}.")
                 return
             
+            # Ensure guild members are cached, especially if intents are enabled
             if not guild.chunked:
                 await guild.chunk()
 
@@ -104,13 +120,10 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
 
     # --- Commands (these will be added as subcommands to the main cog's group) ---
     
-    @commands.group(name="rolecounter", aliases=["rc"]) # Updated command group name to rolecounter
-    async def rolecounter_settings(self, ctx: commands.Context):
-        """Manage the RoleCounter settings for Zerolivesleft."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+    # Note: The @commands.group decorator should not be here in a modular file
+    # Instead, the main cog (__init__.py) will define the command group
+    # and call these methods via their instance.
 
-    @rolecounter_settings.command(name="setapiurl")
     async def set_api_url(self, ctx: commands.Context, url: str):
         """Sets the base Django API URL (e.g., https://zerolivesleft.net/api/)."""
         if not url.startswith("http"):
@@ -120,7 +133,6 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
         await self.config.gc_api_base_url.set(url) # Using 'gc_api_base_url' from central config
         await ctx.send(f"Django API Base URL set to: `{url}`")
 
-    @rolecounter_settings.command(name="setapikey")
     async def set_api_key(self, ctx: commands.Context, *, key: str):
         """Sets the secret API key for authenticating with your Django endpoint."""
         await self.config.gc_api_key.set(key) # Using 'gc_api_key' from central config
@@ -130,7 +142,6 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
         except discord.HTTPException:
             pass
 
-    @rolecounter_settings.command(name="setinterval")
     async def set_interval(self, ctx: commands.Context, minutes: int):
         """Sets the interval (in minutes) for the counter to run."""
         if minutes < 1:
@@ -138,27 +149,24 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
         await self.config.gc_interval.set(minutes) # Using 'gc_interval' from central config
         
         # Stop and restart the loop with the new interval
-        if self.count_loop_task and self.count_loop_task.is_running(): # Check if task exists before trying to stop
+        if self.count_loop_task and self.count_loop_task.is_running():
             self.count_loop_task.stop()
         self.count_loop_task.change_interval(minutes=minutes)
         self.count_loop_task.start()
         
         await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
 
-    @rolecounter_settings.command(name="setguild")
     async def set_guild(self, ctx: commands.Context, guild: discord.Guild):
         """Sets the guild where game roles should be counted."""
         await self.config.gc_counting_guild_id.set(guild.id) # Using 'gc_counting_guild_id' from central config
         await ctx.send(f"Counting guild set to **{guild.name}** (`{guild.id}`).")
 
-    @rolecounter_settings.command(name="addmapping")
     async def add_mapping(self, ctx: commands.Context, role: discord.Role, *, game_name: str):
         """Adds a mapping between a Discord Role and a Django GameCategory name."""
         async with self.config.gc_game_role_mappings() as mappings: # Using 'gc_game_role_mappings' from central config
             mappings[str(role.id)] = game_name
         await ctx.send(f"Mapping added: Role `{role.name}` -> Game `{game_name}`")
 
-    @rolecounter_settings.command(name="removemapping")
     async def remove_mapping(self, ctx: commands.Context, role: discord.Role):
         """Removes a mapping for a Discord Role."""
         async with self.config.gc_game_role_mappings() as mappings: # Using 'gc_game_role_mappings' from central config
@@ -168,7 +176,6 @@ class RoleCountingLogic: # Class name remains the same as it's descriptive
             else:
                 await ctx.send("No mapping found for that role.")
 
-    @rolecounter_settings.command(name="listmappings")
     async def list_mappings(self, ctx: commands.Context):
         """Lists all current role-to-game mappings."""
         mappings = await self.config.gc_game_role_mappings() # Using 'gc_game_role_mappings' from central config
