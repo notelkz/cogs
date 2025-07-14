@@ -28,7 +28,7 @@ class GameCounter(commands.Cog):
         self.config = Config.get_conf(
             self, identifier=123456789012345, force_registration=True
         )
-        # MODIFIED: Removed web server specific config values
+        # MODIFIED: Removed web server specific config values. They are now managed by the WebServer cog.
         self.config.register_global(
             api_url=None,
             api_key=None,
@@ -72,7 +72,7 @@ class GameCounter(commands.Cog):
             self.count_and_update.cancel()
         asyncio.create_task(self.session.close())
 
-    # REMOVED: _shutdown_web_server method is no longer needed
+    # REMOVED: _shutdown_web_server method is no longer needed as WebServer cog handles it.
 
     async def red_delete_data_for_user(self, *, requester: str, user_id: int) -> None:
         activity_data = await self.config.activity_data()
@@ -116,7 +116,32 @@ class GameCounter(commands.Cog):
             
         military_ranks = [
             {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},
-            # ... (rest of your ranks)
+            {"name": "Private First Class", "role_id": "1274274696048934965", "minutes_required": 25 * 60},
+            {"name": "Corporal", "role_id": "1274771534119964813", "minutes_required": 50 * 60},
+            {"name": "Specialist", "role_id": "1274771654907658402", "minutes_required": 75 * 60},
+            {"name": "Sergeant", "role_id": "1274771991748022276", "minutes_required": 100 * 60},
+            {"name": "Staff Sergeant", "role_id": "1274772130424164384", "minutes_required": 150 * 60},
+            {"name": "Sergeant First Class", "role_id": "1274772191107485706", "minutes_required": 225 * 60},
+            {"name": "Master Sergeant", "role_id": "1274772252545519708", "minutes_required": 300 * 60},
+            {"name": "First Sergeant", "role_id": "1274772335689465978", "minutes_required": 375 * 60},
+            {"name": "Sergeant Major", "role_id": "1274772419927605299", "minutes_required": 450 * 60},
+            {"name": "Command Sergeant Major", "role_id": "1274772500164640830", "minutes_required": 550 * 60},
+            {"name": "Sergeant Major of the Army", "role_id": "1274772595031539787", "minutes_required": 650 * 60},
+            {"name": "Warrant Officer 1", "role_id": "1358212838631407797", "minutes_required": 750 * 60},
+            {"name": "Chief Warrant Officer 2", "role_id": "1358213159583875172", "minutes_required": 875 * 60},
+            {"name": "Chief Warrant Officer 3", "role_id": "1358213229112852721", "minutes_required": 1000 * 60},
+            {"name": "Chief Warrant Officer 4", "role_id": "1358213408704430150", "minutes_required": 1200 * 60},
+            {"name": "Chief Warrant Officer 5", "role_id": "1358213451289460847", "minutes_required": 1400 * 60},
+            {"name": "Second Lieutenant", "role_id": "1358213662216814784", "minutes_required": 1600 * 60},
+            {"name": "First Lieutenant", "role_id": "1358213759805554979", "minutes_required": 1850 * 60},
+            {"name": "Captain", "role_id": "1358213809466118276", "minutes_required": 2100 * 60},
+            {"name": "Major", "role_id": "1358213810598449163", "minutes_required": 2400 * 60},
+            {"name": "Lieutenant Colonel", "role_id": "1358213812175503430", "minutes_required": 2750 * 60},
+            {"name": "Colonel", "role_id": "1358213813140459520", "minutes_required": 3100 * 60},
+            {"name": "Brigadier General", "role_id": "1358213814234906786", "minutes_required": 3500 * 60},
+            {"name": "Major General", "role_id": "1358213815203795004", "minutes_required": 4000 * 60},
+            {"name": "Lieutenant General", "role_id": "1358213817229770783", "minutes_required": 4500 * 60},
+            {"name": "General", "role_id": "1358213815983935608", "minutes_required": 5000 * 60},
             {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},
         ]
         return web.json_response(military_ranks)
@@ -227,17 +252,74 @@ class GameCounter(commands.Cog):
         except Exception as e:
             log.error(f"Error in count_and_update: {e}", exc_info=True)
 
-    # ... (Your check_military_rank and update_member_activity methods remain here) ...
     async def check_military_rank(self, member, minutes):
-        # ... (your existing logic)
-        pass
+        """Check and assign military rank based on playtime."""
+        try:
+            if not member or not member.guild:
+                log.error(f"Invalid member object for military rank check")
+                return
+            log.debug(f"Starting military rank check for {member.name} with {minutes} minutes ({minutes/60:.2f} hours)")
+            military_ranks = [
+                {"name": "Private", "role_id": "1274274605435060224", "minutes_required": 10 * 60},
+                # ... (rest of your ranks)
+                {"name": "General of the Army", "role_id": "1358213816617275483", "minutes_required": 6000 * 60},
+            ]
+            eligible_rank = None
+            for rank in military_ranks:
+                if minutes >= rank["minutes_required"]:
+                    if not eligible_rank or rank["minutes_required"] > eligible_rank["minutes_required"]:
+                        eligible_rank = rank
+            if not eligible_rank:
+                log.debug(f"User {member.name} does not qualify for any military rank")
+                return
+            log.debug(f"User {member.name} qualifies for military rank: {eligible_rank['name']}")
+            role = member.guild.get_role(int(eligible_rank["role_id"]))
+            if not role:
+                log.error(f"Role with ID {eligible_rank['role_id']} not found in guild {member.guild.name}")
+                return
+            if role in member.roles:
+                log.debug(f"User {member.name} already has the {eligible_rank['name']} rank")
+                return
+            for rank in military_ranks:
+                existing_role = member.guild.get_role(int(rank["role_id"]))
+                if existing_role and existing_role in member.roles:
+                    await member.remove_roles(existing_role)
+                    log.debug(f"Removed {rank['name']} role from {member.name}")
+            await member.add_roles(role)
+            log.info(f"MILITARY SUCCESS: Assigned {eligible_rank['name']} rank to {member.name}")
+            try:
+                website_api_url = await self.config.website_api_url()
+                website_api_key = await self.config.website_api_key()
+                if website_api_url and website_api_key:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(website_api_url, json={"user_id": str(member.id), "role_name": eligible_rank["name"], "api_key": website_api_key}) as response:
+                            if response.status != 200:
+                                log.error(f"API ERROR: Failed to update military rank on website for {member.id}: {response.status} - {await response.text()}")
+                            else:
+                                log.info(f"Successfully notified website of rank change for {member.name}")
+                else:
+                    log.warning("Website API URL or key not configured, skipping website notification")
+            except Exception as e:
+                log.error(f"API ERROR: Failed to update military rank on website for {member.id}: {str(e)}")
+        except Exception as e:
+            log.error(f"MILITARY ERROR: Failed to check/assign military rank for {member.name}: {str(e)}")
 
     async def update_member_activity(self, member, minutes_to_add=5):
-        # ... (your existing logic)
-        pass
+        """Update a member's activity time and check for promotions."""
+        if not member or member.bot:
+            return
+        activity_data = await self.config.activity_data()
+        user_id = str(member.id)
+        if user_id not in activity_data:
+            activity_data[user_id] = {"minutes": 0, "last_updated": 0}
+        activity_data[user_id]["minutes"] += minutes_to_add
+        activity_data[user_id]["last_updated"] = int(asyncio.get_event_loop().time())
+        total_minutes = activity_data[user_id]["minutes"]
+        await self.config.activity_data.set(activity_data)
+        log.debug(f"Updated activity for {member.name}: {total_minutes} minutes total")
+        await self.check_military_rank(member, total_minutes)
 
     # --- Commands ---
-    # RESTORED: All your original commands are here, minus the obsolete web server ones.
     
     @commands.hybrid_group(name="gamecounter", aliases=["gc"])
     async def gamecounter_settings(self, ctx: commands.Context):
@@ -251,7 +333,6 @@ class GameCounter(commands.Cog):
         """Set the website API URL and key for role update notifications."""
         if not url.startswith("http"):
             return await ctx.send("Please provide a valid URL starting with `http://` or `https://`.")
-        
         await self.config.website_api_url.set(url)
         await self.config.website_api_key.set(api_key)
         await ctx.send(f"Website API settings updated:\nURL: `{url}`\nAPI Key: Set")
@@ -283,7 +364,7 @@ class GameCounter(commands.Cog):
             return await ctx.send("Interval must be at least 1 minute.")
         await self.config.interval.set(minutes)
         self.count_and_update.change_interval(minutes=minutes)
-        await ctx.send(f"Counter interval set to `{minutes}` minutes.")
+        await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
 
     @gamecounter_settings.command(name="setguild")
     @commands.is_owner()
@@ -335,18 +416,155 @@ class GameCounter(commands.Cog):
             msg += f"- {role_name} (ID: `{role_id}`) -> `{game_name}`\n"
         await ctx.send(msg)
 
-    # ... (Your resetactivity and viewactivity commands remain here) ...
+    @gamecounter_settings.command(name="showconfig")
+    @commands.is_owner()
+    async def show_config(self, ctx: commands.Context):
+        """Shows the current GameCounter configuration."""
+        config_data = await self.config.all()
+        api_key_masked = "Set" if config_data.get("api_key") else "Not Set"
+        website_api_key_masked = "Set" if config_data.get("website_api_key") else "Not Set"
+        guild_id = config_data.get("guild_id")
+        guild = self.bot.get_guild(guild_id) if guild_id else None
+        
+        embed = discord.Embed(title="GameCounter Configuration", color=discord.Color.blue())
+        embed.add_field(name="Django API URL", value=config_data.get("api_url") or "Not Set", inline=False)
+        embed.add_field(name="Django API Key", value=api_key_masked, inline=True)
+        embed.add_field(name="Update Interval", value=f"{config_data.get('interval')} minutes", inline=True)
+        embed.add_field(name="Counting Guild", value=f"{guild.name if guild else 'Not Set'} (`{guild_id if guild_id else 'Not Set'}`)", inline=False)
+        embed.add_field(name="Website API URL", value=config_data.get("website_api_url") or "Not Set", inline=False)
+        embed.add_field(name="Website API Key", value=website_api_key_masked, inline=True)
+        loop_status = "Running" if self.count_and_update.is_running() else "Stopped"
+        embed.add_field(name="Counter Loop Status", value=loop_status, inline=False)
+        await ctx.send(embed=embed)
+
+    @gamecounter_settings.command(name="start")
+    @commands.is_owner()
+    async def start_counter(self, ctx: commands.Context):
+        """Starts the game counter loop if it's not already running."""
+        if self.count_and_update.is_running():
+            return await ctx.send("The counter loop is already running.")
+        self.count_and_update.start()
+        await ctx.send("Game counter loop started.")
+
+    @gamecounter_settings.command(name="stop")
+    @commands.is_owner()
+    async def stop_counter(self, ctx: commands.Context):
+        """Stops the game counter loop if it's running."""
+        if not self.count_and_update.is_running():
+            return await ctx.send("The counter loop is not running.")
+        self.count_and_update.cancel()
+        await ctx.send("Game counter loop stopped.")
+
     @gamecounter_settings.command(name="resetactivity")
     @commands.is_owner()
     async def reset_activity(self, ctx: commands.Context, user: discord.Member = None):
-        # ... (your existing logic)
-        pass
+        """Reset activity data for a user or all users."""
+        if user:
+            async with self.config.activity_data() as activity_data:
+                if str(user.id) in activity_data:
+                    del activity_data[str(user.id)]
+                    await ctx.send(f"Activity data reset for {user.mention}.")
+                else:
+                    await ctx.send(f"No activity data found for {user.mention}.")
+        else:
+            view = ConfirmView(ctx.author)
+            view.message = await ctx.send("Are you sure you want to reset ALL activity data for ALL users? This cannot be undone.", view=view)
+            await view.wait()
+            if view.result:
+                await self.config.activity_data.set({})
+                await ctx.send("All activity data has been reset.")
+            else:
+                await ctx.send("Reset cancelled.")
 
     @gamecounter_settings.command(name="viewactivity")
     @commands.is_owner()
     async def view_activity(self, ctx: commands.Context, user: discord.Member):
-        # ... (your existing logic)
-        pass
+        """View activity data for a specific user."""
+        activity_data = await self.config.activity_data()
+        user_id = str(user.id)
+        
+        if user_id not in activity_data:
+            return await ctx.send(f"No activity data found for {user.mention}.")
+            
+        minutes = activity_data[user_id].get("minutes", 0)
+        hours = minutes / 60
+        
+        embed = discord.Embed(
+            title=f"Activity Data for {user.display_name}",
+            color=user.color
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="Total Time", value=f"{hours:.2f} hours ({minutes} minutes)", inline=False)
+        
+        # Find the user's current military rank
+        military_ranks = [
+            {"name": "Private", "role_id": 1274274605435060224, "minutes_required": 10 * 60},
+            {"name": "Private First Class", "role_id": 1274274696048934965, "minutes_required": 25 * 60},
+            {"name": "Corporal", "role_id": 1274771534119964813, "minutes_required": 50 * 60},
+            {"name": "Specialist", "role_id": 1274771654907658402, "minutes_required": 75 * 60},
+            {"name": "Sergeant", "role_id": 1274771991748022276, "minutes_required": 100 * 60},
+            {"name": "Staff Sergeant", "role_id": 1274772130424164384, "minutes_required": 150 * 60},
+            {"name": "Sergeant First Class", "role_id": 1274772191107485706, "minutes_required": 225 * 60},
+            {"name": "Master Sergeant", "role_id": 1274772252545519708, "minutes_required": 300 * 60},
+            {"name": "First Sergeant", "role_id": 1274772335689465978, "minutes_required": 375 * 60},
+            {"name": "Sergeant Major", "role_id": 1274772419927605299, "minutes_required": 450 * 60},
+            {"name": "Command Sergeant Major", "role_id": 1274772500164640830, "minutes_required": 550 * 60},
+            {"name": "Sergeant Major of the Army", "role_id": 1274772595031539787, "minutes_required": 650 * 60},
+            {"name": "Warrant Officer 1", "role_id": 1358212838631407797, "minutes_required": 750 * 60},
+            {"name": "Chief Warrant Officer 2", "role_id": 1358213159583875172, "minutes_required": 875 * 60},
+            {"name": "Chief Warrant Officer 3", "role_id": 1358213229112852721, "minutes_required": 1000 * 60},
+            {"name": "Chief Warrant Officer 4", "role_id": 1358213408704430150, "minutes_required": 1200 * 60},
+            {"name": "Chief Warrant Officer 5", "role_id": 1358213451289460847, "minutes_required": 1400 * 60},
+            {"name": "Second Lieutenant", "role_id": 1358213662216814784, "minutes_required": 1600 * 60},
+            {"name": "First Lieutenant", "role_id": 1358213759805554979, "minutes_required": 1850 * 60},
+            {"name": "Captain", "role_id": 1358213809466118276, "minutes_required": 2100 * 60},
+            {"name": "Major", "role_id": 1358213810598449163, "minutes_required": 2400 * 60},
+            {"name": "Lieutenant Colonel", "role_id": 1358213812175503430, "minutes_required": 2750 * 60},
+            {"name": "Colonel", "role_id": 1358213813140459520, "minutes_required": 3100 * 60},
+            {"name": "Brigadier General", "role_id": 1358213814234906786, "minutes_required": 3500 * 60},
+            {"name": "Major General", "role_id": 1358213815203795004, "minutes_required": 4000 * 60},
+            {"name": "Lieutenant General", "role_id": 1358213817229770783, "minutes_required": 4500 * 60},
+            {"name": "General", "role_id": 1358213815983935608, "minutes_required": 5000 * 60},
+            {"name": "General of the Army", "role_id": 1358213816617275483, "minutes_required": 6000 * 60},
+        ]
+        
+        current_rank = None
+        next_rank = None
+        
+        for i, rank in enumerate(military_ranks):
+            if minutes >= rank["minutes_required"]:
+                current_rank = rank
+                if i < len(military_ranks) - 1:
+                    next_rank = military_ranks[i + 1]
+            elif not next_rank:
+                next_rank = rank
+                if i > 0:
+                    current_rank = military_ranks[i - 1]
+                break
+        
+        if current_rank:
+            embed.add_field(name="Current Rank", value=current_rank["name"], inline=True)
+        else:
+            embed.add_field(name="Current Rank", value="None", inline=True)
+            
+        if next_rank:
+            minutes_needed = next_rank["minutes_required"] - minutes
+            hours_needed = minutes_needed / 60
+            embed.add_field(name="Next Rank", value=f"{next_rank['name']} (needs {hours_needed:.2f} more hours)", inline=True)
+        else:
+            embed.add_field(name="Next Rank", value="Maximum rank reached!", inline=True)
+            
+        await ctx.send(embed=embed)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Start the counter loop when the bot is ready."""
+        # Start the counter loop if it's not already running
+        if not self.count_and_update.is_running():
+            interval = await self.config.interval()
+            self.count_and_update.change_interval(minutes=interval)
+            self.count_and_update.start()
+            log.info(f"Started game counter loop with {interval} minute interval")
 
 async def setup(bot: Red):
     """Set up the GameCounter cog."""
