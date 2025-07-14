@@ -1,8 +1,0 @@
-{
-  "name": "zerolivesleft",  
-  "author": ["Your Name"],
-  "short": "Short Description",
-  "description": "Longer description",
-  "requirements": ["aiohttp"],
-  "tags": ["tag1", "tag2"]
-}
