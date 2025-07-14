@@ -5,6 +5,7 @@ import os
 import json
 from aiohttp import web
 import discord # Import discord for type hints in commands
+from datetime import datetime  # Added missing import
 
 log = logging.getLogger("red.Elkz.zerolivesleft.webapi")
 

@@ -596,7 +596,7 @@ class ActivityTrackingLogic:
             value=(
                 f"Total Configured: `{len(military_ranks)}`\n"
                 f"Valid Ranks: `{len(valid_ranks)}`\n"
-                f"Use `{ctx.prefix}zll activityset militaryranks list` for details"
+                f"Use `{ctx.prefix}zll militaryranks list` for details" # Updated command help
             ),
             inline=False
         )
