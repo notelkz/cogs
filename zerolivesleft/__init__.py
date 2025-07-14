@@ -29,37 +29,37 @@ class Zerolivesleft(commands.Cog):
         
         # --- CENTRALIZED CONFIG ---
         self.config = Config.get_conf(self, identifier=6789012345, force_registration=True)
-        # WebServer settings
+        # WebServer settings (previously from WebServer cog)
         self.config.register_global(
             webserver_host="0.0.0.0", 
             webserver_port=5000, 
-            webserver_api_key=None
+            webserver_api_key=None # Key for Django to authenticate with RedBot
         )
-        # GameCounter/RoleCounter settings
+        # GameCounter/RoleCounter settings (previously from GameCounter cog)
         self.config.register_global(
-            gc_api_base_url=None, 
-            gc_api_key=None,      
-            gc_interval=1,        
+            gc_api_base_url=None, # Django's public API URL for game counts
+            gc_api_key=None,      # Key for RedBot to authenticate with Django for game counts
+            gc_interval=1,        # 1 minute for faster debugging
             gc_counting_guild_id=None,
             gc_game_role_mappings={}
         )
-        # ActivityTracker settings
+        # ActivityTracker settings (previously from ActivityTracker cog)
         self.config.register_guild(
-            at_user_activity={},  
+            at_user_activity={},  # user_id: total_minutes
             at_recruit_role_id=None,
             at_member_role_id=None,
             at_promotion_threshold_hours=24.0,
-            at_military_ranks=[],  
-            at_api_url=None,       
-            at_api_key=None,       
+            at_military_ranks=[],  # list of dicts: {name, discord_role_id, required_hours}
+            at_api_url=None,       # Django's public API URL for activity/promotions
+            at_api_key=None,       # Key for RedBot to auth with Django for activity/promotions
             at_promotion_update_url=None,
             at_military_rank_update_url=None,
             at_promotion_channel_id=None,
         )
-        # Calendar Sync settings
+        # Calendar Sync settings (previously from ZeroCalendar cog)
         self.config.register_global(
-            cal_api_url="https://zerolivesleft.net/api/events/", 
-            cal_api_key=None                                    
+            cal_api_url="https://zerolivesleft.net/api/events/", # Django's public API URL for calendar
+            cal_api_key=None                                    # Key for RedBot to auth with Django for calendar
         )
 
         # --- SHARED RESOURCES ---
@@ -69,13 +69,17 @@ class Zerolivesleft(commands.Cog):
         self.web_site = None
         
         # --- INSTANTIATE LOGIC MANAGERS ---
+        # These managers hold the methods for their specific functionality
+        # They are passed a reference to this main cog instance ('self')
         self.web_manager = WebApiManager(self)
         self.role_counting_logic = RoleCountingLogic(self)
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
 
         # --- WEB SERVER SETUP ---
+        # Add core routes
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
+        # Add routes from other parts of the cog (handled by WebApiManager)
         self.web_manager.register_all_routes() # This method will add all routes from all modules to self.web_app
 
         # Start the web server initialization task
@@ -93,6 +97,7 @@ class Zerolivesleft(commands.Cog):
             host = await self.config.webserver_host()
             port = await self.config.webserver_port()
             try:
+                # Routes are already added to self.web_app.router by WebApiManager.register_all_routes()
                 self.web_runner = web.AppRunner(self.web_app)
                 await self.web_runner.setup()
                 
@@ -101,17 +106,20 @@ class Zerolivesleft(commands.Cog):
                 log.info(f"Central web server started on http://{host}:{port}")
             except Exception as e:
                 log.error(f"Failed to start central web server: {e}")
-                self.web_runner = None
+                self.web_runner = None # Ensure state is reset on failure
 
     def cog_unload(self):
         """Cleanup when the cog is unloaded."""
+        # Cancel all periodic tasks
         self.role_counting_logic.stop_tasks()
         self.calendar_sync_logic.stop_tasks()
-        self.activity_tracking_logic.stop_tasks()
+        self.activity_tracking_logic.stop_tasks() # Handles its own cleanup
 
+        # Shutdown web server
         if self.web_runner:
             asyncio.create_task(self.shutdown_webserver())
         
+        # Close aiohttp session
         asyncio.create_task(self.session.close())
         log.info("Zerolivesleft cog unloaded.")
 
@@ -146,23 +154,176 @@ class Zerolivesleft(commands.Cog):
         await self.activity_tracking_logic.show_config_command(ctx)
         await self.calendar_sync_logic.show_config_command(ctx)
 
-    # --- REGISTER SUBCOMMAND GROUPS ---
-    # We now add the command groups from the logic managers directly to the main zll group.
-    # The logic managers must define their command groups as methods that return the group object.
+    # --- WEBSERVER SUBCOMMANDS ---
+    @zerolivesleft_group.group(name="webserver", aliases=["ws"])
+    async def webserver_group(self, ctx: commands.Context):
+        """Commands to manage the central web server."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
     
-    def add_all_subcommand_groups(self):
-        """Adds command groups from logic modules to the main zll group."""
-        log.info("Adding subcommand groups to !zll group.")
-        self.zerolivesleft_group.add_command(self.web_manager.get_commands_group())
-        self.zerolivesleft_group.add_command(self.role_counting_logic.get_commands_group())
-        self.zerolivesleft_group.add_command(self.activity_tracking_logic.get_commands_group())
-        self.zerolivesleft_group.add_command(self.calendar_sync_logic.get_commands_group())
-        log.info("All subcommand groups added.")
+    @webserver_group.command(name="sethost")
+    async def webserver_set_host(self, ctx, host: str):
+        await self.web_manager.set_host_command(ctx, host)
+
+    @webserver_group.command(name="setport")
+    async def webserver_set_port(self, ctx, port: int):
+        await self.web_manager.set_port_command(ctx, port)
+
+    @webserver_group.command(name="setapikey")
+    async def webserver_set_apikey(self, ctx, *, api_key: str):
+        await self.web_manager.set_apikey_command(ctx, api_key)
+
+    @webserver_group.command(name="restart")
+    async def webserver_restart(self, ctx):
+        await self.web_manager.restart_server_command(ctx)
+    
+    @webserver_group.command(name="showconfig")
+    async def webserver_show_config(self, ctx):
+        await self.web_manager.show_config_command(ctx)
+
+    # --- ROLECOUNTER SUBCOMMANDS ---
+    @zerolivesleft_group.group(name="rolecounter", aliases=["rc"])
+    async def rolecounter_group(self, ctx: commands.Context):
+        """Manage the RoleCounter settings."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @rolecounter_group.command(name="setapiurl")
+    async def rolecounter_set_api_url(self, ctx: commands.Context, url: str):
+        await self.role_counting_logic.set_api_url(ctx, url)
+
+    @rolecounter_group.command(name="setapikey")
+    async def rolecounter_set_api_key(self, ctx: commands.Context, *, key: str):
+        await self.role_counting_logic.set_api_key(ctx, key=key)
+
+    @rolecounter_group.command(name="setinterval")
+    async def rolecounter_set_interval(self, ctx: commands.Context, minutes: int):
+        await self.role_counting_logic.set_interval(ctx, minutes)
+
+    @rolecounter_group.command(name="setguild")
+    async def rolecounter_set_guild(self, ctx: commands.Context, guild: discord.Guild):
+        await self.role_counting_logic.set_guild(ctx, guild)
+
+    @rolecounter_group.command(name="addmapping")
+    async def rolecounter_add_mapping(self, ctx: commands.Context, role: discord.Role, *, game_name: str):
+        await self.role_counting_logic.add_mapping(ctx, role, game_name=game_name)
+
+    @rolecounter_group.command(name="removemapping")
+    async def rolecounter_remove_mapping(self, ctx: commands.Context, role: discord.Role):
+        await self.role_counting_logic.remove_mapping(ctx, role)
+
+    @rolecounter_group.command(name="listmappings")
+    async def rolecounter_list_mappings(self, ctx: commands.Context):
+        await self.role_counting_logic.list_mappings(ctx)
+    
+    @rolecounter_group.command(name="showconfig")
+    async def rolecounter_show_config(self, ctx: commands.Context):
+        await self.role_counting_logic.show_config_command(ctx)
+
+    # --- ACTIVITYTRACKER SUBCOMMANDS ---
+    @zerolivesleft_group.group(name="activityset", aliases=["atset"])
+    async def activityset_group(self, ctx: commands.Context):
+        """Manage ActivityTracker settings."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @activityset_group.command()
+    async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
+        await self.activity_tracking_logic.roles(ctx, recruit, member)
+
+    @activityset_group.command()
+    async def threshold(self, ctx, hours: float):
+        await self.activity_tracking_logic.threshold(ctx, hours)
+
+    @activityset_group.command(name="api")
+    async def activity_set_api(self, ctx, url: str, key: str):
+        await self.activity_tracking_logic.set_api(ctx, url, key)
+
+    @activityset_group.command(name="promotionurl")
+    async def activity_set_promotion_url(self, ctx, url: str):
+        await self.activity_tracking_logic.set_promotion_url(ctx, url)
+
+    @activityset_group.command(name="militaryrankurl")
+    async def activity_set_military_rank_url(self, ctx, url: str):
+        await self.activity_tracking_logic.set_military_rank_url(ctx, url)
+
+    @activityset_group.command(name="promotionchannel")
+    async def activity_set_promotion_channel(self, ctx, channel: discord.TextChannel):
+        await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
+
+    @activityset_group.group(name="militaryranks")
+    async def activity_militaryranks_group(self, ctx):
+        """Manage military ranks."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @activity_militaryranks_group.command(name="add")
+    async def activity_add_rank(self, ctx, role: discord.Role, required_hours: float):
+        await self.activity_tracking_logic.add_rank(ctx, role, required_hours)
+
+    @activity_militaryranks_group.command(name="remove")
+    async def activity_remove_rank(self, ctx, role_or_name: str):
+        await self.activity_tracking_logic.remove_rank(ctx, role_or_name)
+
+    @activity_militaryranks_group.command(name="clear")
+    async def activity_clear_ranks(self, ctx):
+        await self.activity_tracking_logic.clear_ranks(ctx)
+
+    @activity_militaryranks_group.command(name="list")
+    async def activity_list_ranks(self, ctx):
+        await self.activity_tracking_logic.list_ranks(ctx)
+    
+    @activityset_group.command(name="debug")
+    async def activity_debug_info(self, ctx):
+        await self.activity_tracking_logic.debug_info(ctx)
+
+    @activityset_group.command(name="forcesync")
+    async def activity_force_sync(self, ctx):
+        await self.activity_tracking_logic.force_sync(ctx)
+
+    # Hybrid commands need to be directly on the Cog class to be found by Red.
+    # They should call the logic manager's method.
+    @commands.hybrid_command(name="myvoicetime")
+    async def myvoicetime(self, ctx):
+        """Shows your total accumulated voice time."""
+        await self.activity_tracking_logic.myvoicetime(ctx)
+    
+    @commands.hybrid_command(name="status")
+    async def status(self, ctx, member: discord.Member = None):
+        """Show your (or another's) voice time and promotion progress."""
+        await self.activity_tracking_logic.status(ctx, member)
+
+
+    # --- CALENDAR SUBCOMMANDS ---
+    @zerolivesleft_group.group(name="calendar", aliases=["cal"])
+    async def calendar_group(self, ctx):
+        """Calendar management commands."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @calendar_group.command(name="setapiurl")
+    async def calendar_set_api_url(self, ctx, url: str):
+        await self.calendar_sync_logic.set_api_url(ctx, url)
+
+    @calendar_group.command(name="setapikey")
+    async def calendar_set_api_key(self, ctx, api_key: str):
+        await self.calendar_sync_logic.set_api_key(ctx, api_key)
+
+    @calendar_group.command(name="showconfig")
+    async def calendar_show_config(self, ctx):
+        await self.calendar_sync_logic.show_config(ctx)
+    
+    @calendar_group.command(name="sync")
+    async def calendar_sync_command(self, ctx):
+        await self.calendar_sync_logic.calendar_sync(ctx)
+
+    @calendar_group.command(name="list")
+    async def calendar_list_command(self, ctx):
+        await self.calendar_sync_logic.calendar_list(ctx)
 
 async def setup(bot: Red):
     """Set up the Zerolivesleft cog."""
     cog = Zerolivesleft(bot)
     await bot.add_cog(cog)
-    # After cog is added, its commands are registered.
-    # Now, explicitly add subcommands (groups) from manager classes.
-    cog.add_all_subcommand_groups()
+    # The subcommands are now correctly associated via decorators
+    # within the main cog and call methods on logic managers.

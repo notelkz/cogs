@@ -56,7 +56,7 @@ class ActivityTrackingLogic:
                     if member:
                         duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
                         if duration_minutes >= 1:
-                            log.info(f"Unloading: Logging {duration_minutes:.2f} minutes for {member.name} due to cog unload.")
+                            log.info(f"ActivityTracking: Unloading: Logging {duration_minutes:.2f} minutes for {member.name} due to cog unload.")
                             asyncio.create_task(self._update_user_voice_minutes(guild, member, int(duration_minutes)))
         self.voice_tracking.clear()
 
@@ -174,7 +174,7 @@ class ActivityTrackingLogic:
         try:
             async with self.session.post(endpoint, headers=headers, json=payload, timeout=5) as resp:
                 if resp.status == 200:
-                    log.info(f"ActivityTracking: Successfully updated military rank for {discord_id} to {rank_name}")
+                    log.info(f"ActivityTracking: Successfully updated military rank for {discord_id} to {rank_name}.")
                 else:
                     error_text = await resp.text()
                     log.error(f"ActivityTracking: Failed to update military rank: {resp.status} - {error_text}")
@@ -185,14 +185,25 @@ class ActivityTrackingLogic:
 
     async def _setup_periodic_tasks(self):
         """Sets up periodic tasks for role checking and activity updates."""
-        await self.cog.bot.wait_until_ready() # Wait for bot to be fully ready
+        await self.cog.bot.wait_until_ready()
         
-        guild_id_env_str = os.environ.get("DISCORD_GUILD_ID") # Used for the main guild for ActivityTracker's internal API routes
-        if not guild_id_env_str:
-            log.error("ActivityTracking: DISCORD_GUILD_ID environment variable not set. Periodic tasks will not be scheduled.")
+        # Use guild ID from main cog's config or env variable if main guild isn't explicitly set in config
+        # Preferring config over env var for consistency with other cog settings
+        guild_id_from_config = await self.cog.config.gc_counting_guild_id() # Reusing gc_counting_guild_id from main config
+        guild_id_env_str = os.environ.get("DISCORD_GUILD_ID")
+
+        if guild_id_from_config:
+            guild_id = guild_id_from_config
+        elif guild_id_env_str:
+            try:
+                guild_id = int(guild_id_env_str)
+            except ValueError:
+                log.error("ActivityTracking: DISCORD_GUILD_ID environment variable is not a valid integer. Periodic tasks will not be scheduled.")
+                return
+        else:
+            log.error("ActivityTracking: Main guild ID not set in config or environment. Periodic tasks will not be scheduled.")
             return
 
-        guild_id = int(guild_id_env_str)
         guild = self.cog.bot.get_guild(guild_id)
         if not guild:
             log.error(f"ActivityTracking: Guild with ID {guild_id} not found. Periodic tasks will not be scheduled.")
@@ -208,7 +219,7 @@ class ActivityTrackingLogic:
 
     async def _schedule_periodic_role_check_loop(self, guild_id: int):
         """Schedules the periodic role check to run every 24 hours."""
-        while True: # Run indefinitely while cog is loaded
+        while True:
             try:
                 log.info(f"ActivityTracking: Running scheduled role check for guild ID: {guild_id}")
                 await self._periodic_role_check(guild_id)
@@ -218,11 +229,11 @@ class ActivityTrackingLogic:
                 break
             except Exception as e:
                 log.exception(f"ActivityTracking: An error occurred during the scheduled role check: {e}")
-            await asyncio.sleep(86400)  # Sleep for 24 hours
+            await asyncio.sleep(86400)
 
     async def _schedule_periodic_activity_updates_loop(self, guild_id: int):
         """Schedules periodic updates of activity for users currently in voice channels."""
-        while True: # Run indefinitely while cog is loaded
+        while True:
             try:
                 log.info(f"ActivityTracking: Running periodic activity update for guild ID: {guild_id}")
                 await self._update_active_voice_users(guild_id)
@@ -231,7 +242,7 @@ class ActivityTrackingLogic:
                 break
             except Exception as e:
                 log.exception(f"ActivityTracking: An error occurred during the periodic activity update: {e}")
-            await asyncio.sleep(300)  # Sleep for 5 minutes
+            await asyncio.sleep(300)
 
     async def _update_active_voice_users(self, guild_id: int):
         """Updates activity for users currently in voice channels."""
@@ -410,12 +421,10 @@ class ActivityTrackingLogic:
             self.voice_tracking[guild_id] = {}
         
         if before.channel is None and after.channel is not None:
-            # User joined a voice channel
             self.voice_tracking[guild_id][user_id] = datetime.utcnow()
             log.debug(f"ActivityTracking: {member.name} joined voice channel {after.channel.name}. Started tracking.")
         
         elif before.channel is not None and after.channel is None:
-            # User left a voice channel
             if user_id in self.voice_tracking[guild_id]:
                 join_time = self.voice_tracking[guild_id][user_id]
                 duration = datetime.utcnow() - join_time
@@ -433,30 +442,22 @@ class ActivityTrackingLogic:
                 log.warning(f"ActivityTracking: {member.name} left voice but wasn't being tracked.")
 
 
-    # --- Commands (these will be added as subcommands to the main cog's group) ---
+    # --- COMMANDS (These are not @commands.command() directly, but are called by main cog) ---
+    # These methods are are designed to be called from the main cog's command definitions.
 
-    @commands.group(name="activityset", aliases=["atset"])
-    async def activityset_group(self, ctx):
-        """Manage ActivityTracker settings for Zerolivesleft."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @activityset_group.command()
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
         """Set the Recruit and Member roles."""
-        await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit.id) # Use central config
-        await self.config.guild(ctx.guild).at_member_role_id.set(member.id) # Use central config
+        await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit.id)
+        await self.config.guild(ctx.guild).at_member_role_id.set(member.id)
         await ctx.send("Recruit and Member roles have been set.")
 
-    @activityset_group.command()
     async def threshold(self, ctx, hours: float):
         """Set the voice hours required to be promoted from Recruit to Member."""
         if hours <= 0:
             return await ctx.send("Threshold must be a positive number of hours.")
-        await self.config.guild(ctx.guild).at_promotion_threshold_hours.set(hours) # Use central config
+        await self.config.guild(ctx.guild).at_promotion_threshold_hours.set(hours)
         await ctx.send(f"Promotion threshold set to {hours} hours.")
 
-    @activityset_group.command(name="api")
     async def set_api(self, ctx, url: str, key: str):
         """Set the base API URL and the API Key for the website."""
         if not url.startswith("http://") and not url.startswith("https://"):
@@ -464,44 +465,34 @@ class ActivityTrackingLogic:
         if not url.endswith("/"):
             url += "/"
         
-        await self.config.guild(ctx.guild).at_api_url.set(url) # Use central config
-        await self.config.guild(ctx.guild).at_api_key.set(key) # Use central config
+        await self.config.guild(ctx.guild).at_api_url.set(url)
+        await self.config.guild(ctx.guild).at_api_key.set(key)
         await ctx.send("API URL and Key have been saved.")
 
-    @activityset_group.command(name="promotionurl")
     async def set_promotion_url(self, ctx, url: str):
         """Set the full URL for community role promotions."""
         if not url.startswith("http://") and not url.startswith("https://"):
             return await ctx.send("URL must start with http:// or https://")
-        await self.config.guild(ctx.guild).at_promotion_update_url.set(url) # Use central config
+        await self.config.guild(ctx.guild).at_promotion_update_url.set(url)
         await ctx.send("Community role promotion URL set.")
 
-    @activityset_group.command(name="militaryrankurl")
     async def set_military_rank_url(self, ctx, url: str):
         """Set the full URL for military rank updates."""
         if not url.startswith("http://") and not url.startswith("https://"):
             return await ctx.send("URL must start with http:// or https://")
-        await self.config.guild(ctx.guild).at_military_rank_update_url.set(url) # Use central config
+        await self.config.guild(ctx.guild).at_military_rank_update_url.set(url)
         await ctx.send("Military rank update URL set.")
 
-    @activityset_group.command(name="promotionchannel")
     async def set_promotion_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel for promotion notifications."""
-        await self.config.guild(ctx.guild).at_promotion_channel_id.set(channel.id) # Use central config
+        await self.config.guild(ctx.guild).at_promotion_channel_id.set(channel.id)
         await ctx.send(f"Promotion notification channel set to {channel.mention}.")
 
-    @activityset_group.group(name="militaryranks")
-    async def militaryranks_group(self, ctx):
-        """Manage military ranks."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @militaryranks_group.command(name="add")
     async def add_rank(self, ctx, role: discord.Role, required_hours: float):
         """Add a new military rank."""
         if required_hours < 0:
             return await ctx.send("Required hours cannot be negative.")
-        async with self.config.guild(ctx.guild).at_military_ranks() as ranks: # Use central config
+        async with self.config.guild(ctx.guild).at_military_ranks() as ranks:
             for r in ranks:
                 if str(r.get("discord_role_id")) == str(role.id):
                     return await ctx.send(f"A rank for role '{role.name}' already exists.")
@@ -516,10 +507,9 @@ class ActivityTrackingLogic:
             ranks.sort(key=lambda r: r['required_hours'])
         await ctx.send(f"Added military rank: **{role.name}** at **{required_hours}** hours.")
 
-    @militaryranks_group.command(name="remove")
     async def remove_rank(self, ctx, role_or_name: str):
         """Remove a military rank by role ID or name."""
-        async with self.config.guild(ctx.guild).at_military_ranks() as ranks: # Use central config
+        async with self.config.guild(ctx.guild).at_military_ranks() as ranks:
             initial_len = len(ranks)
             ranks[:] = [r for r in ranks if str(r.get('discord_role_id')) != role_or_name]
             if len(ranks) == initial_len:
@@ -530,7 +520,6 @@ class ActivityTrackingLogic:
             else:
                 await ctx.send(f"No military rank found matching '{role_or_name}'.")
 
-    @militaryranks_group.command(name="clear")
     async def clear_ranks(self, ctx):
         """Clear all configured military ranks."""
         view = ConfirmView(ctx.author, disable_buttons=True)
@@ -540,15 +529,14 @@ class ActivityTrackingLogic:
         )
         await view.wait()
         if view.result:
-            await self.config.guild(ctx.guild).at_military_ranks.set([]) # Use central config
+            await self.config.guild(ctx.guild).at_military_ranks.set([])
             await ctx.send("All military ranks have been cleared.")
         else:
             await ctx.send("Operation cancelled.")
 
-    @militaryranks_group.command(name="list")
     async def list_ranks(self, ctx):
         """List all configured military ranks."""
-        ranks = await self.config.guild(ctx.guild).at_military_ranks() # Use central config
+        ranks = await self.config.guild(ctx.guild).at_military_ranks()
         if not ranks:
             await ctx.send("No military ranks have been set.")
             return
@@ -560,17 +548,17 @@ class ActivityTrackingLogic:
             msg += f"- **{r['name']}** ({role_mention}): `{r['required_hours']}` hours\n"
         await ctx.send(msg)
 
-    async def show_config_command(self, ctx: commands.Context):
+    async def show_config_command(self, ctx):
         """Shows the current ActivityTracker configuration."""
-        guild_settings = await self.config.guild(ctx.guild).all() # Get guild-specific config
+        settings = await self.config.guild(ctx.guild).all()
         embed = discord.Embed(
             title="ActivityTracker Settings",
             color=discord.Color.blue()
         )
-        api_url = guild_settings.get("at_api_url")
-        api_key = guild_settings.get("at_api_key")
-        promotion_url = guild_settings.get("at_promotion_update_url")
-        military_rank_url = guild_settings.get("at_military_rank_update_url")
+        api_url = settings.get("at_api_url")
+        api_key = settings.get("at_api_key")
+        promotion_url = settings.get("at_promotion_update_url")
+        military_rank_url = settings.get("at_military_rank_update_url")
         embed.add_field(
             name="API Configuration",
             value=(
@@ -581,8 +569,8 @@ class ActivityTrackingLogic:
             ),
             inline=False
         )
-        recruit_role_id = guild_settings.get("at_recruit_role_id")
-        member_role_id = guild_settings.get("at_member_role_id")
+        recruit_role_id = settings.get("at_recruit_role_id")
+        member_role_id = settings.get("at_member_role_id")
         recruit_role = ctx.guild.get_role(recruit_role_id) if recruit_role_id else None
         member_role = ctx.guild.get_role(member_role_id) if member_role_id else None
         embed.add_field(
@@ -590,18 +578,18 @@ class ActivityTrackingLogic:
             value=(
                 f"Recruit Role: {recruit_role.mention if recruit_role else '`Not set`'}\n"
                 f"Member Role: {member_role.mention if member_role else '`Not set`'}\n"
-                f"Promotion Threshold: `{guild_settings.get('at_promotion_threshold_hours')} hours`"
+                f"Promotion Threshold: `{settings.get('at_promotion_threshold_hours')} hours`"
             ),
             inline=False
         )
-        channel_id = guild_settings.get("at_promotion_channel_id")
+        channel_id = settings.get("at_promotion_channel_id")
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         embed.add_field(
             name="Notification Settings",
             value=f"Promotion Channel: {channel.mention if channel else '`Not set`'}",
             inline=False
         )
-        military_ranks = guild_settings.get("at_military_ranks", [])
+        military_ranks = settings.get("at_military_ranks", [])
         valid_ranks = [r for r in military_ranks if 'discord_role_id' in r and ctx.guild.get_role(int(r['discord_role_id']))]
         embed.add_field(
             name="Military Ranks",
@@ -614,18 +602,14 @@ class ActivityTrackingLogic:
         )
         await ctx.send(embed=embed)
 
-    # --- DEBUG/UTILITY ---
-
-    @activityset_group.command(name="debug")
     async def debug_info(self, ctx):
         """Shows debug information about the ActivityTracker cog."""
         embed = discord.Embed(
             title="ActivityTracker Debug Information",
             color=discord.Color.gold()
         )
-        # Access guild from cog.bot
         main_guild_id_env = os.environ.get("DISCORD_GUILD_ID", "Not set")
-        main_guild = self.cog.bot.get_guild(int(main_guild_id_env)) if main_guild_id_env != "Not set" else None
+        main_guild = self.cog.bot.get_guild(int(main_guild_id_env)) if main_guild_id_env != "Not set" and main_guild_id_env.isdigit() else None
 
         web_status = "Unknown"
         if self.cog.web_runner and self.cog.web_site:
@@ -635,7 +619,6 @@ class ActivityTrackingLogic:
         else:
             web_status = "Not running"
 
-        # Host and Port from main cog's config
         host = await self.cog.config.webserver_host()
         port = await self.cog.config.webserver_port()
         
@@ -660,10 +643,9 @@ class ActivityTrackingLogic:
         embed.set_footer(text=f"ActivityTracker Cog | Discord.py {discord.__version__}")
         await ctx.send(embed=embed)
 
-    @activityset_group.command(name="forcesync")
     async def force_sync(self, ctx):
         """Force a sync of all active voice users."""
-        guild = ctx.guild # Sync for the current guild
+        guild = ctx.guild
         guild_id = guild.id
         
         updates_sent = 0
@@ -678,6 +660,7 @@ class ActivityTrackingLogic:
                 if guild_id in self.voice_tracking and member.id in self.voice_tracking[guild_id]:
                     join_time = self.voice_tracking[guild_id][member.id]
                     current_time = datetime.utcnow()
+                    
                     minutes_since_join = int((current_time - join_time).total_seconds() / 60)
                     
                     if minutes_since_join >= 1:
@@ -689,3 +672,175 @@ class ActivityTrackingLogic:
                         updates_sent += 1
         
         await ctx.send(f"Forced sync complete. Sent {updates_sent} updates.")
+
+    async def myvoicetime(self, ctx):
+        """Shows your total accumulated voice time."""
+        total_minutes = await self._get_user_voice_minutes(ctx.guild, ctx.author.id)
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        await ctx.send(f"Your total voice time is {hours} hours and {minutes} minutes.")
+
+    async def status(self, ctx, member: discord.Member = None):
+        """Show your (or another's) voice time and promotion progress."""
+        target = member or ctx.author
+        total_minutes = await self._get_user_voice_minutes(ctx.guild, target.id)
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        user_hours_float = total_minutes / 60.0
+        
+        embed = discord.Embed(
+            title=f"Activity Status for {target.display_name}",
+            color=target.color
+        )
+        embed.set_thumbnail(url=target.display_avatar.url)
+        embed.add_field(
+            name="Voice Activity",
+            value=f"**{hours}** hours and **{minutes}** minutes",
+            inline=False
+        )
+
+        recruit_role_id = await self.config.guild(ctx.guild).at_recruit_role_id()
+        member_role_id = await self.config.guild(ctx.guild).at_member_role_id()
+        threshold_hours = await self.config.guild(ctx.guild).at_promotion_threshold_hours()
+
+        if recruit_role_id and member_role_id and threshold_hours:
+            recruit_role = ctx.guild.get_role(recruit_role_id)
+            member_role = ctx.guild.get_role(member_role_id)
+            if recruit_role and member_role:
+                if member_role in target.roles:
+                    embed.add_field(
+                        name="Membership Status",
+                        value=f"✅ Full Member ({member_role.mention})",
+                        inline=False
+                    )
+                elif recruit_role in target.roles:
+                    threshold_minutes = threshold_hours * 60
+                    progress = min(100, (total_minutes / threshold_minutes) * 100)
+                    remaining_minutes = max(0, threshold_minutes - total_minutes)
+                    remaining_hours = remaining_minutes / 60.0
+                    progress_bar = self._generate_progress_bar(progress)
+                    embed.add_field(
+                        name="Membership Progress",
+                        value=(
+                            f"{recruit_role.mention} → {member_role.mention}\n"
+                            f"{progress_bar} **{progress:.1f}%**\n"
+                            f"Remaining: **{remaining_hours:.1f}** hours"
+                        ),
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Membership Status",
+                        value="Not in membership track (missing Recruit role)",
+                        inline=False
+                    )
+            else:
+                embed.add_field(
+                    name="Membership Status",
+                    value="Recruit or Member role not found in server.",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="Membership Status",
+                value="Recruit/Member roles or threshold not configured.",
+                inline=False
+            )
+
+        military_ranks = await self.config.guild(ctx.guild).at_military_ranks()
+        if military_ranks:
+            try:
+                sorted_ranks = sorted(
+                    [r for r in military_ranks if isinstance(r.get('required_hours'), (int, float))],
+                    key=lambda x: x['required_hours']
+                )
+
+                current_rank = None
+                next_rank = None
+
+                user_current_military_role_ids = {
+                    role.id for role in target.roles
+                    if any(str(role.id) == str(r.get('discord_role_id')) for r in military_ranks)
+                }
+                
+                user_eligible_ranks_from_roles = [
+                    r for r in military_ranks 
+                    if int(r.get('discord_role_id', 0)) in user_current_military_role_ids
+                ]
+
+                if user_eligible_ranks_from_roles:
+                    current_rank = max(user_eligible_ranks_from_roles, key=lambda x: x['required_hours'])
+                
+                if current_rank:
+                    higher_ranks = [r for r in sorted_ranks if r['required_hours'] > current_rank['required_hours']]
+                    if higher_ranks:
+                        next_rank = min(higher_ranks, key=lambda x: x['required_hours'])
+                else:
+                    if sorted_ranks:
+                        next_rank = sorted_ranks[0]
+
+                if current_rank:
+                    current_role_id = current_rank.get('discord_role_id')
+                    current_role = ctx.guild.get_role(int(current_role_id)) if current_role_id else None
+                    embed.add_field(
+                        name="Current Military Rank",
+                        value=(
+                            f"**{current_rank.get('name')}**\n"
+                            f"{current_role.mention if current_role else 'Role not found'}\n"
+                            f"Required: {current_rank.get('required_hours')} hours"
+                        ),
+                        inline=False
+                    )
+
+                if next_rank:
+                    next_role_id = next_rank.get('discord_role_id')
+                    next_role = ctx.guild.get_role(int(next_role_id)) if next_role_id else None
+                    
+                    progress_base_hours = current_rank.get('required_hours', 0) if current_rank else 0
+                    
+                    if next_rank['required_hours'] > progress_base_hours:
+                        progress = min(100, ((user_hours_float - progress_base_hours) / (next_rank['required_hours'] - progress_base_hours)) * 100)
+                        remaining_hours = max(0, next_rank['required_hours'] - user_hours_float)
+                        progress_bar = self._generate_progress_bar(progress)
+                        embed.add_field(
+                            name="Next Military Rank",
+                            value=(
+                                f"**{next_rank.get('name')}**\n"
+                                f"{next_role.mention if next_role else 'Role not found'}\n"
+                                f"{progress_bar} **{progress:.1f}%**\n"
+                                f"Remaining: **{remaining_hours:.1f}** hours"
+                            ),
+                            inline=False
+                        )
+                    else:
+                        embed.add_field(
+                            name="Next Military Rank",
+                            value="You have reached the highest rank! 🎖️",
+                            inline=False
+                        )
+                elif current_rank:
+                    embed.add_field(
+                        name="Next Military Rank",
+                        value="You have reached the highest rank! 🎖️",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="Military Rank",
+                        value="No military ranks configured or eligible",
+                        inline=False
+                    )
+            except Exception as e:
+                log.error(f"Error processing military ranks for {target.display_name}: {e}", exc_info=True)
+                embed.add_field(
+                    name="Military Rank Error",
+                    value=f"An error occurred processing military ranks. Please check logs.",
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="Military Rank",
+                value="No military ranks configured for this server.",
+                inline=False
+            )
+        await ctx.send(embed=embed)
