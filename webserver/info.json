@@ -1,0 +1,19 @@
+{
+    "author": [
+        "elkz"
+    ],
+    "name": "WebServer",
+    "short": "A central cog to manage a web server for other cogs.",
+    "description": "Provides a single, central aiohttp web server that other cogs can register their API routes with. This avoids port conflicts and simplifies management.",
+    "install_msg": "Thank you for installing the WebServer cog. Please load it *before* any other cogs that depend on it (e.g., `[p]load webserver`). You can configure the host and port with `[p]webserver set host` and `[p]webserver set port`.",
+    "required_cogs": {},
+    "requirements": [],
+    "tags": [
+        "web",
+        "api",
+        "server",
+        "utility",
+        "zerolivesleft"
+    ],
+    "end_user_data_statement": "This cog does not persistently store any user data. It manages a web server for other cogs to use."
+}

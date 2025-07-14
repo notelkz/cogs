@@ -26,7 +26,9 @@ class ZeroCalendar(red_commands.Cog):
         )
         self.api_url = None
         self.api_key = None
-        self.session = aiohttp.ClientSession()
+        #self.session = aiohttp.ClientSession()
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=1234567890)
         self.sync_task.start()
         
     def cog_unload(self):
