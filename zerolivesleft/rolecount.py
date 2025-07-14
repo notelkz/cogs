@@ -10,6 +10,7 @@ from redbot.core.bot import Red
 from discord.ext import tasks
 import logging
 
+# Changed logger name to reflect new module name
 log = logging.getLogger("red.Elkz.zerolivesleft.rolecount")
 
 class RoleCountingLogic:
@@ -28,7 +29,14 @@ class RoleCountingLogic:
 
     def start_tasks(self):
         """Starts the periodic game counting task."""
-        # Check if the task is already running
+        # Ensure interval is set before starting
+        interval_minutes = 15 # Default, will be updated by config if available
+        # Need to fetch the interval from config here or ensure it's loaded before this call
+        # For a clean start, we can get it from config on startup.
+        # However, tasks.loop is better started in an async function where config can be awaited.
+        # This will be handled by the _start_count_loop_wrapper if re-introduced, or bot.wait_until_ready()
+
+        # Check if the task is already running (e.g., if cog was reloaded)
         if self.count_loop_task.is_running():
             log.info("RoleCounting: Task is already running, skipping start.")
             return
@@ -46,6 +54,7 @@ class RoleCountingLogic:
         self.count_loop_task.change_interval(minutes=interval_minutes)
         self.count_loop_task.start()
         log.info(f"RoleCounting: Started count_and_update loop with {interval_minutes} minute interval.")
+
 
     def stop_tasks(self):
         """Stops the periodic game counting task."""
@@ -137,18 +146,15 @@ class RoleCountingLogic:
         """Sets the interval (in minutes) for the counter to run."""
         if minutes < 1:
             return await ctx.send("Interval must be at least 1 minute.")
-        await self.config.gc_interval.set(minutes) # Update config
-
-        # Correctly restart the loop:
-        if self.count_loop_task and self.count_loop_task.is_running():
-            self.count_loop_task.stop() # Stop the currently running task
-            # Removed: await self.count_loop_task.wait_until_finished() - this method doesn't exist
+        await self.config.gc_interval.set(minutes) # Using 'gc_interval' from central config
         
-        # Change interval and start again.
-        # The change_interval method implicitly handles restarting if it's running
-        # or sets the interval for the next start.
+        # Stop and restart the loop with the new interval
+        if self.count_loop_task and self.count_loop_task.is_running():
+            self.count_loop_task.cancel()
+            # Removed: await self.count_loop_task.wait_until_finished()
+        
         self.count_loop_task.change_interval(minutes=minutes)
-        self.count_loop_task.start() # Start it again with the new interval
+        self.count_loop_task.start()
         
         await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
 
