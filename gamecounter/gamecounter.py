@@ -26,9 +26,11 @@ class GameCounter(commands.Cog):
         self.config = Config.get_conf(
             self, identifier=123456789012345, force_registration=True
         )
+        # --- SIMPLIFIED CONFIG ---
+        # Only the settings needed for counting and reporting are kept.
         self.config.register_global(
-            api_base_url=None,
-            api_key=None,
+            api_base_url=None,  # e.g., https://zerolivesleft.net/api/
+            api_key=None,       # The one key your Django site expects (REDBOT_API_KEY)
             interval=15,
             guild_id=None,
             game_role_mappings={}
@@ -36,7 +38,8 @@ class GameCounter(commands.Cog):
         
         self.count_and_update.start()
         # Removed: asyncio.create_task(self.initialize()) as it's no longer needed.
-        # Registration will happen in the setup function.
+
+    # Removed: async def initialize(self): - This function is no longer part of the class.
 
     def cog_unload(self):
         """Cleanup when the cog is unloaded."""
@@ -105,7 +108,7 @@ class GameCounter(commands.Cog):
     @tasks.loop(minutes=15)
     async def count_and_update(self):
         """Periodically count users with specific roles and update the Django website."""
-        await self.bot.wait_until_ready() # Keep this here for the loop
+        await self.bot.wait_until_ready()
         try:
             guild_id = await self.config.guild_id()
             if not guild_id:
@@ -147,8 +150,8 @@ class GameCounter(commands.Cog):
         except Exception as e:
             log.error(f"Error in count_and_update loop: {e}", exc_info=True)
 
-    # --- Commands (omitted for brevity, assume unchanged) ---
-    # ... your existing commands ...
+    # --- Commands ---
+    
     @commands.hybrid_group(name="gamecounter", aliases=["gc"])
     @commands.is_owner()
     async def gamecounter_settings(self, ctx: commands.Context):
@@ -256,28 +259,13 @@ async def setup(bot: Red):
     cog = GameCounter(bot)
     webserver_cog = bot.get_cog("WebServer")
     if webserver_cog:
-        # Instead of directly adding, which might freeze the router,
-        # we'll wait for WebServer to be ready and then attempt to add.
-        # This requires WebServer to allow adding routes AFTER its initial setup.
-        # A more robust solution might involve a dedicated method in WebServer
-        # that allows dynamic route addition after startup.
-        # For now, let's try a short delay and direct addition.
-        try:
-            routes = [
-                web.get("/guilds/{guild_id}/roles/{role_id}/members", cog.get_role_members_handler),
-            ]
-            # This is still prone to the "frozen router" error if WebServer initializes too fast.
-            # A more robust fix requires changes in WebServer itself to expose a "ready for routes" signal
-            # or a method to add routes *after* its aiohttp application is fully set up.
-            # However, for many RedBot setups, simply waiting a bit can sometimes work.
-            # If this doesn't work, we would need to modify WebServer.
-            await asyncio.sleep(1) # Give WebServer a moment to set up its app
-            webserver_cog.add_routes(routes)
-            log.info("Successfully registered GameCounter routes with the WebServer cog.")
-        except RuntimeError as e:
-            log.error(f"Failed to register GameCounter routes with WebServer: {e}. WebServer router might be frozen.")
-        except Exception as e:
-            log.error(f"An unexpected error occurred during GameCounter route registration: {e}")
+        routes = [
+            web.get("/guilds/{guild_id}/roles/{role_id}/members", cog.get_role_members_handler),
+        ]
+        # This will now call WebServer's modified add_routes which queues routes
+        # if the router is already frozen.
+        webserver_cog.add_routes(routes)
+        log.info("Queued GameCounter routes with the WebServer cog.")
     else:
         log.error("WebServer cog not found. GameCounter API endpoints will not be available.")
     await bot.add_cog(cog)

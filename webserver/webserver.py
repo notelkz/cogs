@@ -18,19 +18,27 @@ class WebServer(commands.Cog):
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
+        self._routes_to_add = [] # NEW: Queue for routes from other cogs
         
         self.web_app.router.add_get("/health", self.health_check_handler)
         asyncio.create_task(self.initialize())
 
     async def initialize(self):
-        """Start the web server."""
+        """Start the web server and process queued routes."""
         await self.bot.wait_until_ready()
         if not self.web_runner:
             host = await self.config.host()
             port = await self.config.port()
             try:
                 self.web_runner = web.AppRunner(self.web_app)
-                await self.web_runner.setup()
+                await self.web_runner.setup() # Router gets set up/frozen here
+
+                # NEW: Add routes from other cogs *after* setup, *before* start
+                if self._routes_to_add:
+                    self.web_app.router.add_routes(self._routes_to_add)
+                    log.info(f"Processed {len(self._routes_to_add)} queued routes from other cogs.")
+                    self._routes_to_add = [] # Clear the queue
+                
                 self.web_site = web.TCPSite(self.web_runner, host, port)
                 await self.web_site.start()
                 log.info(f"Central web server started on http://{host}:{port}")
@@ -50,9 +58,22 @@ class WebServer(commands.Cog):
     async def health_check_handler(self, request):
         return web.Response(text="OK", status=200)
 
+    # MODIFIED: add_routes method to queue routes
     def add_routes(self, routes):
-        self.web_app.router.add_routes(routes)
-        log.info(f"Added {len(routes)} routes to the web server.")
+        if self.web_runner and self.web_runner.is_setup: # If already set up, try to add directly
+            try:
+                self.web_app.router.add_routes(routes)
+                log.info(f"Dynamically added {len(routes)} routes to the running web server.")
+                return True
+            except RuntimeError as e:
+                log.warning(f"Could not dynamically add routes to web server (router frozen): {e}. Queuing for next restart.")
+                self._routes_to_add.extend(routes) # Fallback to queue
+                return False
+        else: # Not yet set up, just queue them
+            self._routes_to_add.extend(routes)
+            log.info(f"Queued {len(routes)} routes to be added when the web server initializes.")
+            return True
+
 
     @commands.group(name="webserver")
     @commands.is_owner()
@@ -60,7 +81,6 @@ class WebServer(commands.Cog):
         """Commands to manage the central web server."""
         pass
 
-    # --- FIXED: Changed .command() to .group() ---
     @webserver_group.group(name="set")
     async def webserver_set(self, ctx):
         """Base command for setting webserver configuration."""
