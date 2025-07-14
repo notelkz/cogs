@@ -5,7 +5,6 @@ import asyncio
 import aiohttp
 import logging
 import datetime
-import os  # Added missing import
 from discord.ext import commands, tasks
 from typing import Optional, Dict, List, Any
 
@@ -413,14 +412,12 @@ class CalendarSyncLogic:
             
         await ctx.send("Syncing events between Discord and the website...")
         try:
-            # Pull events from website
-            website_events = await self.pull_events_from_website()
-            # Push Discord events to website
-            discord_events_pushed = await self.push_events_to_website()
-            
+            # Call the periodic sync method directly to execute the sync logic
+            # This method will return the sync results
+            result = await self.sync_events_periodic() 
             await ctx.send(f"Sync completed successfully!\n"
-                         f"• Found {len(website_events) if website_events else 0} events on website\n"
-                         f"• Pushed {discord_events_pushed} Discord events to website")
+                         f"• Found {result.get('website_events', 0)} events on website\n"
+                         f"• Pushed {result.get('discord_events_pushed', 0)} Discord events to website")
         except Exception as e:
             await ctx.send(f"Error during sync: {e}")
     
