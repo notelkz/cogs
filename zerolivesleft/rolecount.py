@@ -142,9 +142,12 @@ class RoleCountingLogic:
         # Correctly restart the loop:
         if self.count_loop_task and self.count_loop_task.is_running():
             self.count_loop_task.stop() # Stop the currently running task
-            await self.count_loop_task.wait_until_finished() # Wait for it to fully finish
+            # Removed: await self.count_loop_task.wait_until_finished() - this method doesn't exist
         
-        self.count_loop_task.change_interval(minutes=minutes) # Change interval
+        # Change interval and start again.
+        # The change_interval method implicitly handles restarting if it's running
+        # or sets the interval for the next start.
+        self.count_loop_task.change_interval(minutes=minutes)
         self.count_loop_task.start() # Start it again with the new interval
         
         await ctx.send(f"Counter interval set to `{minutes}` minutes. Loop restarted.")
