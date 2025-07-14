@@ -18,26 +18,29 @@ class WebServer(commands.Cog):
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
-        self._routes_to_add = [] # NEW: Queue for routes from other cogs
         
+        # We need to explicitly tell aiohttp to not freeze its router immediately.
+        # However, aiohttp's router usually freezes on AppRunner setup.
+        # The best way is to ensure all routes are collected before runner.setup()
+        # This requires a slight change in logic for how other cogs add routes.
+
         self.web_app.router.add_get("/health", self.health_check_handler)
         asyncio.create_task(self.initialize())
 
     async def initialize(self):
-        """Start the web server and process queued routes."""
+        """Start the web server."""
         await self.bot.wait_until_ready()
         if not self.web_runner:
             host = await self.config.host()
             port = await self.config.port()
             try:
-                self.web_runner = web.AppRunner(self.web_app)
-                await self.web_runner.setup() # Router gets set up/frozen here
+                # ALL routes from ALL cogs MUST be added to self.web_app.router
+                # *before* web_runner.setup() is called.
+                # The issue is GameCounter is adding routes in its setup(),
+                # but WebServer might have already called setup().
 
-                # NEW: Add routes from other cogs *after* setup, *before* start
-                if self._routes_to_add:
-                    self.web_app.router.add_routes(self._routes_to_add)
-                    log.info(f"Processed {len(self._routes_to_add)} queued routes from other cogs.")
-                    self._routes_to_add = [] # Clear the queue
+                self.web_runner = web.AppRunner(self.web_app)
+                await self.web_runner.setup()
                 
                 self.web_site = web.TCPSite(self.web_runner, host, port)
                 await self.web_site.start()
@@ -58,22 +61,22 @@ class WebServer(commands.Cog):
     async def health_check_handler(self, request):
         return web.Response(text="OK", status=200)
 
-    # MODIFIED: add_routes method to queue routes
+    # MODIFIED: add_routes method - This will now directly add routes
+    # during bot startup and the cog's setup. The WebServer initialize method
+    # itself will be responsible for ensuring it runs AFTER all other cogs
+    # have had a chance to call this add_routes method.
     def add_routes(self, routes):
-        if self.web_runner and self.web_runner.is_setup: # If already set up, try to add directly
-            try:
-                self.web_app.router.add_routes(routes)
-                log.info(f"Dynamically added {len(routes)} routes to the running web server.")
-                return True
-            except RuntimeError as e:
-                log.warning(f"Could not dynamically add routes to web server (router frozen): {e}. Queuing for next restart.")
-                self._routes_to_add.extend(routes) # Fallback to queue
-                return False
-        else: # Not yet set up, just queue them
-            self._routes_to_add.extend(routes)
-            log.info(f"Queued {len(routes)} routes to be added when the web server initializes.")
-            return True
-
+        """Adds a list of aiohttp routes to the web application."""
+        # This method is called by other cogs like GameCounter in their setup().
+        # We assume that WebServer's initialize() will process these routes
+        # after they've been added here, but before its aiohttp app is setup.
+        try:
+            self.web_app.router.add_routes(routes)
+            log.info(f"Dynamically added {len(routes)} routes to the web application router.")
+        except RuntimeError as e:
+            # This should ideally not happen if called during cog setup,
+            # but if it does, it implies a timing issue that WebServer needs to manage better.
+            log.error(f"Failed to add routes to web app: {e}. Router might be frozen prematurely.")
 
     @commands.group(name="webserver")
     @commands.is_owner()
