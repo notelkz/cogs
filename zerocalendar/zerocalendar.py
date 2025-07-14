@@ -5,7 +5,7 @@ import logging
 import datetime
 from discord.ext import commands, tasks
 from typing import Optional, Dict, List, Any
-from redbot.core import commands as red_commands
+from redbot.core import commands as red_commands, Config
 from redbot.core.bot import Red
 
 log = logging.getLogger("red.zerocogs.zerocalendar")
@@ -19,25 +19,36 @@ class ZeroCalendar(red_commands.Cog):
     
     def __init__(self, bot: Red):
         self.bot = bot
-        self.config = bot.get_cog("Config")
-        self.api_url = "https://zerolives.gg/api/events/"  # Replace with your actual API URL
+        self.config = Config.get_conf(self, identifier=1234567890)
+        self.config.register_global(
+            api_url="https://zerolivesleft.net/api/events/",
+            api_key=None
+        )
+        self.api_url = None
         self.api_key = None
         self.session = aiohttp.ClientSession()
+        self.sync_task.start()
         
     def cog_unload(self):
+        self.sync_task.cancel()
         asyncio.create_task(self.session.close())
     
     async def initialize(self):
         """Initialize the cog with stored configuration"""
-        self.api_key = await self.bot.get_shared_api_tokens("zerolives")
-        if not self.api_key.get("api_key"):
-            log.warning("API key not set. Use [p]set api zerolives api_key,YOUR_API_KEY to set it.")
+        self.api_url = await self.config.api_url()
+        self.api_key = await self.config.api_key()
+        
+        if not self.api_url:
+            log.warning("API URL not set. Use [p]calendar setapiurl to set it.")
+        
+        if not self.api_key:
+            log.warning("API key not set. Use [p]calendar setapikey to set it.")
     
     @tasks.loop(minutes=15)
     async def sync_task(self):
         """Periodically sync events between Discord and the website"""
         await self.bot.wait_until_ready()
-        if not self.api_key:
+        if not self.api_url or not self.api_key:
             await self.initialize()
         
         try:
@@ -47,6 +58,10 @@ class ZeroCalendar(red_commands.Cog):
     
     async def sync_events(self):
         """Sync events between Discord and the website"""
+        if not self.api_url or not self.api_key:
+            log.warning("API URL or API key not set. Cannot sync events.")
+            return
+            
         # First, pull events from the website
         await self.pull_events_from_website()
         
@@ -55,13 +70,13 @@ class ZeroCalendar(red_commands.Cog):
     
     async def pull_events_from_website(self):
         """Pull events from the website and create them in Discord if needed"""
-        if not self.api_key:
+        if not self.api_url or not self.api_key:
             return
         
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 self.api_url,
-                headers={"Authorization": f"Token {self.api_key.get('api_key')}"}
+                headers={"Authorization": f"Token {self.api_key}", "X-API-Key": self.api_key}
             ) as resp:
                 if resp.status != 200:
                     log.error(f"Failed to pull events from website: {resp.status}")
@@ -89,7 +104,7 @@ class ZeroCalendar(red_commands.Cog):
     
     async def push_events_to_website(self):
         """Push Discord events to the website if they don't exist there"""
-        if not self.api_key:
+        if not self.api_url or not self.api_key:
             return
         
         # Get all guilds the bot is in
@@ -107,13 +122,13 @@ class ZeroCalendar(red_commands.Cog):
     
     async def check_event_exists_on_website(self, discord_event_id: str) -> bool:
         """Check if an event with the given Discord ID exists on the website"""
-        if not self.api_key:
+        if not self.api_url or not self.api_key:
             return False
         
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{self.api_url}?discord_event_id={discord_event_id}",
-                headers={"Authorization": f"Token {self.api_key.get('api_key')}"}
+                headers={"Authorization": f"Token {self.api_key}", "X-API-Key": self.api_key}
             ) as resp:
                 if resp.status != 200:
                     return False
@@ -155,7 +170,7 @@ class ZeroCalendar(red_commands.Cog):
     
     async def create_website_event(self, discord_event: discord.ScheduledEvent):
         """Create a website event from a Discord scheduled event"""
-        if not self.api_key:
+        if not self.api_url or not self.api_key:
             return
         
         # Convert Discord event to website event format
@@ -176,9 +191,9 @@ class ZeroCalendar(red_commands.Cog):
             async with session.post(
                 self.api_url,
                 headers={
-                    "Authorization": f"Token {self.api_key.get('api_key')}",
+                    "Authorization": f"Token {self.api_key}",
                     "Content-Type": "application/json",
-                    "X-API-Key": self.api_key.get('api_key')
+                    "X-API-Key": self.api_key
                 },
                 json=event_data
             ) as resp:
@@ -191,16 +206,16 @@ class ZeroCalendar(red_commands.Cog):
     
     async def update_website_event(self, uuid: str, data: Dict[str, Any]):
         """Update a website event with the given data"""
-        if not self.api_key:
+        if not self.api_url or not self.api_key:
             return
         
         async with aiohttp.ClientSession() as session:
             async with session.patch(
                 f"{self.api_url}{uuid}/",
                 headers={
-                    "Authorization": f"Token {self.api_key.get('api_key')}",
+                    "Authorization": f"Token {self.api_key}",
                     "Content-Type": "application/json",
-                    "X-API-Key": self.api_key.get('api_key')
+                    "X-API-Key": self.api_key
                 },
                 json=data
             ) as resp:
@@ -219,9 +234,64 @@ class ZeroCalendar(red_commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
     
+    @calendar.command(name="setapiurl")
+    @red_commands.is_owner()
+    async def set_api_url(self, ctx, url: str):
+        """Set the API URL for the calendar integration"""
+        if not url.startswith("http"):
+            await ctx.send("URL must start with http:// or https://")
+            return
+            
+        await self.config.api_url.set(url)
+        self.api_url = url
+        await ctx.send(f"API URL set to: {url}")
+    
+    @calendar.command(name="setapikey")
+    @red_commands.is_owner()
+    async def set_api_key(self, ctx, api_key: str):
+        """Set the API key for the calendar integration"""
+        await self.config.api_key.set(api_key)
+        self.api_key = api_key
+        await ctx.send("API key has been set.")
+        
+        # Delete the message to keep the API key secret
+        try:
+            await ctx.message.delete()
+        except:
+            pass
+    
+    @calendar.command(name="showconfig")
+    @red_commands.is_owner()
+    async def show_config(self, ctx):
+        """Show the current calendar configuration"""
+        api_url = await self.config.api_url()
+        api_key = await self.config.api_key()
+        
+        # Create a DM to avoid showing the API key in public
+        try:
+            await ctx.author.send(
+                f"**Calendar Configuration**\n"
+                f"API URL: `{api_url}`\n"
+                f"API Key: `{api_key if api_key else 'Not set'}`\n\n"
+                f"Use `{ctx.prefix}calendar setapiurl` and `{ctx.prefix}calendar setapikey` to update these settings."
+            )
+            await ctx.send("Configuration sent to your DMs.")
+        except discord.Forbidden:
+            # If DMs are disabled, show a redacted version in the channel
+            await ctx.send(
+                f"**Calendar Configuration**\n"
+                f"API URL: `{api_url}`\n"
+                f"API Key: `{'✓ Set' if api_key else '✗ Not set'}`\n\n"
+                f"Use `{ctx.prefix}calendar setapiurl` and `{ctx.prefix}calendar setapikey` to update these settings."
+            )
+    
     @calendar.command(name="sync")
     async def calendar_sync(self, ctx):
         """Manually trigger a sync between Discord and the website"""
+        if not self.api_url or not self.api_key:
+            await ctx.send("API URL or API key not set. Use `{ctx.prefix}calendar setapiurl` and `{ctx.prefix}calendar setapikey` first.")
+            return
+            
         await ctx.send("Syncing events between Discord and the website...")
         try:
             await self.sync_events()
@@ -278,7 +348,7 @@ class ZeroCalendar(red_commands.Cog):
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.api_url}?discord_event_id={after.id}",
-                    headers={"Authorization": f"Token {self.api_key.get('api_key')}"}
+                    headers={"Authorization": f"Token {self.api_key}", "X-API-Key": self.api_key}
                 ) as resp:
                     if resp.status != 200:
                         return
@@ -310,7 +380,7 @@ class ZeroCalendar(red_commands.Cog):
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.api_url}?discord_event_id={event.id}",
-                    headers={"Authorization": f"Token {self.api_key.get('api_key')}"}
+                    headers={"Authorization": f"Token {self.api_key}", "X-API-Key": self.api_key}
                 ) as resp:
                     if resp.status != 200:
                         return
@@ -328,3 +398,8 @@ class ZeroCalendar(red_commands.Cog):
                     )
         except Exception as e:
             log.error(f"Error handling event deletion: {e}")
+
+async def setup(bot):
+    calendar_cog = ZeroCalendar(bot)
+    await bot.add_cog(calendar_cog)
+    await calendar_cog.initialize()
