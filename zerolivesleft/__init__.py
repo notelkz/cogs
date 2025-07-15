@@ -15,6 +15,7 @@ from .webapi import WebApiManager
 from .rolecount import RoleCountingLogic
 from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
+from .application_roles import ApplicationRolesLogic  # Add this line
 
 log = logging.getLogger("red.Elkz.zerolivesleft") # Main cog logger
 
@@ -74,6 +75,7 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic = RoleCountingLogic(self)
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
+        self.application_roles_logic = ApplicationRolesLogic(self)  # Add this line
 
         # --- WEB SERVER SETUP ---
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
@@ -110,6 +112,7 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic.stop_tasks()
         self.calendar_sync_logic.stop_tasks()
         self.activity_tracking_logic.stop_tasks() # Handles its own cleanup
+        self.application_roles_logic.stop_tasks()  # Add this line
 
         # Shutdown web server
         if self.web_runner:
@@ -149,6 +152,7 @@ class Zerolivesleft(commands.Cog):
         await self.role_counting_logic.show_config_command(ctx)
         await self.activity_tracking_logic.show_config_command(ctx)
         await self.calendar_sync_logic.show_config(ctx) # Corrected to show_config from calendar_sync
+        await self.application_roles_logic.show_config(ctx)  # Add this line
 
     # --- WEBSERVER SUBCOMMANDS ---
     @zerolivesleft_group.group(name="webserver", aliases=["ws"])
@@ -318,6 +322,53 @@ class Zerolivesleft(commands.Cog):
     @calendar_group.command(name="list")
     async def calendar_list_command(self, ctx):
         await self.calendar_sync_logic.calendar_list(ctx)
+
+    # --- APPLICATION ROLES SUBCOMMANDS ---
+    @zerolivesleft_group.group(name="approles", aliases=["ar"])
+    async def approles_group(self, ctx):
+        """Manage application role assignment settings."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @approles_group.command(name="setapiurl")
+    async def approles_set_api_url(self, ctx, url: str):
+        """Set the API URL for fetching application data."""
+        await self.application_roles_logic.set_api_url(ctx, url)
+
+    @approles_group.command(name="setapikey")
+    async def approles_set_api_key(self, ctx, *, key: str):
+        """Set the API key for authentication."""
+        await self.application_roles_logic.set_api_key(ctx, key=key)
+
+    @approles_group.command(name="enable")
+    async def approles_enable(self, ctx, enabled: bool):
+        """Enable or disable application role assignment."""
+        await self.application_roles_logic.toggle_enabled(ctx, enabled)
+
+    @approles_group.command(name="addregion")
+    async def approles_add_region(self, ctx, region: str, role: discord.Role):
+        """Add a mapping from region to role ID."""
+        await self.application_roles_logic.add_region_role(ctx, region, role)
+
+    @approles_group.command(name="removeregion")
+    async def approles_remove_region(self, ctx, region: str):
+        """Remove a region role mapping."""
+        await self.application_roles_logic.remove_region_role(ctx, region)
+
+    @approles_group.command(name="listregions")
+    async def approles_list_regions(self, ctx):
+        """List all region role mappings."""
+        await self.application_roles_logic.list_region_roles(ctx)
+
+    @approles_group.command(name="showconfig")
+    async def approles_show_config(self, ctx):
+        """Show the current configuration."""
+        await self.application_roles_logic.show_config(ctx)
+
+    @approles_group.command(name="refreshinvites")
+    async def approles_refresh_invites(self, ctx):
+        """Force a refresh of the invite cache."""
+        await self.application_roles_logic.force_cache_invites(ctx)
 
 async def setup(bot: Red):
     """Set up the Zerolivesleft cog."""
