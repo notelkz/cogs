@@ -5,8 +5,7 @@ import logging
 import asyncio
 from typing import Dict, List, Optional, Tuple
 import aiohttp
-from datetime import datetime, timedelta
-from aiohttp import web
+from datetime import datetime
 
 log = logging.getLogger("red.Elkz.zerolivesleft.application_roles")
 
@@ -28,8 +27,6 @@ class ApplicationRolesLogic:
             ar_api_key=None,  # API key for authentication
             ar_region_roles={},  # Mapping of region names to role IDs
             ar_enabled=True,  # Whether role assignment is enabled
-            ar_default_guild_id=None,  # Default guild to create invites for
-            ar_invite_channel_id=None,  # Channel to create invites in
         )
         
         # Cache of guild invites for tracking which invite was used
@@ -41,76 +38,6 @@ class ApplicationRolesLogic:
         
         # Start the task to cache all invites when the bot starts
         self.cache_invites_task = asyncio.create_task(self.cache_all_invites())
-        
-        # Register web routes
-        asyncio.create_task(self.setup_routes())
-    
-    async def setup_routes(self):
-        """Set up web routes for application role management."""
-        await self.bot.wait_until_ready()
-        self.cog.web_app.router.add_post("/api/applications/approved", self.handle_application_approved)
-        log.info("Registered application approval endpoint")
-    
-    async def handle_application_approved(self, request):
-        """Handle notification that an application has been approved."""
-        # Verify API key
-        api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key()
-        
-        if not api_key or api_key != expected_key:
-            return web.json_response({"error": "Unauthorized"}, status=401)
-        
-        try:
-            data = await request.json()
-            application_id = data.get('application_id')
-            
-            if not application_id:
-                return web.json_response({"error": "Missing application_id"}, status=400)
-            
-            # Get the guild ID from the request or config
-            guild_id = data.get('guild_id') or await self.config.ar_default_guild_id()
-            if not guild_id:
-                return web.json_response({"error": "No guild specified"}, status=400)
-            
-            guild = self.bot.get_guild(int(guild_id))
-            if not guild:
-                return web.json_response({"error": "Guild not found"}, status=404)
-            
-            # Generate an invite
-            invite_channel_id = await self.config.ar_invite_channel_id()
-            if not invite_channel_id:
-                # Use the first text channel we have permission for
-                for channel in guild.text_channels:
-                    if channel.permissions_for(guild.me).create_instant_invite:
-                        invite_channel_id = channel.id
-                        break
-            
-            if not invite_channel_id:
-                return web.json_response({"error": "No suitable channel found for invite"}, status=500)
-            
-            channel = guild.get_channel(int(invite_channel_id))
-            if not channel:
-                return web.json_response({"error": "Invite channel not found"}, status=404)
-            
-            # Create the invite with a 24-hour expiration and single use
-            invite = await channel.create_invite(
-                max_age=86400,  # 24 hours
-                max_uses=1,     # Single use
-                unique=True,
-                reason=f"Application approved: {application_id}"
-            )
-            
-            # Return the invite URL
-            return web.json_response({
-                "success": True,
-                "invite_url": invite.url,
-                "invite_code": invite.code,
-                "expires_at": (datetime.utcnow() + timedelta(seconds=invite.max_age)).isoformat() if invite.max_age else None
-            })
-            
-        except Exception as e:
-            log.error(f"Error handling application approval: {e}")
-            return web.json_response({"error": str(e)}, status=500)
     
     async def cache_all_invites(self):
         """Cache all invites for all guilds the bot is in."""
@@ -380,8 +307,6 @@ class ApplicationRolesLogic:
         api_key = await self.config.ar_api_key()
         enabled = await self.config.ar_enabled()
         region_roles = await self.config.ar_region_roles()
-        default_guild_id = await self.config.ar_default_guild_id()
-        invite_channel_id = await self.config.ar_invite_channel_id()
         
         embed = discord.Embed(
             title="Application Roles Configuration",
@@ -391,23 +316,6 @@ class ApplicationRolesLogic:
         embed.add_field(name="Enabled", value=str(enabled), inline=False)
         embed.add_field(name="API URL", value=api_url or "Not set", inline=False)
         embed.add_field(name="API Key", value="Set" if api_key else "Not set", inline=False)
-        
-        # Add default guild info
-        if default_guild_id:
-            guild = self.bot.get_guild(int(default_guild_id))
-            guild_name = guild.name if guild else f"Unknown Guild ({default_guild_id})"
-            embed.add_field(name="Default Guild", value=guild_name, inline=False)
-        else:
-            embed.add_field(name="Default Guild", value="Not set", inline=False)
-        
-        # Add invite channel info
-        if invite_channel_id:
-            guild = ctx.guild
-            channel = guild.get_channel(int(invite_channel_id))
-            channel_name = channel.mention if channel else f"Unknown Channel ({invite_channel_id})"
-            embed.add_field(name="Invite Channel", value=channel_name, inline=False)
-        else:
-            embed.add_field(name="Invite Channel", value="Not set", inline=False)
         
         region_roles_text = ""
         for region, role_id in region_roles.items():
@@ -427,21 +335,6 @@ class ApplicationRolesLogic:
         await ctx.send("Refreshing invite cache...")
         await self.cache_all_invites()
         await ctx.send("Invite cache refreshed.")
-    
-    async def set_default_guild(self, ctx, guild):
-        """Set the default guild for creating invites."""
-        await self.config.ar_default_guild_id.set(str(guild.id))
-        await ctx.send(f"Default guild set to: {guild.name}")
-    
-    async def set_invite_channel(self, ctx, channel):
-        """Set the channel for creating invites."""
-        # Check if the bot has permission to create invites in this channel
-        if not channel.permissions_for(ctx.guild.me).create_instant_invite:
-            await ctx.send(f"I don't have permission to create invites in {channel.mention}")
-            return
-        
-        await self.config.ar_invite_channel_id.set(str(channel.id))
-        await ctx.send(f"Invite channel set to: {channel.mention}")
     
     def stop_tasks(self):
         """Cancel any running tasks."""
