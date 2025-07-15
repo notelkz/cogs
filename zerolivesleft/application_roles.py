@@ -41,15 +41,6 @@ class ApplicationRolesLogic:
         
         # Start the task to cache all invites when the bot starts
         self.cache_invites_task = asyncio.create_task(self.cache_all_invites())
-        
-        # Register web routes
-        asyncio.create_task(self.setup_routes())
-    
-    async def setup_routes(self):
-        """Set up web routes for application role management."""
-        await self.bot.wait_until_ready()
-        self.cog.web_app.router.add_post("/api/applications/approved", self.handle_application_approved)
-        log.info("Registered application approval endpoint")
     
     async def handle_application_approved(self, request):
         """Handle notification that an application has been approved."""
