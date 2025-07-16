@@ -45,11 +45,13 @@ class ApplicationRolesLogic:
 
     async def on_member_join(self, member: discord.Member):
         if member.bot: return
+
         guild = member.guild
         log.info(f"New member joined: {member.name} ({member.id}). Checking application status.")
         
         guild_id = await self.config.ar_default_guild_id()
-        if not guild_id or guild.id != int(guild_id): return
+        if not guild_id or guild.id != int(guild_id):
+            return
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
@@ -104,7 +106,7 @@ class ApplicationRolesLogic:
 
     async def handle_application_update(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key()
+        expected_key = await self.config.ar_api_key() # Changed to use approles specific key
         if not api_key or api_key != expected_key:
             return web.json_response({"error": "Unauthorized"}, status=401)
         try:
@@ -238,7 +240,7 @@ class ApplicationRolesLogic:
         all_config = await self.config.get_raw("ar", default={})
         embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
         for key, value in all_config.items():
-            name = key.replace('_', ' ').title()
+            name = key.replace("ar_", "").replace("_", " ").title()
             if value:
                 if "role_id" in key: value_str = f"<@&{value}> (`{value}`)"
                 elif key == "region_roles":
