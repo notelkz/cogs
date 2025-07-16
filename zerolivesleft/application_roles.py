@@ -13,7 +13,7 @@ log = logging.getLogger("red.Elkz.zerolivesleft.application_roles")
 
 class ApplicationRolesLogic:
     """
-    Handles assigning roles to new members based on their application choices.
+    Handles assigning roles to new members and updating them upon application approval.
     """
 
     def __init__(self, cog):
@@ -33,6 +33,7 @@ class ApplicationRolesLogic:
             ar_member_role_id=None,
             ar_unverified_role_id=None,
             ar_welcome_channel_id=None,
+            ar_welcome_message="Welcome {mention}! To join our community, please submit an application at https://zerolivesleft.net/apply/",
         )
         
         self.guild_invites = {}
@@ -55,12 +56,12 @@ class ApplicationRolesLogic:
         api_url = await self.config.ar_api_url()
         
         role_to_assign_id = None
-        is_unverified = False
+        should_send_welcome = False
         
         if not api_url or not api_key:
-            log.error("Cannot check application status: Application API URL or Key not set. Assigning Unverified.")
+            log.error("Cannot check application status: API URL or Key not set. Assigning Unverified.")
             role_to_assign_id = await self.config.ar_unverified_role_id()
-            is_unverified = True
+            should_send_welcome = True
         else:
             try:
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
@@ -69,26 +70,31 @@ class ApplicationRolesLogic:
                 async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        if data.get("status") == "pending":
+                        status = data.get("status")
+                        
+                        if status == "pending":
+                            log.info(f"User {member.name} has a pending application. Assigning 'Pending' role.")
                             role_to_assign_id = await self.config.ar_pending_role_id()
-                        else:
+                        else: # Covers 'not_found', 'approved', 'rejected'
+                            log.info(f"User {member.name} does not have a pending application. Assigning 'Unverified' role.")
                             role_to_assign_id = await self.config.ar_unverified_role_id()
-                            is_unverified = True
+                            should_send_welcome = True
                     else:
-                        log.error(f"Failed to check application status for {member.name}: {resp.status}")
+                        log.error(f"Failed to check application status for {member.name}: {resp.status} - {await resp.text()}")
                         role_to_assign_id = await self.config.ar_unverified_role_id()
-                        is_unverified = True
+                        should_send_welcome = True
+
             except Exception as e:
                 log.error(f"Exception checking application status for {member.name}: {e}")
                 role_to_assign_id = await self.config.ar_unverified_role_id()
-                is_unverified = True
+                should_send_welcome = True
 
         if role_to_assign_id and (role := guild.get_role(int(role_to_assign_id))):
             try:
                 await member.add_roles(role, reason="New member verification.")
-                log.info(f"Assigned '{role.name}' to {member.name}.")
+                log.info(f"Successfully assigned '{role.name}' to {member.name}.")
                 
-                if is_unverified:
+                if should_send_welcome:
                     welcome_channel_id = await self.config.ar_welcome_channel_id()
                     if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
                         embed = discord.Embed(
@@ -104,8 +110,11 @@ class ApplicationRolesLogic:
                         )
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
                         await channel.send(content=member.mention, embed=embed)
+                        log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
+        else:
+            log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
 
     async def handle_application_update(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
@@ -135,6 +144,7 @@ class ApplicationRolesLogic:
         member = guild.get_member(int(discord_id))
         if not member: return
 
+        log.info(f"Background processing for {member.display_name}, status: '{status}'.")
         pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
         unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
 
@@ -153,12 +163,14 @@ class ApplicationRolesLogic:
                 if role := guild.get_role(int(member_role_id)): roles_to_add.append(role)
             
             if region_code := app_data.get("region"):
-                if region_role_id := (await self.config.ar_region_roles()).get(region_code.upper()): # Ensure lookup is uppercase
+                if region_role_id := (await self.config.ar_region_roles()).get(region_code.upper()):
                     if role := guild.get_role(int(region_role_id)): roles_to_add.append(role)
             
             for role_type in ["platform_role_ids", "game_role_ids"]:
                 for role_id in app_data.get(role_type, []):
                     if role_id and (role := guild.get_role(int(role_id))): roles_to_add.append(role)
+            
+            log.info(f"Final roles to add for {member.display_name}: {[r.name for r in roles_to_add]}")
             
             if roles_to_add: await member.add_roles(*roles_to_add, reason="Application Approved")
             if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Approved")
@@ -171,14 +183,11 @@ class ApplicationRolesLogic:
     async def cache_all_invites(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
-            try:
-                self.guild_invites[guild.id] = await guild.invites()
-            except (discord.Forbidden, discord.HTTPException):
-                pass
+            try: self.guild_invites[guild.id] = await guild.invites()
+            except (discord.Forbidden, discord.HTTPException): pass
     
     async def on_invite_create(self, invite):
-        if invite.guild.id not in self.guild_invites:
-            self.guild_invites[invite.guild.id] = []
+        if invite.guild.id not in self.guild_invites: self.guild_invites[invite.guild.id] = []
         self.guild_invites[invite.guild.id].append(invite)
 
     def stop_tasks(self):
