@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta
 
 from redbot.core import commands, Config
-from aiohttp import web # Still needed for web exceptions like HTTPInternalServerError
+from aiohttp import web
 from redbot.core.utils.chat_formatting import humanize_list
 from redbot.core.utils.views import ConfirmView
 
@@ -23,31 +23,24 @@ class ActivityTrackingLogic:
     """
 
     def __init__(self, cog_instance):
-        self.cog = cog_instance # Reference to the main Zerolivesleft cog
-        
-        # Access central config and session
+        self.cog = cog_instance
         self.config = cog_instance.config
         self.session = cog_instance.session
-
-        self.voice_tracking = {}  # guild_id: {user_id: join_time (datetime.utcnow())}
-
-        # Tasks will be started via start_tasks() method
+        self.voice_tracking = {}
         self.role_check_task = None
         self.activity_update_task = None
 
     def start_tasks(self):
         """Starts periodic tasks for role checking and activity updates."""
-        # This cog's periodic tasks will be scheduled after bot is ready
         self.cog.bot.loop.create_task(self._setup_periodic_tasks())
 
     def stop_tasks(self):
         """Stops all periodic tasks."""
-        if self.role_check_task and not self.role_check_task.done(): # <-- Corrected Line
+        if self.role_check_task and not self.role_check_task.done():
             self.role_check_task.cancel()
-        if self.activity_update_task and self.activity_update_task.is_running():
+        if self.activity_update_task and not self.activity_update_task.done():
             self.activity_update_task.cancel()
         
-        # Save voice time for users still in voice channels before unload
         for guild_id, members_tracking in self.voice_tracking.items():
             guild = self.cog.bot.get_guild(guild_id)
             if guild:
@@ -61,7 +54,7 @@ class ActivityTrackingLogic:
         self.voice_tracking.clear()
 
     async def _update_user_voice_minutes(self, guild, member, minutes_to_add):
-        async with self.config.guild(guild).at_user_activity() as user_activity: # Use central config
+        async with self.config.guild(guild).at_user_activity() as user_activity:
             uid = str(member.id)
             user_activity[uid] = user_activity.get(uid, 0) + minutes_to_add
             log.info(f"ActivityTracking: Updated voice minutes for {member.name}: added {minutes_to_add}, new total: {user_activity[uid]}")
@@ -73,7 +66,7 @@ class ActivityTrackingLogic:
         await self._check_for_promotion(guild, member, total_minutes)
 
     async def _get_user_voice_minutes(self, guild, user_id):
-        user_activity = await self.config.guild(guild).at_user_activity() # Use central config
+        user_activity = await self.config.guild(guild).at_user_activity()
         total_minutes = user_activity.get(str(user_id), 0)
         guild_id = guild.id
         if guild_id in self.voice_tracking and user_id in self.voice_tracking[guild_id]:
@@ -89,8 +82,8 @@ class ActivityTrackingLogic:
     async def _update_website_activity(self, guild, member, total_minutes_to_send):
         """Sends *total* activity updates to the Django website."""
         guild_settings = await self.config.guild(guild).all()
-        api_url = guild_settings.get("at_api_url") # Use central config
-        api_key = guild_settings.get("at_api_key") # Use central config
+        api_url = guild_settings.get("at_api_url")
+        api_key = guild_settings.get("at_api_key")
         
         log.info(f"ActivityTracking: Attempting to update website activity for {member.name} ({member.id}): {total_minutes_to_send} total minutes")
         
@@ -187,11 +180,10 @@ class ActivityTrackingLogic:
         """Sets up periodic tasks for role checking and activity updates."""
         await self.cog.bot.wait_until_ready()
         
-        # Use guild ID from main cog's config or env variable if main guild isn't explicitly set in config
-        # Preferring config over env var for consistency with other cog settings
-        guild_id_from_config = await self.cog.config.gc_counting_guild_id() # Reusing gc_counting_guild_id from main config
+        guild_id_from_config = await self.cog.config.gc_counting_guild_id()
         guild_id_env_str = os.environ.get("DISCORD_GUILD_ID")
 
+        guild_id = None
         if guild_id_from_config:
             guild_id = guild_id_from_config
         elif guild_id_env_str:
@@ -209,12 +201,10 @@ class ActivityTrackingLogic:
             log.error(f"ActivityTracking: Guild with ID {guild_id} not found. Periodic tasks will not be scheduled.")
             return
 
-        # Schedule the periodic role check every 24 hours
-        if not self.role_check_task or not self.role_check_task.is_running():
+        if self.role_check_task is None or self.role_check_task.done():
             self.role_check_task = self.cog.bot.loop.create_task(self._schedule_periodic_role_check_loop(guild_id))
         
-        # Schedule the periodic activity update every 5 minutes
-        if not self.activity_update_task or not self.activity_update_task.is_running():
+        if self.activity_update_task is None or self.activity_update_task.done():
             self.activity_update_task = self.cog.bot.loop.create_task(self._schedule_periodic_activity_updates_loop(guild_id))
 
     async def _schedule_periodic_role_check_loop(self, guild_id: int):
@@ -443,8 +433,6 @@ class ActivityTrackingLogic:
 
 
     # --- COMMANDS (These are not @commands.command() directly, but are called by main cog) ---
-    # These methods are designed to be called from the main cog's command definitions.
-
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
         """Set the Recruit and Member roles."""
         await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit.id)
@@ -511,9 +499,7 @@ class ActivityTrackingLogic:
         """Remove a military rank by role ID or name."""
         async with self.config.guild(ctx.guild).at_military_ranks() as ranks:
             initial_len = len(ranks)
-            ranks[:] = [r for r in ranks if str(r.get('discord_role_id')) != role_or_name]
-            if len(ranks) == initial_len:
-                ranks[:] = [r for r in ranks if r.get('name').lower() != role_or_name.lower()]
+            ranks[:] = [r for r in ranks if str(r.get('discord_role_id')) != role_or_name and r.get('name').lower() != role_or_name.lower()]
             
             if len(ranks) < initial_len:
                 await ctx.send(f"Removed military rank matching '{role_or_name}'.")
@@ -523,10 +509,7 @@ class ActivityTrackingLogic:
     async def clear_ranks(self, ctx):
         """Clear all configured military ranks."""
         view = ConfirmView(ctx.author, disable_buttons=True)
-        await ctx.send(
-            "Are you sure you want to clear ALL configured military ranks? This cannot be undone.",
-            view=view
-        )
+        await ctx.send("Are you sure you want to clear ALL configured military ranks? This cannot be undone.", view=view)
         await view.wait()
         if view.result:
             await self.config.guild(ctx.guild).at_military_ranks.set([])
@@ -538,8 +521,7 @@ class ActivityTrackingLogic:
         """List all configured military ranks."""
         ranks = await self.config.guild(ctx.guild).at_military_ranks()
         if not ranks:
-            await ctx.send("No military ranks have been set.")
-            return
+            return await ctx.send("No military ranks have been set.")
         msg = "**Configured Military Ranks:**\n"
         sorted_ranks = sorted(ranks, key=lambda r: r['required_hours']) 
         for r in sorted_ranks:
@@ -596,7 +578,7 @@ class ActivityTrackingLogic:
             value=(
                 f"Total Configured: `{len(military_ranks)}`\n"
                 f"Valid Ranks: `{len(valid_ranks)}`\n"
-                f"Use `{ctx.prefix}zll militaryranks list` for details" # Updated command help
+                f"Use `{ctx.prefix}zll militaryranks list` for details"
             ),
             inline=False
         )
