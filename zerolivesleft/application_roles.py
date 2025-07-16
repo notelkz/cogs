@@ -97,7 +97,6 @@ class ApplicationRolesLogic:
                 if is_unverified:
                     welcome_channel_id = await self.config.ar_welcome_channel_id()
                     if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
-                        
                         embed = discord.Embed(
                             title="Welcome to Zero Lives Left!",
                             description=f"To gain access to the rest of the server, you must submit an application on our website. You have been given the **Unverified** role for now.",
@@ -110,7 +109,6 @@ class ApplicationRolesLogic:
                             inline=False
                         )
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
-                        
                         await channel.send(content=member.mention, embed=embed)
                         log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
             except Exception as e:
@@ -133,7 +131,7 @@ class ApplicationRolesLogic:
 
     async def handle_application_submitted(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key() # Use the approles key
+        expected_key = await self.config.ar_api_key() # CORRECTED
         if not api_key or api_key != expected_key:
             return web.json_response({"error": "Unauthorized"}, status=401)
         
