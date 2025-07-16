@@ -212,7 +212,7 @@ class ApplicationRolesLogic:
         await self.config.ar_welcome_channel_id.set(channel.id)
         await ctx.send(f"Welcome message channel set to {channel.mention}")
 
-    async def set_welcome_message(self, ctx: commands.Context, *, message: str):
+    async def set_welcome_message(self, ctx: commands.Context, message: str):
         await self.config.ar_welcome_message.set(message)
         await ctx.send(f"Welcome message has been set to:\n\n{message}")
     
