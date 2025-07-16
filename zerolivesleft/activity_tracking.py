@@ -35,24 +35,24 @@ class ActivityTrackingLogic:
         self.cog.bot.loop.create_task(self._setup_periodic_tasks())
 
     def stop_tasks(self):
-    """Stops all periodic tasks."""
-    if self.role_check_task and not self.role_check_task.done():
-        self.role_check_task.cancel()
-    if self.activity_update_task and not self.activity_update_task.done():
-        self.activity_update_task.cancel()
+        """Stops all periodic tasks."""
+        if self.role_check_task and not self.role_check_task.done():
+            self.role_check_task.cancel()
+        if self.activity_update_task and not self.activity_update_task.done():
+            self.activity_update_task.cancel()
     
-    # Save voice activity for users currently being tracked
-    for guild_id, members_tracking in self.voice_tracking.items():
-        guild = self.cog.bot.get_guild(guild_id)
-        if guild:
-            for member_id, join_time in list(members_tracking.items()):
-                member = guild.get_member(member_id)
-                if member:
-                    duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
-                    if duration_minutes >= 1:
-                        log.info(f"ActivityTracking: Unloading: Logging {duration_minutes:.2f} minutes for {member.name} due to cog unload.")
-                        asyncio.create_task(self._update_user_voice_minutes(guild, member, int(duration_minutes)))
-    self.voice_tracking.clear()
+        # Save voice activity for users currently being tracked
+        for guild_id, members_tracking in self.voice_tracking.items():
+            guild = self.cog.bot.get_guild(guild_id)
+            if guild:
+                for member_id, join_time in list(members_tracking.items()):
+                    member = guild.get_member(member_id)
+                    if member:
+                        duration_minutes = (datetime.utcnow() - join_time).total_seconds() / 60
+                        if duration_minutes >= 1:
+                            log.info(f"ActivityTracking: Unloading: Logging {duration_minutes:.2f} minutes for {member.name} due to cog unload.")
+                            asyncio.create_task(self._update_user_voice_minutes(guild, member, int(duration_minutes)))
+        self.voice_tracking.clear()
 
     async def _update_user_voice_minutes(self, guild, member, minutes_to_add):
         async with self.config.guild(guild).at_user_activity() as user_activity:
