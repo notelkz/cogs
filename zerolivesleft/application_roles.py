@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import aiohttp
 from datetime import datetime, timedelta
 from aiohttp import web
+from redbot.core import commands # <-- THIS IS THE FIX
 
 log = logging.getLogger("red.Elkz.zerolivesleft.application_roles")
 
@@ -31,16 +32,14 @@ class ApplicationRolesLogic:
             ar_invite_channel_id=None,
             ar_pending_role_id=None,
             ar_member_role_id=None,
-            ar_unverified_role_id=None, # NEW
+            ar_unverified_role_id=None,
         )
         
         self.guild_invites = {}
         
-        # Register the event listeners
         self.bot.add_listener(self.on_member_join, "on_member_join")
         self.bot.add_listener(self.on_invite_create, "on_invite_create")
         
-        # This task is part of the old workflow but kept for now
         self.cache_invites_task = asyncio.create_task(self.cache_all_invites())
 
     async def on_member_join(self, member: discord.Member):
@@ -57,16 +56,13 @@ class ApplicationRolesLogic:
         if not guild_id or guild.id != int(guild_id):
             return
 
-        # Use the bot's main API key for this check
         api_key = await self.config.webserver_api_key()
-        api_url = await self.config.webserver_host() # Assuming the bot and website can communicate on the host
+        host = await self.config.webserver_host()
         port = await self.config.webserver_port()
+        base_url = f"http://{host}:{port}"
         
-        # Construct the base URL from parts
-        base_url = f"http://{api_url}:{port}"
-
-        if not api_url or not api_key:
-            log.error("Cannot check application status: Webserver API URL or Key not set in the bot's webserver config.")
+        if not api_key:
+            log.error("Cannot check application status: Webserver API Key not set.")
             return
 
         role_to_assign_id = None
@@ -82,7 +78,7 @@ class ApplicationRolesLogic:
                     if status == "pending":
                         role_to_assign_id = await self.config.ar_pending_role_id()
                         log.info(f"User {member.name} has a pending application. Assigning 'Pending' role.")
-                    else: # Includes 'not_found', 'approved', 'rejected'
+                    else:
                         role_to_assign_id = await self.config.ar_unverified_role_id()
                         log.info(f"User {member.name} does not have a pending application. Assigning 'Unverified' role.")
                 else:
@@ -90,7 +86,7 @@ class ApplicationRolesLogic:
                     role_to_assign_id = await self.config.ar_unverified_role_id()
 
         except Exception as e:
-            log.error(f"Exception while checking application status for {member.name}: {e}")
+            log.error(f"Exception checking application status for {member.name}: {e}")
             role_to_assign_id = await self.config.ar_unverified_role_id()
 
         if role_to_assign_id and (role := guild.get_role(int(role_to_assign_id))):
@@ -103,7 +99,6 @@ class ApplicationRolesLogic:
                 log.error(f"An unexpected error occurred while assigning a role to {member.name}: {e}")
         else:
             log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
-
 
     async def handle_application_update(self, request):
         """
@@ -210,7 +205,7 @@ class ApplicationRolesLogic:
     async def set_member_role(self, ctx, role: discord.Role):
         await self.config.ar_member_role_id.set(role.id)
         await ctx.send(f"Main member role has been set to **{role.name}**.")
-
+        
     async def set_unverified_role(self, ctx, role: discord.Role):
         await self.config.ar_unverified_role_id.set(role.id)
         await ctx.send(f"Unverified role has been set to **{role.name}**.")
@@ -245,10 +240,28 @@ class ApplicationRolesLogic:
                 name = key.replace("ar_", "").replace("_", " ").title()
                 if value:
                     if "role_id" in key: value_str = f"<@&{value}> (`{value}`)"
-                    elif key == "ar_region_roles": value_str = "\n".join([f"`{k}`: <@&{v}>" for k, v in value.items()])
-                    elif "api_key" in key: value_str = "`Set`"
-                    else: value_str = f"`{value}`"
+                    elif key == "ar_region_roles":
+                        value_str = "\n".join([f"`{k}`: <@&{v}>" for k, v in value.items()]) or "None"
+                    elif "api_key" in key:
+                        value_str = "`Set`" if value else "`Not Set`"
+                    else:
+                        value_str = f"`{value}`" if value is not None else "`Not Set`"
                 else:
                     value_str = "`Not Set`"
                 embed.add_field(name=name, value=value_str, inline=False)
         await ctx.send(embed=embed)
+
+    async def force_cache_invites(self, ctx):
+        await ctx.send("Refreshing invite cache...")
+        await self.cache_all_invites()
+        await ctx.send("Invite cache refreshed.")
+    
+    async def set_default_guild(self, ctx, guild: discord.Guild):
+        await self.config.ar_default_guild_id.set(str(guild.id))
+        await ctx.send(f"Default guild set to: {guild.name}")
+    
+    async def set_invite_channel(self, ctx, channel: discord.TextChannel):
+        if not channel.permissions_for(ctx.guild.me).create_instant_invite:
+            return await ctx.send(f"I don't have permission to create invites in {channel.mention}")
+        await self.config.ar_invite_channel_id.set(str(channel.id))
+        await ctx.send(f"Invite channel set to: {channel.mention}")
