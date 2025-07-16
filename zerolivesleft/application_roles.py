@@ -50,13 +50,14 @@ class ApplicationRolesLogic:
         log.info(f"New member joined: {member.name} ({member.id}). Checking application status.")
         
         guild_id = await self.config.ar_default_guild_id()
-        if not guild_id or guild.id != int(guild_id): return
+        if not guild_id or guild.id != int(guild_id):
+            return
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
         
         if not api_url or not api_key:
-            log.error("Cannot check application status: Application API URL or Key not set.")
+            log.error("Cannot check application status: Application API URL or Key not set in the bot's config.")
             role_to_assign_id = await self.config.ar_unverified_role_id()
             is_unverified = True
         else:
@@ -211,11 +212,9 @@ class ApplicationRolesLogic:
         await self.config.ar_welcome_channel_id.set(channel.id)
         await ctx.send(f"Welcome message channel set to {channel.mention}")
 
-    # --- THIS IS THE CORRECTED FUNCTION ---
     async def set_welcome_message(self, ctx: commands.Context, *, message: str):
         await self.config.ar_welcome_message.set(message)
         await ctx.send(f"Welcome message has been set to:\n\n{message}")
-    # ------------------------------------
     
     async def add_region_role(self, ctx, region: str, role: discord.Role):
         async with self.config.ar_region_roles() as region_roles:
