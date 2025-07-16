@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import aiohttp
 from datetime import datetime, timedelta
 from aiohttp import web
-from redbot.core import commands # <--- THIS IS THE FIX
+from redbot.core import commands
 
 log = logging.getLogger("red.Elkz.zerolivesleft.application_roles")
 
@@ -45,20 +45,17 @@ class ApplicationRolesLogic:
 
     async def on_member_join(self, member: discord.Member):
         if member.bot: return
-
         guild = member.guild
         log.info(f"New member joined: {member.name} ({member.id}). Checking application status.")
         
         guild_id = await self.config.ar_default_guild_id()
-        if not guild_id or guild.id != int(guild_id):
-            return
+        if not guild_id or guild.id != int(guild_id): return
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
         
         if not api_url or not api_key:
-            log.error("Cannot check application status: Application API URL or Key not set in the bot's config.")
-            # Fallback to assigning unverified role if we can't check
+            log.error("Cannot check application status: Application API URL or Key not set.")
             role_to_assign_id = await self.config.ar_unverified_role_id()
             is_unverified = True
         else:
@@ -104,8 +101,6 @@ class ApplicationRolesLogic:
                         log.info(f"Sent welcome message to {channel.name} for {member.name}.")
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
-        else:
-            log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
 
     async def handle_application_update(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
@@ -135,6 +130,7 @@ class ApplicationRolesLogic:
         member = guild.get_member(int(discord_id))
         if not member: return
 
+        log.info(f"Background processing for {member.display_name}, status: '{status}'.")
         pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
         unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
 
@@ -239,19 +235,21 @@ class ApplicationRolesLogic:
         await ctx.send(embed=embed)
     
     async def show_config(self, ctx: commands.Context):
-        all_config = await self.config.all()
+        all_config = await self.config.get_raw("ar", default={})
         embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
         for key, value in all_config.items():
-            if key.startswith("ar_"):
-                name = key.replace("ar_", "").replace("_", " ").title()
-                if value:
-                    if "role_id" in key: value_str = f"<@&{value}> (`{value}`)"
-                    elif key == "ar_region_roles": value_str = "\n".join([f"`{k}`: <@&{v}>" for k, v in value.items()]) or "None"
-                    elif "api_key" in key: value_str = "`Set`"
-                    else: value_str = f"`{value}`"
+            name = key.replace('_', ' ').title()
+            if value:
+                if "role_id" in key: value_str = f"<@&{value}> (`{value}`)"
+                elif key == "region_roles":
+                    value_str = "\n".join([f"`{k}`: <@&{v}>" for k, v in value.items()]) or "None"
+                elif "api_key" in key:
+                    value_str = "`Set`" if value else "`Not Set`"
                 else:
-                    value_str = "`Not Set`"
-                embed.add_field(name=name, value=value_str, inline=False)
+                    value_str = f"`{value}`" if value is not None else "`Not Set`"
+            else:
+                value_str = "`Not Set`"
+            embed.add_field(name=name, value=value_str, inline=False)
         await ctx.send(embed=embed)
 
     async def force_cache_invites(self, ctx):
