@@ -318,6 +318,16 @@ class Zerolivesleft(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
 
+        @approles_group.command(name="setwelcomechannel")
+    async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel where new 'Unverified' members are welcomed."""
+        await self.application_roles_logic.set_welcome_channel(ctx, channel)
+
+    @approles_group.command(name="setwelcomemessage")
+    async def approles_set_welcome_message(self, ctx, *, message: str):
+        """Set the welcome message for new members. Use {mention} for the user."""
+        await self.application_roles_logic.set_welcome_message(ctx, message)
+
     @approles_group.command(name="setapiurl")
     async def approles_set_api_url(self, ctx, url: str):
         """Set the API URL for fetching application data."""
@@ -348,7 +358,7 @@ class Zerolivesleft(commands.Cog):
         """Set the role assigned to new members who have NOT applied."""
         await self.application_roles_logic.set_unverified_role(ctx, role)
     @approles_group.command(name="addregion")
-    
+
     async def approles_add_region(self, ctx, region: str, role: discord.Role):
         """Add a mapping from a region code to a Discord role."""
         await self.application_roles_logic.add_region_role(ctx, region, role)
