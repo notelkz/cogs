@@ -343,7 +343,12 @@ class Zerolivesleft(commands.Cog):
         """Set the main 'Member' role assigned upon application approval."""
         await self.application_roles_logic.set_member_role(ctx, role)
 
+    @approles_group.command(name="setunverifiedrole")
+    async def approles_set_unverified_role(self, ctx, role: discord.Role):
+        """Set the role assigned to new members who have NOT applied."""
+        await self.application_roles_logic.set_unverified_role(ctx, role)
     @approles_group.command(name="addregion")
+    
     async def approles_add_region(self, ctx, region: str, role: discord.Role):
         """Add a mapping from a region code to a Discord role."""
         await self.application_roles_logic.add_region_role(ctx, region, role)
