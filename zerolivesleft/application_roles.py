@@ -13,7 +13,7 @@ log = logging.getLogger("red.Elkz.zerolivesleft.application_roles")
 
 class ApplicationRolesLogic:
     """
-    Handles assigning roles to new members and updating them upon application approval.
+    Handles assigning roles to new members based on their application choices.
     """
 
     def __init__(self, cog):
@@ -33,7 +33,6 @@ class ApplicationRolesLogic:
             ar_member_role_id=None,
             ar_unverified_role_id=None,
             ar_welcome_channel_id=None,
-            ar_welcome_message="Welcome {mention}! To join our community, please submit an application at https://zerolivesleft.net/apply/",
         )
         
         self.guild_invites = {}
@@ -50,19 +49,19 @@ class ApplicationRolesLogic:
         log.info(f"New member joined: {member.name} ({member.id}). Checking application status.")
         
         guild_id = await self.config.ar_default_guild_id()
-        if not guild_id or guild.id != int(guild_id):
-            return
+        if not guild_id or guild.id != int(guild_id): return
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
         
+        role_to_assign_id = None
+        is_unverified = False
+        
         if not api_url or not api_key:
-            log.error("Cannot check application status: Application API URL or Key not set in the bot's config.")
+            log.error("Cannot check application status: Application API URL or Key not set. Assigning Unverified.")
             role_to_assign_id = await self.config.ar_unverified_role_id()
             is_unverified = True
         else:
-            role_to_assign_id = None
-            is_unverified = False
             try:
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
                 headers = {"Authorization": f"Token {api_key}"}
@@ -70,20 +69,15 @@ class ApplicationRolesLogic:
                 async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        status = data.get("status")
-                        
-                        if status == "pending":
+                        if data.get("status") == "pending":
                             role_to_assign_id = await self.config.ar_pending_role_id()
-                            log.info(f"User {member.name} has a pending application. Assigning 'Pending' role.")
                         else:
                             role_to_assign_id = await self.config.ar_unverified_role_id()
                             is_unverified = True
-                            log.info(f"User {member.name} does not have a pending application. Assigning 'Unverified' role.")
                     else:
-                        log.error(f"Failed to check application status for {member.name}: {resp.status} - {await resp.text()}")
+                        log.error(f"Failed to check application status for {member.name}: {resp.status}")
                         role_to_assign_id = await self.config.ar_unverified_role_id()
                         is_unverified = True
-
             except Exception as e:
                 log.error(f"Exception checking application status for {member.name}: {e}")
                 role_to_assign_id = await self.config.ar_unverified_role_id()
@@ -92,19 +86,26 @@ class ApplicationRolesLogic:
         if role_to_assign_id and (role := guild.get_role(int(role_to_assign_id))):
             try:
                 await member.add_roles(role, reason="New member verification.")
-                log.info(f"Successfully assigned '{role.name}' to {member.name}.")
+                log.info(f"Assigned '{role.name}' to {member.name}.")
                 
                 if is_unverified:
                     welcome_channel_id = await self.config.ar_welcome_channel_id()
-                    welcome_message = await self.config.ar_welcome_message()
-                    if welcome_channel_id and welcome_message and (channel := guild.get_channel(int(welcome_channel_id))):
-                        formatted_message = welcome_message.format(mention=member.mention)
-                        await channel.send(formatted_message)
-                        log.info(f"Sent welcome message to {channel.name} for {member.name}.")
+                    if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
+                        embed = discord.Embed(
+                            title="Welcome to Zero Lives Left!",
+                            description=f"To gain access to the rest of the server, you must submit an application on our website. You have been given the **Unverified** role for now.",
+                            color=discord.Color.blurple()
+                        )
+                        embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+                        embed.add_field(
+                            name="Application Link",
+                            value="[Click here to apply](https://zerolivesleft.net/apply/)",
+                            inline=False
+                        )
+                        embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
+                        await channel.send(content=member.mention, embed=embed)
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
-        else:
-            log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
 
     async def handle_application_update(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
@@ -134,7 +135,6 @@ class ApplicationRolesLogic:
         member = guild.get_member(int(discord_id))
         if not member: return
 
-        log.info(f"Background processing for {member.display_name}, status: '{status}'.")
         pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
         unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
 
@@ -153,14 +153,12 @@ class ApplicationRolesLogic:
                 if role := guild.get_role(int(member_role_id)): roles_to_add.append(role)
             
             if region_code := app_data.get("region"):
-                if region_role_id := (await self.config.ar_region_roles()).get(region_code):
+                if region_role_id := (await self.config.ar_region_roles()).get(region_code.upper()): # Ensure lookup is uppercase
                     if role := guild.get_role(int(region_role_id)): roles_to_add.append(role)
             
             for role_type in ["platform_role_ids", "game_role_ids"]:
                 for role_id in app_data.get(role_type, []):
                     if role_id and (role := guild.get_role(int(role_id))): roles_to_add.append(role)
-            
-            log.info(f"Final roles to add for {member.display_name}: {[r.name for r in roles_to_add]}")
             
             if roles_to_add: await member.add_roles(*roles_to_add, reason="Application Approved")
             if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Approved")
@@ -173,11 +171,14 @@ class ApplicationRolesLogic:
     async def cache_all_invites(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
-            try: self.guild_invites[guild.id] = await guild.invites()
-            except (discord.Forbidden, discord.HTTPException): pass
+            try:
+                self.guild_invites[guild.id] = await guild.invites()
+            except (discord.Forbidden, discord.HTTPException):
+                pass
     
     async def on_invite_create(self, invite):
-        if invite.guild.id not in self.guild_invites: self.guild_invites[invite.guild.id] = []
+        if invite.guild.id not in self.guild_invites:
+            self.guild_invites[invite.guild.id] = []
         self.guild_invites[invite.guild.id].append(invite)
 
     def stop_tasks(self):
@@ -212,7 +213,7 @@ class ApplicationRolesLogic:
         await self.config.ar_welcome_channel_id.set(channel.id)
         await ctx.send(f"Welcome message channel set to {channel.mention}")
 
-    async def set_welcome_message(self, ctx: commands.Context, message: str):
+    async def set_welcome_message(self, ctx: commands.Context, *, message: str):
         await self.config.ar_welcome_message.set(message)
         await ctx.send(f"Welcome message has been set to:\n\n{message}")
     
@@ -239,18 +240,16 @@ class ApplicationRolesLogic:
         await ctx.send(embed=embed)
     
     async def show_config(self, ctx: commands.Context):
-        all_config = await self.config.get_raw("ar", default={})
+        all_config = await self.config.all_global()
+        ar_config = {k: v for k, v in all_config.items() if k.startswith("ar_")}
         embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
-        for key, value in all_config.items():
+        for key, value in ar_config.items():
             name = key.replace("ar_", "").replace("_", " ").title()
             if value:
                 if "role_id" in key: value_str = f"<@&{value}> (`{value}`)"
-                elif key == "region_roles":
-                    value_str = "\n".join([f"`{k}`: <@&{v}>" for k, v in value.items()]) or "None"
-                elif "api_key" in key:
-                    value_str = "`Set`" if value else "`Not Set`"
-                else:
-                    value_str = f"`{value}`"
+                elif key == "ar_region_roles": value_str = "\n".join([f"`{k}`: <@&{v}>" for k, v in value.items()]) or "None"
+                elif "api_key" in key: value_str = "`Set`"
+                else: value_str = f"`{value}`"
             else:
                 value_str = "`Not Set`"
             embed.add_field(name=name, value=value_str, inline=False)
