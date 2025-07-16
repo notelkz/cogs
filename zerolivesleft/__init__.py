@@ -15,7 +15,7 @@ from .webapi import WebApiManager
 from .rolecount import RoleCountingLogic
 from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
-from .application_roles import ApplicationRolesLogic  # Add this line
+from .application_roles import ApplicationRolesLogic
 
 log = logging.getLogger("red.Elkz.zerolivesleft") # Main cog logger
 
@@ -61,22 +61,9 @@ class Zerolivesleft(commands.Cog):
         self.config.register_global(
             cal_api_url="https://zerolivesleft.net/api/events/", 
             cal_api_key=None,
-            cal_interval=15 # Added interval setting for calendar sync (if not already there)
+            cal_interval=15
         )
-
-        # In application_roles.py, inside the __init__ method's self.config.register_global
-        self.config.register_global(
-            ar_api_url=None,
-            ar_api_key=None,
-            ar_region_roles={},
-            ar_enabled=True,
-            ar_default_guild_id=None,
-            ar_invite_channel_id=None,
-            
-            # --- ADD THIS LINE ---
-            ar_pending_role_id=1394825257960865872, # The ID of the 'Pending' role
-        )
-
+        
         # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
@@ -92,9 +79,10 @@ class Zerolivesleft(commands.Cog):
 
         # --- WEB SERVER SETUP ---
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
-        # Add the route from the application roles logic handler
         self.web_app.router.add_post("/api/applications/approved", self.application_roles_logic.handle_application_approved)
-        self.web_manager.register_all_routes() # This method will add all routes from all modules to self.web_app
+        # Add the new route for handling status updates
+        self.web_app.router.add_post("/api/applications/update-status", self.application_roles_logic.handle_application_update)
+        self.web_manager.register_all_routes()
 
         # Start the web server initialization task
         asyncio.create_task(self.initialize_webserver())
@@ -119,21 +107,18 @@ class Zerolivesleft(commands.Cog):
                 log.info(f"Central web server started on http://{host}:{port}")
             except Exception as e:
                 log.error(f"Failed to start central web server: {e}")
-                self.web_runner = None # Ensure state is reset on failure
+                self.web_runner = None
 
     def cog_unload(self):
         """Cleanup when the cog is unloaded."""
-        # Cancel all periodic tasks
         self.role_counting_logic.stop_tasks()
         self.calendar_sync_logic.stop_tasks()
-        self.activity_tracking_logic.stop_tasks() # Handles its own cleanup
-        self.application_roles_logic.stop_tasks()  # Add this line
+        self.activity_tracking_logic.stop_tasks()
+        self.application_roles_logic.stop_tasks()
 
-        # Shutdown web server
         if self.web_runner:
             asyncio.create_task(self.shutdown_webserver())
         
-        # Close aiohttp session
         asyncio.create_task(self.session.close())
         log.info("Zerolivesleft cog unloaded.")
 
@@ -155,7 +140,7 @@ class Zerolivesleft(commands.Cog):
     # --- Commands (Centralized under 'zll') ---
     
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
-    @commands.is_owner() # Only bot owner can use this top-level group
+    @commands.is_owner()
     async def zerolivesleft_group(self, ctx: commands.Context):
         """Central commands for Zero Lives Left website integration."""
         pass
@@ -166,15 +151,14 @@ class Zerolivesleft(commands.Cog):
         await self.web_manager.show_config_command(ctx)
         await self.role_counting_logic.show_config_command(ctx)
         await self.activity_tracking_logic.show_config_command(ctx)
-        await self.calendar_sync_logic.show_config(ctx) # Corrected to show_config from calendar_sync
-        await self.application_roles_logic.show_config(ctx)  # Add this line
+        await self.calendar_sync_logic.show_config(ctx)
+        await self.application_roles_logic.show_config(ctx)
 
     # --- WEBSERVER SUBCOMMANDS ---
     @zerolivesleft_group.group(name="webserver", aliases=["ws"])
     async def webserver_group(self, ctx: commands.Context):
         """Commands to manage the central web server."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
     
     @webserver_group.command(name="sethost")
     async def webserver_set_host(self, ctx, host: str):
@@ -200,8 +184,7 @@ class Zerolivesleft(commands.Cog):
     @zerolivesleft_group.group(name="rolecounter", aliases=["rc"])
     async def rolecounter_group(self, ctx: commands.Context):
         """Manage the RoleCounter settings."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
     @rolecounter_group.command(name="setapiurl")
     async def rolecounter_set_api_url(self, ctx: commands.Context, url: str):
@@ -239,8 +222,7 @@ class Zerolivesleft(commands.Cog):
     @zerolivesleft_group.group(name="activityset", aliases=["atset"])
     async def activityset_group(self, ctx: commands.Context):
         """Manage ActivityTracker settings."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
     @activityset_group.command()
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
@@ -274,25 +256,19 @@ class Zerolivesleft(commands.Cog):
     async def activity_force_sync(self, ctx):
         await self.activity_tracking_logic.force_sync(ctx)
 
-    # Hybrid commands need to be directly on the Cog class to be found by Red.
-    # They should call the logic manager's method.
     @commands.hybrid_command(name="myvoicetime")
     async def myvoicetime(self, ctx):
-        """Shows your total accumulated voice time."""
         await self.activity_tracking_logic.myvoicetime(ctx)
     
     @commands.hybrid_command(name="status")
     async def status(self, ctx, member: discord.Member = None):
-        """Show your (or another's) voice time and promotion progress."""
         await self.activity_tracking_logic.status(ctx, member)
 
-
-    # --- NEW: MILITARYRANKS GROUP (Top-level under zll, to avoid nesting error) ---
-    @zerolivesleft_group.group(name="militaryranks") # This is now a top-level group under !zll
+    # --- MILITARYRANKS GROUP ---
+    @zerolivesleft_group.group(name="militaryranks")
     async def militaryranks_group(self, ctx):
         """Manage military ranks (add, remove, list, clear)."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
     @militaryranks_group.command(name="add")
     async def militaryranks_add_rank(self, ctx, role: discord.Role, required_hours: float):
@@ -310,13 +286,11 @@ class Zerolivesleft(commands.Cog):
     async def militaryranks_list_ranks(self, ctx):
         await self.activity_tracking_logic.list_ranks(ctx)
 
-
     # --- CALENDAR SUBCOMMANDS ---
     @zerolivesleft_group.group(name="calendar", aliases=["cal"])
     async def calendar_group(self, ctx):
         """Calendar management commands."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
     @calendar_group.command(name="setapiurl")
     async def calendar_set_api_url(self, ctx, url: str):
@@ -347,53 +321,52 @@ class Zerolivesleft(commands.Cog):
 
     @approles_group.command(name="setapiurl")
     async def approles_set_api_url(self, ctx, url: str):
-        """Set the API URL for fetching application data."""
         await self.application_roles_logic.set_api_url(ctx, url)
 
     @approles_group.command(name="setapikey")
     async def approles_set_api_key(self, ctx, *, key: str):
-        """Set the API key for authentication."""
         await self.application_roles_logic.set_api_key(ctx, key=key)
 
     @approles_group.command(name="enable")
     async def approles_enable(self, ctx, enabled: bool):
-        """Enable or disable application role assignment."""
         await self.application_roles_logic.toggle_enabled(ctx, enabled)
+        
+    @approles_group.command(name="setpendingrole")
+    async def approles_set_pending_role(self, ctx, role: discord.Role):
+        """Set the role to be assigned to new members pending application approval."""
+        await self.application_roles_logic.set_pending_role(ctx, role)
+
+    @approles_group.command(name="setmemberrole")
+    async def approles_set_member_role(self, ctx, role: discord.Role):
+        """Set the main 'Member' role to be assigned upon application approval."""
+        await self.application_roles_logic.set_member_role(ctx, role)
 
     @approles_group.command(name="addregion")
     async def approles_add_region(self, ctx, region: str, role: discord.Role):
-        """Add a mapping from region to role ID."""
         await self.application_roles_logic.add_region_role(ctx, region, role)
 
     @approles_group.command(name="removeregion")
     async def approles_remove_region(self, ctx, region: str):
-        """Remove a region role mapping."""
         await self.application_roles_logic.remove_region_role(ctx, region)
 
     @approles_group.command(name="listregions")
     async def approles_list_regions(self, ctx):
-        """List all region role mappings."""
         await self.application_roles_logic.list_region_roles(ctx)
 
     @approles_group.command(name="showconfig")
     async def approles_show_config(self, ctx):
-        """Show the current configuration."""
         await self.application_roles_logic.show_config(ctx)
 
     @approles_group.command(name="refreshinvites")
     async def approles_refresh_invites(self, ctx):
-        """Force a refresh of the invite cache."""
         await self.application_roles_logic.force_cache_invites(ctx)
         
-    # New commands for invite generation
     @approles_group.command(name="setdefaultguild")
     async def approles_set_default_guild(self, ctx, guild: discord.Guild):
-        """Set the default guild for creating invites."""
         await self.application_roles_logic.set_default_guild(ctx, guild)
 
     @approles_group.command(name="setinvitechannel")
     async def approles_set_invite_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel for creating invites."""
         await self.application_roles_logic.set_invite_channel(ctx, channel)
 
 async def setup(bot: Red):
@@ -401,7 +374,7 @@ async def setup(bot: Red):
     try:
         cog = Zerolivesleft(bot)
         await bot.add_cog(cog)
-        log.info("Zerolivesleft cog loaded successfully") # Added success log
+        log.info("Zerolivesleft cog loaded successfully")
     except Exception as e:
-        log.error(f"Error loading Zerolivesleft cog: {e}", exc_info=True) # Ensure detailed error logging
-        raise # Re-raise to let RedBot know of the failure
+        log.error(f"Error loading Zerolivesleft cog: {e}", exc_info=True)
+        raise
