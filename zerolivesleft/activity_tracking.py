@@ -42,7 +42,7 @@ class ActivityTrackingLogic:
 
     def stop_tasks(self):
         """Stops all periodic tasks."""
-        if self.role_check_task and self.role_check_task.is_running():
+        if self.role_check_task and not self.role_check_task.done(): # <-- Corrected Line
             self.role_check_task.cancel()
         if self.activity_update_task and self.activity_update_task.is_running():
             self.activity_update_task.cancel()
