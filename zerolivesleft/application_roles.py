@@ -50,8 +50,7 @@ class ApplicationRolesLogic:
         log.info(f"New member joined: {member.name} ({member.id}). Checking application status.")
         
         guild_id = await self.config.ar_default_guild_id()
-        if not guild_id or guild.id != int(guild_id):
-            return
+        if not guild_id or guild.id != int(guild_id): return
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
@@ -103,10 +102,12 @@ class ApplicationRolesLogic:
                         log.info(f"Sent welcome message to {channel.name} for {member.name}.")
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
+        else:
+            log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
 
     async def handle_application_update(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key() # Changed to use approles specific key
+        expected_key = await self.config.ar_api_key()
         if not api_key or api_key != expected_key:
             return web.json_response({"error": "Unauthorized"}, status=401)
         try:
@@ -210,9 +211,11 @@ class ApplicationRolesLogic:
         await self.config.ar_welcome_channel_id.set(channel.id)
         await ctx.send(f"Welcome message channel set to {channel.mention}")
 
-    async def set_welcome_message(self, ctx, *, message: str):
+    # --- THIS IS THE CORRECTED FUNCTION ---
+    async def set_welcome_message(self, ctx: commands.Context, *, message: str):
         await self.config.ar_welcome_message.set(message)
         await ctx.send(f"Welcome message has been set to:\n\n{message}")
+    # ------------------------------------
     
     async def add_region_role(self, ctx, region: str, role: discord.Role):
         async with self.config.ar_region_roles() as region_roles:
@@ -248,7 +251,7 @@ class ApplicationRolesLogic:
                 elif "api_key" in key:
                     value_str = "`Set`" if value else "`Not Set`"
                 else:
-                    value_str = f"`{value}`" if value is not None else "`Not Set`"
+                    value_str = f"`{value}`"
             else:
                 value_str = "`Not Set`"
             embed.add_field(name=name, value=value_str, inline=False)
