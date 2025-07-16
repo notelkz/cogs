@@ -56,12 +56,12 @@ class ApplicationRolesLogic:
         api_url = await self.config.ar_api_url()
         
         role_to_assign_id = None
-        is_unverified = False
+        should_send_welcome = False
         
         if not api_url or not api_key:
-            log.error("Cannot check application status: Application API URL or Key not set. Assigning Unverified.")
+            log.error("Cannot check application status: API URL or Key not set. Assigning Unverified.")
             role_to_assign_id = await self.config.ar_unverified_role_id()
-            is_unverified = True
+            should_send_welcome = True
         else:
             try:
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
@@ -73,31 +73,30 @@ class ApplicationRolesLogic:
                         status = data.get("status")
                         
                         if status == "pending":
-                            role_to_assign_id = await self.config.ar_pending_role_id()
                             log.info(f"User {member.name} has a pending application. Assigning 'Pending' role.")
-                        else:
-                            role_to_assign_id = await self.config.ar_unverified_role_id()
-                            is_unverified = True
+                            role_to_assign_id = await self.config.ar_pending_role_id()
+                        else: # Covers 'not_found', 'approved', 'rejected'
                             log.info(f"User {member.name} does not have a pending application. Assigning 'Unverified' role.")
+                            role_to_assign_id = await self.config.ar_unverified_role_id()
+                            should_send_welcome = True
                     else:
                         log.error(f"Failed to check application status for {member.name}: {resp.status} - {await resp.text()}")
                         role_to_assign_id = await self.config.ar_unverified_role_id()
-                        is_unverified = True
+                        should_send_welcome = True
 
             except Exception as e:
                 log.error(f"Exception checking application status for {member.name}: {e}")
                 role_to_assign_id = await self.config.ar_unverified_role_id()
-                is_unverified = True
+                should_send_welcome = True
 
         if role_to_assign_id and (role := guild.get_role(int(role_to_assign_id))):
             try:
                 await member.add_roles(role, reason="New member verification.")
                 log.info(f"Successfully assigned '{role.name}' to {member.name}.")
                 
-                if is_unverified:
+                if should_send_welcome:
                     welcome_channel_id = await self.config.ar_welcome_channel_id()
                     if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
-                        
                         embed = discord.Embed(
                             title="Welcome to Zero Lives Left!",
                             description=f"To gain access to the rest of the server, you must submit an application on our website. You have been given the **Unverified** role for now.",
@@ -110,7 +109,6 @@ class ApplicationRolesLogic:
                             inline=False
                         )
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
-                        
                         await channel.send(content=member.mention, embed=embed)
                         log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
             except Exception as e:
@@ -131,32 +129,6 @@ class ApplicationRolesLogic:
             log.error(f"Error processing initial request: {e}")
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    async def handle_application_submitted(self, request):
-        api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key()
-        if not api_key or api_key != expected_key:
-            return web.json_response({"error": "Unauthorized"}, status=401)
-        
-        data = await request.json()
-        discord_id = data.get("discord_id")
-        if not discord_id: return web.json_response({"error": "Missing discord_id"}, status=400)
-
-        guild = self.bot.get_guild(await self.config.ar_default_guild_id())
-        if not guild: return web.json_response({"error": "Guild not found"}, status=500)
-        
-        member = guild.get_member(int(discord_id))
-        if not member: return web.json_response({"error": "Member not in server"}, status=404)
-
-        unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
-        pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
-
-        if unverified_role and pending_role and unverified_role in member.roles:
-            await member.remove_roles(unverified_role, reason="Application submitted")
-            await member.add_roles(pending_role, reason="Application submitted")
-            log.info(f"Upgraded {member.name} from Unverified to Pending.")
-            
-        return web.json_response({"success": True})
-
     async def process_role_update(self, data: dict):
         discord_id = data.get("discord_id")
         status = data.get("status")
@@ -172,6 +144,7 @@ class ApplicationRolesLogic:
         member = guild.get_member(int(discord_id))
         if not member: return
 
+        log.info(f"Background processing for {member.display_name}, status: '{status}'.")
         pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
         unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
 
@@ -179,6 +152,7 @@ class ApplicationRolesLogic:
             roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
             if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
             await member.kick(reason="Application Rejected.")
+            log.info(f"Kicked {member.name} ({discord_id}) due to rejected application.")
             return
 
         if status == "approved":
@@ -196,8 +170,12 @@ class ApplicationRolesLogic:
                 for role_id in app_data.get(role_type, []):
                     if role_id and (role := guild.get_role(int(role_id))): roles_to_add.append(role)
             
+            log.info(f"Final roles to add for {member.display_name}: {[r.name for r in roles_to_add]}")
+            
             if roles_to_add: await member.add_roles(*roles_to_add, reason="Application Approved")
             if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Approved")
+
+            log.info(f"Background role update complete for {member.name}.")
 
     async def handle_application_approved(self, request):
         return web.json_response({"error": "This endpoint is deprecated."}, status=410)
