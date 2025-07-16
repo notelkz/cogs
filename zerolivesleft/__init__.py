@@ -81,6 +81,7 @@ class Zerolivesleft(commands.Cog):
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
         self.web_app.router.add_post("/api/applications/approved", self.application_roles_logic.handle_application_approved)
         self.web_app.router.add_post("/api/applications/update-status", self.application_roles_logic.handle_application_update)
+        self.web_app.router.add_post("/api/ranked-members", self.web_manager.get_members_by_roles)
         self.web_manager.register_all_routes()
 
         # Start the web server initialization task

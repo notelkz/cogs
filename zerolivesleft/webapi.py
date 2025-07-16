@@ -12,6 +12,49 @@ log = logging.getLogger("red.Elkz.zerolivesleft.webapi")
 class WebApiManager:
     """Manages the aiohttp web server and API endpoints for the Zerolivesleft cog."""
 
+    # In zerolivesleft/webapi.py
+
+    async def get_members_by_roles(self, request):
+        """
+        Takes a POST request with a list of role IDs and returns all members
+        who have at least one of those roles.
+        """
+        if request.headers.get("X-API-Key") != await self.cog.config.webserver_api_key():
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        
+        try:
+            data = await request.json()
+            role_ids_to_find = [int(r_id) for r_id in data.get("role_ids", [])]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return web.json_response({"error": "Invalid payload format"}, status=400)
+
+        if not role_ids_to_find:
+            return web.json_response({"error": "No role_ids provided"}, status=400)
+            
+        guild_id = await self.cog.config.ar_default_guild_id() # Using the application guild for this
+        guild = self.cog.bot.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=500)
+            
+        ranked_members = []
+        for member in guild.members:
+            if member.bot:
+                continue
+            
+            # Find the member's highest role from the provided list
+            member_role_ids = {r.id for r in member.roles}
+            matching_role_ids = member_role_ids.intersection(role_ids_to_find)
+
+            if matching_role_ids:
+                ranked_members.append({
+                    "id": member.id,
+                    "name": member.name,
+                    "display_name": member.display_name,
+                    "avatar_url": str(member.display_avatar.url),
+                })
+        
+        return web.json_response(ranked_members)
+
     def __init__(self, cog_instance):
         self.cog = cog_instance # Reference to the main Zerolivesleft cog
         self.web_app = cog_instance.web_app # Reference to the central aiohttp.web.Application
