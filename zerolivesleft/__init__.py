@@ -318,7 +318,7 @@ class Zerolivesleft(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
 
-        @approles_group.command(name="setwelcomechannel")
+    @approles_group.command(name="setwelcomechannel")
     async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel where new 'Unverified' members are welcomed."""
         await self.application_roles_logic.set_welcome_channel(ctx, channel)
