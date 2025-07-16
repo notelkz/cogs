@@ -17,7 +17,7 @@ from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
 from .application_roles import ApplicationRolesLogic
 
-log = logging.getLogger("red.Elkz.zerolivesleft")
+log = logging.getLogger("red.Elkz.zerolivesleft") # Main cog logger
 
 class Zerolivesleft(commands.Cog):
     """
@@ -28,12 +28,15 @@ class Zerolivesleft(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         
+        # --- CENTRALIZED CONFIG ---
         self.config = Config.get_conf(self, identifier=6789012345, force_registration=True)
+        # WebServer settings
         self.config.register_global(
             webserver_host="0.0.0.0", 
             webserver_port=5000, 
             webserver_api_key=None
         )
+        # GameCounter/RoleCounter settings
         self.config.register_global(
             gc_api_base_url=None, 
             gc_api_key=None,      
@@ -41,6 +44,7 @@ class Zerolivesleft(commands.Cog):
             gc_counting_guild_id=None,
             gc_game_role_mappings={}
         )
+        # ActivityTracker settings
         self.config.register_guild(
             at_user_activity={},  
             at_recruit_role_id=None,
@@ -53,17 +57,20 @@ class Zerolivesleft(commands.Cog):
             at_military_rank_update_url=None,
             at_promotion_channel_id=None,
         )
+        # Calendar Sync settings
         self.config.register_global(
             cal_api_url="https://zerolivesleft.net/api/events/", 
             cal_api_key=None,
             cal_interval=15
         )
 
+        # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
         
+        # --- INSTANTIATE LOGIC MANAGERS ---
         self.web_manager = WebApiManager(self)
         self.role_counting_logic = RoleCountingLogic(self)
         self.activity_tracking_logic = ActivityTrackingLogic(self)
@@ -72,18 +79,22 @@ class Zerolivesleft(commands.Cog):
 
         # --- WEB SERVER SETUP ---
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
+        self.web_app.router.add_post("/api/applications/approved", self.application_roles_logic.handle_application_approved)
         self.web_app.router.add_post("/api/applications/update-status", self.application_roles_logic.handle_application_update)
         self.web_app.router.add_post("/api/ranked-members", self.web_manager.get_members_by_roles)
-        self.web_app.router.add_post("/api/applications/submitted", self.application_roles_logic.handle_application_submitted) # NEW ROUTE
+        self.web_app.router.add_post("/api/applications/submitted", self.application_roles_logic.handle_application_submitted) # NEW
         self.web_manager.register_all_routes()
 
+        # Start the web server initialization task
         asyncio.create_task(self.initialize_webserver())
 
+        # Start periodic tasks
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
 
     async def initialize_webserver(self):
+        """Start the web server."""
         await self.bot.wait_until_ready()
         if not self.web_runner:
             host = await self.config.webserver_host()
@@ -91,6 +102,7 @@ class Zerolivesleft(commands.Cog):
             try:
                 self.web_runner = web.AppRunner(self.web_app)
                 await self.web_runner.setup()
+                
                 self.web_site = web.TCPSite(self.web_runner, host, port)
                 await self.web_site.start()
                 log.info(f"Central web server started on http://{host}:{port}")
@@ -99,25 +111,32 @@ class Zerolivesleft(commands.Cog):
                 self.web_runner = None
 
     def cog_unload(self):
+        """Cleanup when the cog is unloaded."""
         self.role_counting_logic.stop_tasks()
         self.calendar_sync_logic.stop_tasks()
         self.activity_tracking_logic.stop_tasks()
         self.application_roles_logic.stop_tasks()
+
         if self.web_runner:
             asyncio.create_task(self.shutdown_webserver())
+        
         asyncio.create_task(self.session.close())
         log.info("Zerolivesleft cog unloaded.")
 
     async def shutdown_webserver(self):
+        """Shutdown the central web server."""
         log.info("Shutting down central web server...")
         try:
-            if self.web_app: await self.web_app.shutdown()
-            if self.web_runner: await self.web_runner.cleanup()
+            if self.web_app:
+                await self.web_app.shutdown()
+            if self.web_runner:
+                await self.web_runner.cleanup()
             log.info("Central web server shut down successfully.")
         except Exception as e:
             log.error(f"Error during web server shutdown: {e}")
         finally:
-            self.web_runner, self.web_site = None, None
+            self.web_runner = None
+            self.web_site = None
 
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
     @commands.is_owner()
@@ -287,12 +306,10 @@ class Zerolivesleft(commands.Cog):
     async def calendar_list_command(self, ctx):
         await self.calendar_sync_logic.calendar_list(ctx)
 
-    # --- APPLICATION ROLES SUBCOMMANDS ---
     @zerolivesleft_group.group(name="approles", aliases=["ar"])
     async def approles_group(self, ctx):
         """Manage application role assignment settings."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
     @approles_group.command(name="setapiurl")
     async def approles_set_api_url(self, ctx, url: str):
@@ -303,11 +320,6 @@ class Zerolivesleft(commands.Cog):
     async def approles_set_api_key(self, ctx, *, key: str):
         """Set the API key for authenticating with the website."""
         await self.application_roles_logic.set_api_key(ctx, key=key)
-
-    @approles_group.command(name="enable")
-    async def approles_enable(self, ctx, enabled: bool):
-        """Enable or disable application role assignment."""
-        await self.application_roles_logic.toggle_enabled(ctx, enabled)
         
     @approles_group.command(name="setpendingrole")
     async def approles_set_pending_role(self, ctx, role: discord.Role):
@@ -323,7 +335,7 @@ class Zerolivesleft(commands.Cog):
     async def approles_set_unverified_role(self, ctx, role: discord.Role):
         """Set the role for new members who have NOT applied."""
         await self.application_roles_logic.set_unverified_role(ctx, role)
-        
+
     @approles_group.command(name="setwelcomechannel")
     async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel for welcome messages."""
@@ -331,7 +343,7 @@ class Zerolivesleft(commands.Cog):
 
     @approles_group.command(name="setwelcomemessage")
     async def approles_set_welcome_message(self, ctx, *, message: str):
-        """Set the welcome message for new members. Use {mention}."""
+        """Set the welcome message. Use {mention} to ping the user."""
         await self.application_roles_logic.set_welcome_message(ctx, message=message)
 
     @approles_group.command(name="addregion")
@@ -354,27 +366,11 @@ class Zerolivesleft(commands.Cog):
         """Show the current configuration for the application module."""
         await self.application_roles_logic.show_config(ctx)
 
-    @approles_group.command(name="refreshinvites")
-    async def approles_refresh_invites(self, ctx):
-        """(Deprecated) Force a refresh of the invite cache."""
-        await self.application_roles_logic.force_cache_invites(ctx)
-        
     @approles_group.command(name="setdefaultguild")
     async def approles_set_default_guild(self, ctx, guild: discord.Guild):
         """Set the default guild for all application actions."""
         await self.application_roles_logic.set_default_guild(ctx, guild)
-
-    @approles_group.command(name="setinvitechannel")
-    async def approles_set_invite_channel(self, ctx, channel: discord.TextChannel):
-        """(Deprecated) Set the channel for creating invites."""
-        await self.application_roles_logic.set_invite_channel(ctx, channel)
-
+        
 async def setup(bot: Red):
-    """Set up the Zerolivesleft cog."""
-    try:
-        cog = Zerolivesleft(bot)
-        await bot.add_cog(cog)
-        log.info("Zerolivesleft cog loaded successfully")
-    except Exception as e:
-        log.error(f"Error loading Zerolivesleft cog: {e}", exc_info=True)
-        raise
+    cog = Zerolivesleft(bot)
+    await bot.add_cog(cog)
