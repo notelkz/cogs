@@ -64,6 +64,19 @@ class Zerolivesleft(commands.Cog):
             cal_interval=15 # Added interval setting for calendar sync (if not already there)
         )
 
+        # In application_roles.py, inside the __init__ method's self.config.register_global
+        self.config.register_global(
+            ar_api_url=None,
+            ar_api_key=None,
+            ar_region_roles={},
+            ar_enabled=True,
+            ar_default_guild_id=None,
+            ar_invite_channel_id=None,
+            
+            # --- ADD THIS LINE ---
+            ar_pending_role_id=1394825257960865872, # The ID of the 'Pending' role
+        )
+
         # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
