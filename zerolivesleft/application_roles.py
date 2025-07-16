@@ -56,12 +56,12 @@ class ApplicationRolesLogic:
         api_url = await self.config.ar_api_url()
         
         role_to_assign_id = None
-        should_send_welcome = False
+        is_unverified = False
         
         if not api_url or not api_key:
-            log.error("Cannot check application status: API URL or Key not set. Assigning Unverified.")
+            log.error("Cannot check application status: Application API URL or Key not set. Assigning Unverified.")
             role_to_assign_id = await self.config.ar_unverified_role_id()
-            should_send_welcome = True
+            is_unverified = True
         else:
             try:
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
@@ -73,48 +73,31 @@ class ApplicationRolesLogic:
                         status = data.get("status")
                         
                         if status == "pending":
-                            log.info(f"User {member.name} has a pending application. Assigning 'Pending' role.")
                             role_to_assign_id = await self.config.ar_pending_role_id()
-                        else: # Covers 'not_found', 'approved', 'rejected'
-                            log.info(f"User {member.name} does not have a pending application. Assigning 'Unverified' role.")
+                        else:
                             role_to_assign_id = await self.config.ar_unverified_role_id()
-                            should_send_welcome = True
+                            is_unverified = True
                     else:
-                        log.error(f"Failed to check application status for {member.name}: {resp.status} - {await resp.text()}")
+                        log.error(f"Failed to check application status for {member.name}: {resp.status}")
                         role_to_assign_id = await self.config.ar_unverified_role_id()
-                        should_send_welcome = True
-
+                        is_unverified = True
             except Exception as e:
                 log.error(f"Exception checking application status for {member.name}: {e}")
                 role_to_assign_id = await self.config.ar_unverified_role_id()
-                should_send_welcome = True
+                is_unverified = True
 
         if role_to_assign_id and (role := guild.get_role(int(role_to_assign_id))):
             try:
                 await member.add_roles(role, reason="New member verification.")
-                log.info(f"Successfully assigned '{role.name}' to {member.name}.")
                 
-                if should_send_welcome:
+                if is_unverified:
                     welcome_channel_id = await self.config.ar_welcome_channel_id()
                     if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
-                        embed = discord.Embed(
-                            title="Welcome to Zero Lives Left!",
-                            description=f"To gain access to the rest of the server, you must submit an application on our website. You have been given the **Unverified** role for now.",
-                            color=discord.Color.blurple()
-                        )
-                        embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
-                        embed.add_field(
-                            name="Application Link",
-                            value="[Click here to apply](https://zerolivesleft.net/apply/)",
-                            inline=False
-                        )
-                        embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
-                        await channel.send(content=member.mention, embed=embed)
-                        log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
+                        welcome_message = await self.config.ar_welcome_message()
+                        formatted_message = welcome_message.format(mention=member.mention)
+                        await channel.send(formatted_message)
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
-        else:
-            log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
 
     async def handle_application_update(self, request):
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
@@ -144,7 +127,6 @@ class ApplicationRolesLogic:
         member = guild.get_member(int(discord_id))
         if not member: return
 
-        log.info(f"Background processing for {member.display_name}, status: '{status}'.")
         pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
         unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
 
@@ -152,7 +134,6 @@ class ApplicationRolesLogic:
             roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
             if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
             await member.kick(reason="Application Rejected.")
-            log.info(f"Kicked {member.name} ({discord_id}) due to rejected application.")
             return
 
         if status == "approved":
@@ -170,12 +151,8 @@ class ApplicationRolesLogic:
                 for role_id in app_data.get(role_type, []):
                     if role_id and (role := guild.get_role(int(role_id))): roles_to_add.append(role)
             
-            log.info(f"Final roles to add for {member.display_name}: {[r.name for r in roles_to_add]}")
-            
             if roles_to_add: await member.add_roles(*roles_to_add, reason="Application Approved")
             if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Approved")
-
-            log.info(f"Background role update complete for {member.name}.")
 
     async def handle_application_approved(self, request):
         return web.json_response({"error": "This endpoint is deprecated."}, status=410)
