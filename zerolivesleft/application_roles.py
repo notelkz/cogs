@@ -62,6 +62,7 @@ class ApplicationRolesLogic:
             
     async def handle_application_update(self, request):
         """Handle application status updates (approved/rejected) from the website."""
+        log.info("Received request to /api/applications/update-status")
         api_key = request.headers.get('Authorization', '').replace('Token ', '')
         expected_key = await self.config.ar_api_key()
         if not api_key or api_key != expected_key:
@@ -72,6 +73,7 @@ class ApplicationRolesLogic:
             discord_id = data.get("discord_id")
             status = data.get("status")
             app_data = data.get("application_data", {})
+            log.info(f"DEBUG: Parsed data for discord_id: {discord_id}, status: {status}")
         except Exception:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
@@ -88,8 +90,10 @@ class ApplicationRolesLogic:
 
         member = guild.get_member(int(discord_id))
         if not member:
+            log.error(f"Could not find member with ID {discord_id} in the server.")
             return web.json_response({"error": f"User with ID {discord_id} not found in the Discord server"}, status=404)
-
+        
+        log.info(f"Found member: {member.display_name}. Processing status '{status}'.")
         pending_role_id = await self.config.ar_pending_role_id()
         pending_role = guild.get_role(int(pending_role_id)) if pending_role_id else None
 
@@ -104,35 +108,67 @@ class ApplicationRolesLogic:
             roles_to_add = []
             roles_to_remove = [pending_role] if pending_role and pending_role in member.roles else []
 
+            # --- Member Role Debugging ---
             member_role_id = await self.config.ar_member_role_id()
+            log.info(f"DEBUG: Member Role ID from config: {member_role_id}")
             if member_role_id:
                 member_role = guild.get_role(int(member_role_id))
-                if member_role: roles_to_add.append(member_role)
-                else: log.warning(f"Configured Member role ({member_role_id}) not found.")
+                if member_role:
+                    log.info(f"DEBUG: Found Member Role: '{member_role.name}'")
+                    roles_to_add.append(member_role)
+                else:
+                    log.warning(f"DEBUG: Member Role with ID {member_role_id} not found in server.")
             
+            # --- Region Role Debugging ---
             region_code = app_data.get("region")
+            log.info(f"DEBUG: Region code from website: '{region_code}'")
             if region_code:
                 region_roles_map = await self.config.ar_region_roles()
+                log.info(f"DEBUG: Region map from config: {region_roles_map}")
                 region_role_id = region_roles_map.get(region_code)
+                log.info(f"DEBUG: Looked up region role ID: {region_role_id}")
                 if region_role_id:
                     region_role = guild.get_role(int(region_role_id))
-                    if region_role: roles_to_add.append(region_role)
-                    else: log.warning(f"Configured Region role ({region_role_id}) not found.")
+                    if region_role:
+                        log.info(f"DEBUG: Found Region Role: '{region_role.name}'")
+                        roles_to_add.append(region_role)
+                    else:
+                        log.warning(f"DEBUG: Region Role with ID {region_role_id} not found in server.")
 
+            # --- Platform Roles Debugging ---
+            platform_role_ids = app_data.get("platform_role_ids", [])
+            log.info(f"DEBUG: Platform Role IDs from website: {platform_role_ids}")
+            for role_id in platform_role_ids:
+                platform_role = guild.get_role(int(role_id))
+                if platform_role:
+                    log.info(f"DEBUG: Found Platform Role: '{platform_role.name}'")
+                    roles_to_add.append(platform_role)
+                else:
+                    log.warning(f"DEBUG: Platform role with ID {role_id} not found in server.")
+
+            # --- Game Roles Debugging ---
             game_role_ids = app_data.get("game_role_ids", [])
+            log.info(f"DEBUG: Game Role IDs from website: {game_role_ids}")
             for role_id in game_role_ids:
                 game_role = guild.get_role(int(role_id))
-                if game_role: roles_to_add.append(game_role)
-                else: log.warning(f"Game role with ID {role_id} not found.")
+                if game_role:
+                    log.info(f"DEBUG: Found Game Role: '{game_role.name}'")
+                    roles_to_add.append(game_role)
+                else:
+                    log.warning(f"DEBUG: Game role with ID {role_id} not found in server.")
+            
+            log.info(f"FINAL LIST of roles to add: {[r.name for r in roles_to_add]}")
+            
+            if roles_to_add:
+                await member.add_roles(*roles_to_add, reason="Application Approved")
+            if roles_to_remove:
+                await member.remove_roles(*[r for r in roles_to_remove if r is not None], reason="Application Approved")
 
-            if roles_to_add: await member.add_roles(*roles_to_add, reason="Application Approved")
-            if roles_to_remove: await member.remove_roles(*[r for r in roles_to_remove if r is not None], reason="Application Approved")
-
-            log.info(f"Updated roles for approved applicant {member.name} ({discord_id}).")
+            log.info(f"Role update complete for {member.name}. Sending success response.")
             return web.json_response({"success": True, "action": "roles_updated"})
 
         return web.json_response({"error": "Invalid status provided"}, status=400)
-
+    
     async def handle_application_approved(self, request):
         """DEPRECATED: This endpoint is part of the old invite-based workflow."""
         log.warning("Deprecated endpoint /api/applications/approved was called.")
