@@ -509,10 +509,7 @@ class ActivityTrackingLogic:
     async def clear_ranks(self, ctx):
         """Clear all configured military ranks."""
         view = ConfirmView(ctx.author, disable_buttons=True)
-        await ctx.send(
-            "Are you sure you want to clear ALL configured military ranks? This cannot be undone.",
-            view=view
-        )
+        await ctx.send("Are you sure you want to clear ALL configured military ranks? This cannot be undone.", view=view)
         await view.wait()
         if view.result:
             await self.config.guild(ctx.guild).at_military_ranks.set([])
@@ -524,8 +521,7 @@ class ActivityTrackingLogic:
         """List all configured military ranks."""
         ranks = await self.config.guild(ctx.guild).at_military_ranks()
         if not ranks:
-            await ctx.send("No military ranks have been set.")
-            return
+            return await ctx.send("No military ranks have been set.")
         msg = "**Configured Military Ranks:**\n"
         sorted_ranks = sorted(ranks, key=lambda r: r['required_hours']) 
         for r in sorted_ranks:
