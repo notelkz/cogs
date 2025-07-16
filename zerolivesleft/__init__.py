@@ -34,7 +34,7 @@ class Zerolivesleft(commands.Cog):
         self.config.register_global(
             webserver_host="0.0.0.0", 
             webserver_port=5000, 
-            webserver_api_key=None # Key for Django to authenticate with RedBot
+            webserver_api_key=None
         )
         # GameCounter/RoleCounter settings
         self.config.register_global(
@@ -63,7 +63,7 @@ class Zerolivesleft(commands.Cog):
             cal_api_key=None,
             cal_interval=15
         )
-        
+
         # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
@@ -80,7 +80,6 @@ class Zerolivesleft(commands.Cog):
         # --- WEB SERVER SETUP ---
         self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
         self.web_app.router.add_post("/api/applications/approved", self.application_roles_logic.handle_application_approved)
-        # Add the new route for handling status updates
         self.web_app.router.add_post("/api/applications/update-status", self.application_roles_logic.handle_application_update)
         self.web_manager.register_all_routes()
 
@@ -321,52 +320,62 @@ class Zerolivesleft(commands.Cog):
 
     @approles_group.command(name="setapiurl")
     async def approles_set_api_url(self, ctx, url: str):
+        """Set the API URL for fetching application data."""
         await self.application_roles_logic.set_api_url(ctx, url)
 
     @approles_group.command(name="setapikey")
     async def approles_set_api_key(self, ctx, *, key: str):
+        """Set the API key for authentication with the website."""
         await self.application_roles_logic.set_api_key(ctx, key=key)
 
     @approles_group.command(name="enable")
     async def approles_enable(self, ctx, enabled: bool):
+        """Enable or disable application role assignment."""
         await self.application_roles_logic.toggle_enabled(ctx, enabled)
         
     @approles_group.command(name="setpendingrole")
     async def approles_set_pending_role(self, ctx, role: discord.Role):
-        """Set the role to be assigned to new members pending application approval."""
+        """Set the role assigned to new members awaiting application approval."""
         await self.application_roles_logic.set_pending_role(ctx, role)
 
     @approles_group.command(name="setmemberrole")
     async def approles_set_member_role(self, ctx, role: discord.Role):
-        """Set the main 'Member' role to be assigned upon application approval."""
+        """Set the main 'Member' role assigned upon application approval."""
         await self.application_roles_logic.set_member_role(ctx, role)
 
     @approles_group.command(name="addregion")
     async def approles_add_region(self, ctx, region: str, role: discord.Role):
+        """Add a mapping from a region code to a Discord role."""
         await self.application_roles_logic.add_region_role(ctx, region, role)
 
     @approles_group.command(name="removeregion")
     async def approles_remove_region(self, ctx, region: str):
+        """Remove a region role mapping."""
         await self.application_roles_logic.remove_region_role(ctx, region)
 
     @approles_group.command(name="listregions")
     async def approles_list_regions(self, ctx):
+        """List all configured region-to-role mappings."""
         await self.application_roles_logic.list_region_roles(ctx)
 
     @approles_group.command(name="showconfig")
     async def approles_show_config(self, ctx):
+        """Show the current configuration for the application module."""
         await self.application_roles_logic.show_config(ctx)
 
     @approles_group.command(name="refreshinvites")
     async def approles_refresh_invites(self, ctx):
+        """(Deprecated) Force a refresh of the invite cache."""
         await self.application_roles_logic.force_cache_invites(ctx)
         
     @approles_group.command(name="setdefaultguild")
     async def approles_set_default_guild(self, ctx, guild: discord.Guild):
+        """Set the default guild for all application-related actions."""
         await self.application_roles_logic.set_default_guild(ctx, guild)
 
     @approles_group.command(name="setinvitechannel")
     async def approles_set_invite_channel(self, ctx, channel: discord.TextChannel):
+        """(Deprecated) Set the channel for creating invites."""
         await self.application_roles_logic.set_invite_channel(ctx, channel)
 
 async def setup(bot: Red):
