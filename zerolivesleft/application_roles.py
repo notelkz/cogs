@@ -3,6 +3,7 @@
 import discord
 import logging
 import asyncio
+import json
 from typing import Dict, List, Optional, Tuple
 import aiohttp
 from datetime import datetime, timedelta
@@ -42,6 +43,8 @@ class ApplicationRolesLogic:
         self.bot.add_listener(self.on_invite_create, "on_invite_create")
         
         self.cache_invites_task = asyncio.create_task(self.cache_all_invites())
+        
+        log.info("ApplicationRolesLogic initialized")
 
     async def on_member_join(self, member: discord.Member):
         if member.bot: return
@@ -67,9 +70,12 @@ class ApplicationRolesLogic:
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
                 headers = {"Authorization": f"Token {api_key}"}
                 
+                log.info(f"Checking application status at: {endpoint}")
                 async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+                    log.info(f"Application check response: {resp.status}")
                     if resp.status == 200:
                         data = await resp.json()
+                        log.info(f"Application check data: {data}")
                         status = data.get("status")
                         
                         if status == "pending":
@@ -117,30 +123,72 @@ class ApplicationRolesLogic:
             log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
 
     async def handle_application_update(self, request):
-        api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key()
-        if not api_key or api_key != expected_key:
-            return web.json_response({"error": "Unauthorized"}, status=401)
+        log.info("Application update endpoint called")
         try:
+            body_text = await request.text()
+            log.info(f"Request headers: {dict(request.headers)}")
+            log.info(f"Request body: {body_text}")
+            
+            api_key = request.headers.get('Authorization', '').replace('Token ', '')
+            expected_key = await self.config.ar_api_key()
+            
+            if not api_key or api_key != expected_key:
+                log.warning(f"API key validation failed for application update")
+                return web.json_response({"error": "Unauthorized"}, status=401)
+                
             data = await request.json()
+            log.info(f"Processing application update: {data}")
             self.cog.bot.loop.create_task(self.process_role_update(data))
             return web.json_response({"success": True, "message": "Request received."})
         except Exception as e:
-            log.error(f"Error processing initial request: {e}")
-            return web.json_response({"error": "Invalid JSON"}, status=400)
+            log.error(f"Error processing application update request: {e}", exc_info=True)
+            return web.json_response({"error": f"Error: {str(e)}"}, status=400)
 
     async def handle_application_submitted(self, request):
         try:
+            log.info(f"Application submission endpoint called: {request.path}")
+            
+            # Log the raw request details
+            body_text = await request.text()
+            log.info(f"Request headers: {dict(request.headers)}")
+            log.info(f"Request body: {body_text}")
+            
             # Properly extract the API key from Authorization header
             auth_header = request.headers.get('Authorization', '')
-            api_key = auth_header.replace('Token ', '') if auth_header.startswith('Token ') else auth_header
+            log.info(f"Auth header received: '{auth_header}'")
+            
+            # Try different formats for API key extraction
+            if auth_header.startswith('Token '):
+                api_key = auth_header.replace('Token ', '')
+            elif auth_header.startswith('Bearer '):
+                api_key = auth_header.replace('Bearer ', '')
+            else:
+                api_key = auth_header
+                
+            log.info(f"Extracted API key: '{api_key[:5]}...' (if available)")
             
             expected_key = await self.config.ar_api_key()
+            log.info(f"Expected API key starts with: '{expected_key[:5] if expected_key else 'None'}...' (if available)")
+            
             if not api_key or api_key != expected_key:
-                log.warning(f"Unauthorized application submission attempt with key: {api_key[:5] if api_key else 'None'}...")
+                log.warning(f"API key validation failed. Received key doesn't match expected key.")
                 return web.json_response({"error": "Unauthorized"}, status=401)
             
-            data = await request.json()
+            # Parse the JSON body
+            try:
+                # Try to parse the body text we already read
+                data = json.loads(body_text)
+            except json.JSONDecodeError:
+                log.error(f"Failed to parse JSON from body text, trying request.json()")
+                try:
+                    # If that fails, try the original method
+                    data = await request.json()
+                except Exception as e:
+                    log.error(f"Failed to parse JSON body: {e}")
+                    return web.json_response({"error": f"Invalid JSON: {str(e)}"}, status=400)
+            
+            log.info(f"Parsed request data: {data}")
+            
             discord_id = data.get("discord_id")
             if not discord_id:
                 log.error("Missing discord_id in application submission")
@@ -163,6 +211,8 @@ class ApplicationRolesLogic:
                 log.error(f"Member with ID {discord_id} not found in guild {guild.name}")
                 return web.json_response({"error": "Member not in server"}, status=404)
 
+            log.info(f"Found member {member.name} in guild {guild.name}")
+            
             unverified_role_id = await self.config.ar_unverified_role_id()
             pending_role_id = await self.config.ar_pending_role_id()
             
@@ -177,22 +227,27 @@ class ApplicationRolesLogic:
                 log.error(f"Could not find roles: Unverified={bool(unverified_role)}, Pending={bool(pending_role)}")
                 return web.json_response({"error": "Roles not found"}, status=500)
 
+            log.info(f"Current roles for {member.name}: {[role.name for role in member.roles]}")
+            
             # Always remove unverified and add pending, regardless of current roles
             roles_to_remove = []
             if unverified_role in member.roles:
                 roles_to_remove.append(unverified_role)
             
             if roles_to_remove:
+                log.info(f"Removing roles: {[role.name for role in roles_to_remove]}")
                 await member.remove_roles(*roles_to_remove, reason="Application submitted")
                 log.info(f"Removed {', '.join([r.name for r in roles_to_remove])} from {member.name}")
                 
             if pending_role not in member.roles:
+                log.info(f"Adding role: {pending_role.name}")
                 await member.add_roles(pending_role, reason="Application submitted")
                 log.info(f"Added {pending_role.name} to {member.name}")
             else:
                 log.info(f"{member.name} already has the {pending_role.name} role")
             
             log.info(f"Successfully updated roles for {member.name} ({member.id}) after application submission")
+            log.info(f"New roles: {[role.name for role in member.roles]}")
             
             return web.json_response({"success": True})
         except Exception as e:
@@ -203,114 +258,166 @@ class ApplicationRolesLogic:
         discord_id = data.get("discord_id")
         status = data.get("status")
         app_data = data.get("application_data", {})
-        if not all([discord_id, status]): return
+        if not all([discord_id, status]): 
+            log.error(f"Missing required data in process_role_update: discord_id={discord_id}, status={status}")
+            return
 
         guild_id = await self.config.ar_default_guild_id()
-        if not guild_id: return
+        if not guild_id: 
+            log.error("No default guild configured for role updates")
+            return
         
         guild = self.bot.get_guild(int(guild_id))
-        if not guild: return
+        if not guild: 
+            log.error(f"Could not find guild with ID {guild_id}")
+            return
         
         member = guild.get_member(int(discord_id))
-        if not member: return
+        if not member: 
+            log.error(f"Could not find member with ID {discord_id} in guild {guild.name}")
+            return
 
-        pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
-        unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
+        log.info(f"Processing role update for {member.name} with status {status}")
+
+        pending_role = guild.get_role(int(await self.config.ar_pending_role_id() or 0))
+        unverified_role = guild.get_role(int(await self.config.ar_unverified_role_id() or 0))
 
         if status == "rejected":
+            log.info(f"Application rejected for {member.name}. Removing roles and kicking.")
             roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
-            if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
+            if roles_to_remove: 
+                await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
+                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
             await member.kick(reason="Application Rejected.")
+            log.info(f"Kicked {member.name} due to rejected application")
             return
 
         if status == "approved":
+            log.info(f"Application approved for {member.name}. Updating roles.")
             roles_to_add = []
             roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
 
             if member_role_id := await self.config.ar_member_role_id():
-                if role := guild.get_role(int(member_role_id)): roles_to_add.append(role)
+                if role := guild.get_role(int(member_role_id)): 
+                    roles_to_add.append(role)
+                    log.info(f"Adding member role: {role.name}")
             
             if region_code := app_data.get("region"):
-                if region_role_id := (await self.config.ar_region_roles()).get(region_code.upper()):
-                    if role := guild.get_role(int(region_role_id)): roles_to_add.append(role)
+                region_roles = await self.config.ar_region_roles()
+                log.info(f"Checking region role for {region_code.upper()}. Available mappings: {region_roles}")
+                if region_role_id := region_roles.get(region_code.upper()):
+                    if role := guild.get_role(int(region_role_id)): 
+                        roles_to_add.append(role)
+                        log.info(f"Adding region role: {role.name}")
             
             for role_type in ["platform_role_ids", "game_role_ids"]:
-                for role_id in app_data.get(role_type, []):
-                    if role_id and (role := guild.get_role(int(role_id))): roles_to_add.append(role)
+                role_ids = app_data.get(role_type, [])
+                log.info(f"Processing {role_type}: {role_ids}")
+                for role_id in role_ids:
+                    if role_id and (role := guild.get_role(int(role_id))): 
+                        roles_to_add.append(role)
+                        log.info(f"Adding {role_type.split('_')[0]} role: {role.name}")
             
-            if roles_to_add: await member.add_roles(*roles_to_add, reason="Application Approved")
-            if roles_to_remove: await member.remove_roles(*roles_to_remove, reason="Application Approved")
+            if roles_to_add: 
+                await member.add_roles(*roles_to_add, reason="Application Approved")
+                log.info(f"Added roles: {[r.name for r in roles_to_add]}")
+            if roles_to_remove: 
+                await member.remove_roles(*roles_to_remove, reason="Application Approved")
+                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
+            
+            log.info(f"Role update complete for {member.name}")
 
     async def handle_application_approved(self, request):
+        log.info("Deprecated endpoint 'application_approved' called")
         return web.json_response({"error": "This endpoint is deprecated."}, status=410)
     
     async def cache_all_invites(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
-            try: self.guild_invites[guild.id] = await guild.invites()
-            except (discord.Forbidden, discord.HTTPException): pass
+            try: 
+                self.guild_invites[guild.id] = await guild.invites()
+                log.info(f"Cached {len(self.guild_invites[guild.id])} invites for guild {guild.name}")
+            except (discord.Forbidden, discord.HTTPException) as e: 
+                log.error(f"Failed to cache invites for guild {guild.name}: {e}")
     
     async def on_invite_create(self, invite):
         if invite.guild.id not in self.guild_invites: self.guild_invites[invite.guild.id] = []
         self.guild_invites[invite.guild.id].append(invite)
+        log.info(f"New invite created and cached for {invite.guild.name}: {invite.code}")
 
     def stop_tasks(self):
         if hasattr(self, 'cache_invites_task') and self.cache_invites_task and not self.cache_invites_task.done():
             self.cache_invites_task.cancel()
+            log.info("Invite cache task cancelled")
 
     async def set_api_url(self, ctx, url):
         await self.config.ar_api_url.set(url)
         await ctx.send(f"API URL set to: {url}")
+        log.info(f"API URL set to: {url}")
     
     async def set_api_key(self, ctx, key):
         await self.config.ar_api_key.set(key)
         await ctx.send("API key set successfully.")
+        log.info(f"API key updated")
 
     async def toggle_enabled(self, ctx, enabled: bool):
         await self.config.ar_enabled.set(enabled)
         await ctx.send(f"Application role assignment is now {'enabled' if enabled else 'disabled'}.")
+        log.info(f"Application role assignment {'enabled' if enabled else 'disabled'}")
 
     async def set_pending_role(self, ctx, role: discord.Role):
         await self.config.ar_pending_role_id.set(role.id)
         await ctx.send(f"Pending role has been set to **{role.name}**.")
+        log.info(f"Pending role set to {role.name} ({role.id})")
 
     async def set_member_role(self, ctx, role: discord.Role):
         await self.config.ar_member_role_id.set(role.id)
         await ctx.send(f"Main member role has been set to **{role.name}**.")
+        log.info(f"Member role set to {role.name} ({role.id})")
         
     async def set_unverified_role(self, ctx, role: discord.Role):
         await self.config.ar_unverified_role_id.set(role.id)
         await ctx.send(f"Unverified role has been set to **{role.name}**.")
+        log.info(f"Unverified role set to {role.name} ({role.id})")
 
     async def set_welcome_channel(self, ctx, channel: discord.TextChannel):
         await self.config.ar_welcome_channel_id.set(channel.id)
         await ctx.send(f"Welcome message channel set to {channel.mention}")
+        log.info(f"Welcome channel set to {channel.name} ({channel.id})")
 
     async def set_welcome_message(self, ctx: commands.Context, *, message: str):
         await self.config.ar_welcome_message.set(message)
         await ctx.send(f"Welcome message has been set to:\n\n{message}")
+        log.info(f"Welcome message updated")
     
     async def add_region_role(self, ctx, region: str, role: discord.Role):
         async with self.config.ar_region_roles() as region_roles:
             region_roles[region.upper()] = str(role.id)
         await ctx.send(f"Added region role mapping: `{region.upper()}` -> {role.name}")
+        log.info(f"Added region role mapping: {region.upper()} -> {role.name} ({role.id})")
     
     async def remove_region_role(self, ctx, region: str):
         async with self.config.ar_region_roles() as region_roles:
             if region.upper() in region_roles:
                 del region_roles[region.upper()]
                 await ctx.send(f"Removed region role mapping for `{region.upper()}`")
+                log.info(f"Removed region role mapping for {region.upper()}")
             else:
                 await ctx.send(f"No region role mapping found for `{region.upper()}`.")
+                log.info(f"Attempted to remove non-existent region mapping: {region.upper()}")
     
     async def list_region_roles(self, ctx):
         region_roles = await self.config.ar_region_roles()
-        if not region_roles: return await ctx.send("No region role mappings configured.")
+        if not region_roles: 
+            await ctx.send("No region role mappings configured.")
+            return
+            
         embed = discord.Embed(title="Region Role Mappings", color=discord.Color.blue())
         for region, role_id in region_roles.items():
             role = ctx.guild.get_role(int(role_id))
             embed.add_field(name=region, value=role.mention if role else f"Unknown Role ({role_id})")
         await ctx.send(embed=embed)
+        log.info(f"Listed {len(region_roles)} region role mappings")
     
     async def show_config(self, ctx: commands.Context):
         all_config = await self.config.all_global()
@@ -327,18 +434,24 @@ class ApplicationRolesLogic:
                 value_str = "`Not Set`"
             embed.add_field(name=name, value=value_str, inline=False)
         await ctx.send(embed=embed)
+        log.info("Configuration displayed")
 
     async def force_cache_invites(self, ctx):
         await ctx.send("Refreshing invite cache...")
         await self.cache_all_invites()
         await ctx.send("Invite cache refreshed.")
+        log.info("Invite cache manually refreshed")
     
     async def set_default_guild(self, ctx, guild: discord.Guild):
         await self.config.ar_default_guild_id.set(str(guild.id))
         await ctx.send(f"Default guild set to: {guild.name}")
+        log.info(f"Default guild set to {guild.name} ({guild.id})")
     
     async def set_invite_channel(self, ctx, channel: discord.TextChannel):
         if not channel.permissions_for(ctx.guild.me).create_instant_invite:
-            return await ctx.send(f"I don't have permission to create invites in {channel.mention}")
+            await ctx.send(f"I don't have permission to create invites in {channel.mention}")
+            log.warning(f"Missing invite creation permission in {channel.name}")
+            return
         await self.config.ar_invite_channel_id.set(str(channel.id))
         await ctx.send(f"Invite channel set to: {channel.mention}")
+        log.info(f"Invite channel set to {channel.name} ({channel.id})")
