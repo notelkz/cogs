@@ -130,30 +130,74 @@ class ApplicationRolesLogic:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
     async def handle_application_submitted(self, request):
-        api_key = request.headers.get('Authorization', '').replace('Token ', '')
-        expected_key = await self.config.ar_api_key() # CORRECTED
-        if not api_key or api_key != expected_key:
-            return web.json_response({"error": "Unauthorized"}, status=401)
-        
-        data = await request.json()
-        discord_id = data.get("discord_id")
-        if not discord_id: return web.json_response({"error": "Missing discord_id"}, status=400)
-
-        guild = self.bot.get_guild(await self.config.ar_default_guild_id())
-        if not guild: return web.json_response({"error": "Guild not found"}, status=500)
-        
-        member = guild.get_member(int(discord_id))
-        if not member: return web.json_response({"error": "Member not in server"}, status=404)
-
-        unverified_role = guild.get_role(await self.config.ar_unverified_role_id() or 0)
-        pending_role = guild.get_role(await self.config.ar_pending_role_id() or 0)
-
-        if unverified_role and pending_role and unverified_role in member.roles:
-            await member.remove_roles(unverified_role, reason="Application submitted")
-            await member.add_roles(pending_role, reason="Application submitted")
-            log.info(f"Upgraded {member.name} from Unverified to Pending.")
+        try:
+            # Properly extract the API key from Authorization header
+            auth_header = request.headers.get('Authorization', '')
+            api_key = auth_header.replace('Token ', '') if auth_header.startswith('Token ') else auth_header
             
-        return web.json_response({"success": True})
+            expected_key = await self.config.ar_api_key()
+            if not api_key or api_key != expected_key:
+                log.warning(f"Unauthorized application submission attempt with key: {api_key[:5] if api_key else 'None'}...")
+                return web.json_response({"error": "Unauthorized"}, status=401)
+            
+            data = await request.json()
+            discord_id = data.get("discord_id")
+            if not discord_id:
+                log.error("Missing discord_id in application submission")
+                return web.json_response({"error": "Missing discord_id"}, status=400)
+
+            log.info(f"Processing application submission for Discord ID: {discord_id}")
+            
+            guild_id = await self.config.ar_default_guild_id()
+            if not guild_id:
+                log.error("Default guild ID not configured")
+                return web.json_response({"error": "Guild not configured"}, status=500)
+                
+            guild = self.bot.get_guild(int(guild_id))
+            if not guild:
+                log.error(f"Default guild with ID {guild_id} not found")
+                return web.json_response({"error": "Guild not found"}, status=500)
+            
+            member = guild.get_member(int(discord_id))
+            if not member:
+                log.error(f"Member with ID {discord_id} not found in guild {guild.name}")
+                return web.json_response({"error": "Member not in server"}, status=404)
+
+            unverified_role_id = await self.config.ar_unverified_role_id()
+            pending_role_id = await self.config.ar_pending_role_id()
+            
+            if not unverified_role_id or not pending_role_id:
+                log.error(f"Missing role configuration: Unverified={unverified_role_id}, Pending={pending_role_id}")
+                return web.json_response({"error": "Role configuration incomplete"}, status=500)
+                
+            unverified_role = guild.get_role(int(unverified_role_id))
+            pending_role = guild.get_role(int(pending_role_id))
+
+            if not unverified_role or not pending_role:
+                log.error(f"Could not find roles: Unverified={bool(unverified_role)}, Pending={bool(pending_role)}")
+                return web.json_response({"error": "Roles not found"}, status=500)
+
+            # Always remove unverified and add pending, regardless of current roles
+            roles_to_remove = []
+            if unverified_role in member.roles:
+                roles_to_remove.append(unverified_role)
+            
+            if roles_to_remove:
+                await member.remove_roles(*roles_to_remove, reason="Application submitted")
+                log.info(f"Removed {', '.join([r.name for r in roles_to_remove])} from {member.name}")
+                
+            if pending_role not in member.roles:
+                await member.add_roles(pending_role, reason="Application submitted")
+                log.info(f"Added {pending_role.name} to {member.name}")
+            else:
+                log.info(f"{member.name} already has the {pending_role.name} role")
+            
+            log.info(f"Successfully updated roles for {member.name} ({member.id}) after application submission")
+            
+            return web.json_response({"success": True})
+        except Exception as e:
+            log.error(f"Error in handle_application_submitted: {e}", exc_info=True)
+            return web.json_response({"error": f"Internal server error: {str(e)}"}, status=500)
 
     async def process_role_update(self, data: dict):
         discord_id = data.get("discord_id")
