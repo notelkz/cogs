@@ -1,4 +1,5 @@
 # zerolivesleft/application_roles.py
+# Complete, updated file
 
 import discord
 import logging
@@ -148,16 +149,13 @@ class ApplicationRolesLogic:
         try:
             log.info(f"Application submission endpoint called: {request.path}")
             
-            # Log the raw request details
             body_text = await request.text()
             log.info(f"Request headers: {dict(request.headers)}")
             log.info(f"Request body: {body_text}")
             
-            # Properly extract the API key from Authorization header
             auth_header = request.headers.get('Authorization', '')
             log.info(f"Auth header received: '{auth_header}'")
             
-            # Try different formats for API key extraction
             if auth_header.startswith('Token '):
                 api_key = auth_header.replace('Token ', '')
             elif auth_header.startswith('Bearer '):
@@ -174,14 +172,11 @@ class ApplicationRolesLogic:
                 log.warning(f"API key validation failed. Received key doesn't match expected key.")
                 return web.json_response({"error": "Unauthorized"}, status=401)
             
-            # Parse the JSON body
             try:
-                # Try to parse the body text we already read
                 data = json.loads(body_text)
             except json.JSONDecodeError:
                 log.error(f"Failed to parse JSON from body text, trying request.json()")
                 try:
-                    # If that fails, try the original method
                     data = await request.json()
                 except Exception as e:
                     log.error(f"Failed to parse JSON body: {e}")
@@ -229,7 +224,6 @@ class ApplicationRolesLogic:
 
             log.info(f"Current roles for {member.name}: {[role.name for role in member.roles]}")
             
-            # Always remove unverified and add pending, regardless of current roles
             roles_to_remove = []
             if unverified_role in member.roles:
                 roles_to_remove.append(unverified_role)
@@ -326,10 +320,6 @@ class ApplicationRolesLogic:
                 log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
             
             log.info(f"Role update complete for {member.name}")
-
-    async def handle_application_approved(self, request):
-        log.info("Deprecated endpoint 'application_approved' called")
-        return web.json_response({"error": "This endpoint is deprecated."}, status=410)
     
     async def cache_all_invites(self):
         await self.bot.wait_until_ready()

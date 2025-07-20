@@ -1,38 +1,90 @@
 # zerolivesleft/webapi.py
-# Complete, updated file
 
 import logging
 import os
 import json
 from aiohttp import web
-import discord
-from datetime import datetime
+import discord # Import discord for type hints in commands
+from datetime import datetime  # Added missing import
 
 log = logging.getLogger("red.Elkz.zerolivesleft.webapi")
 
 class WebApiManager:
     """Manages the aiohttp web server and API endpoints for the Zerolivesleft cog."""
 
+    # In zerolivesleft/webapi.py
+
+    async def get_members_by_roles(self, request):
+        """
+        Takes a POST request with a list of role IDs and returns all members
+        who have at least one of those roles.
+        """
+        if request.headers.get("X-API-Key") != await self.cog.config.webserver_api_key():
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        
+        try:
+            data = await request.json()
+            role_ids_to_find = [int(r_id) for r_id in data.get("role_ids", [])]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return web.json_response({"error": "Invalid payload format"}, status=400)
+
+        if not role_ids_to_find:
+            return web.json_response({"error": "No role_ids provided"}, status=400)
+            
+        guild_id = await self.cog.config.ar_default_guild_id() # Using the application guild for this
+        guild = self.cog.bot.get_guild(int(guild_id))
+        if not guild:
+            return web.json_response({"error": "Guild not found"}, status=500)
+            
+        ranked_members = []
+        for member in guild.members:
+            if member.bot:
+                continue
+            
+            # Find the member's highest role from the provided list
+            member_role_ids = {r.id for r in member.roles}
+            matching_role_ids = member_role_ids.intersection(role_ids_to_find)
+
+            if matching_role_ids:
+                ranked_members.append({
+                    "id": member.id,
+                    "name": member.name,
+                    "display_name": member.display_name,
+                    "avatar_url": str(member.display_avatar.url),
+                })
+        
+        return web.json_response(ranked_members)
+
     def __init__(self, cog_instance):
-        self.cog = cog_instance
-        self.web_app = cog_instance.web_app
+        self.cog = cog_instance # Reference to the main Zerolivesleft cog
+        self.web_app = cog_instance.web_app # Reference to the central aiohttp.web.Application
 
     def register_all_routes(self):
         """Register all web API routes from various functionalities."""
         log.info("Registering all web API routes for Zerolivesleft cog.")
         try:
-            # --- General Routes ---
-            self.web_app.router.add_get("/health", self.health_check_handler)
-            self.web_app.router.add_get("/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler)
-            
-            # --- Application Routes (from application_roles.py) ---
-            self.web_app.router.add_post("/api/applications/update-status", self.cog.application_roles_logic.handle_application_update)
-            self.web_app.router.add_post("/api/applications/submitted", self.cog.application_roles_logic.handle_application_submitted)
+            # Routes from GameCounter (for roster fetching)
+            self.web_app.router.add_get(
+                "/guilds/{guild_id}/roles/{role_id}/members", 
+                self.get_role_members_handler
+            )
 
-            # --- ActivityTracker Routes (handled within this manager) ---
-            self.web_app.router.add_post("/api/assign-initial-role", self.assign_initial_role_handler)
-            self.web_app.router.add_get("/api/get-military-ranks", self.get_military_ranks_handler)
-            self.web_app.router.add_get("/api/get-all-activity", self.get_all_activity_handler)
+            # Routes from ActivityTracker (for initial role, military ranks, all activity)
+            self.web_app.router.add_post(
+                "/api/assign-initial-role", 
+                self.assign_initial_role_handler
+            )
+            self.web_app.router.add_get(
+                "/api/get-military-ranks", 
+                self.get_military_ranks_handler
+            )
+            self.web_app.router.add_get(
+                "/api/get-all-activity", 
+                self.get_all_activity_handler
+            )
+
+            # Health check route (from WebServer)
+            self.web_app.router.add_get("/health", self.health_check_handler)
 
             log.info(f"Successfully registered routes for web_app.")
         except RuntimeError as e:
@@ -40,9 +92,10 @@ class WebApiManager:
         except Exception as e:
             log.critical(f"An unexpected error occurred during web route registration: {e}", exc_info=True)
 
+
     async def _authenticate_request_webserver_key(self, request: web.Request):
         """Authenticates incoming web API requests using the WebServer's API key."""
-        expected_key = await self.cog.config.webserver_api_key()
+        expected_key = await self.cog.config.webserver_api_key() # Use central config
         if not expected_key:
             log.warning("Web API Key not configured in Zerolivesleft cog for incoming requests.")
             raise web.HTTPUnauthorized(reason="Web API Key not configured on RedBot.")
@@ -57,7 +110,7 @@ class WebApiManager:
     async def _authenticate_request_guild_key(self, request: web.Request, guild_id: int):
         """Authenticates incoming web API requests using the guild-specific API key (for ActivityTracker)."""
         guild_settings = await self.cog.config.guild(self.cog.bot.get_guild(guild_id)).all()
-        expected_key = guild_settings.get("at_api_key")
+        expected_key = guild_settings.get("at_api_key") # Use ActivityTracker's API key from central config
         
         if not expected_key:
             log.warning(f"ActivityTracker API Key not configured for guild {guild_id} for incoming requests.")
@@ -80,7 +133,7 @@ class WebApiManager:
     async def get_role_members_handler(self, request: web.Request):
         """Web API handler to return members of a specific Discord role (from RoleCounter)."""
         try:
-            await self._authenticate_request_webserver_key(request)
+            await self._authenticate_request_webserver_key(request) # Authenticate using WebServer's key
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
 
@@ -94,13 +147,13 @@ class WebApiManager:
             log.warning(f"BadRequest: Invalid guild_id ({guild_id_str}) or role_id ({role_id_str}) format.")
             raise web.HTTPBadRequest(reason="Invalid guild_id or role_id format.")
 
-        guild = self.cog.bot.get_guild(guild_id)
+        guild = self.cog.bot.get_guild(guild_id) # Use main cog's bot instance
         if not guild:
             log.warning(f"NotFound: Guild with ID {guild_id} not found for role members request.")
             raise web.HTTPNotFound(reason=f"Guild with ID {guild_id} not found.")
 
         if not guild.chunked:
-            await guild.chunk()
+            await guild.chunk() # Ensure guild members are cached
 
         role = guild.get_role(role_id)
         if not role:
@@ -109,6 +162,7 @@ class WebApiManager:
 
         members_data = []
         for member in role.members:
+            # Check for streaming activity (from ActivityTracker logic if it were integrated, but simplified for direct data)
             streaming_activity = next((a for a in member.activities if isinstance(a, discord.Streaming)), None)
             members_data.append({
                 "id": str(member.id),
@@ -124,7 +178,7 @@ class WebApiManager:
 
     async def assign_initial_role_handler(self, request: web.Request):
         """Assigns an initial role to a new member based on website request (from ActivityTracker)."""
-        guild_id_str = os.environ.get("DISCORD_GUILD_ID")
+        guild_id_str = os.environ.get("DISCORD_GUILD_ID") # Rely on env for main guild ID
         if not guild_id_str:
             log.critical("DISCORD_GUILD_ID environment variable not set. Cannot assign initial role.")
             raise web.HTTPInternalServerError(reason="DISCORD_GUILD_ID not set.")
@@ -134,6 +188,7 @@ class WebApiManager:
             raise web.HTTPInternalServerError(reason="Main Discord guild not found.")
 
         try:
+            # Authenticate using the guild-specific API key (from ActivityTracker's settings)
             await self._authenticate_request_guild_key(request, main_guild.id)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
@@ -184,11 +239,12 @@ class WebApiManager:
             raise web.HTTPInternalServerError(reason="Main Discord guild not found.")
 
         try:
+            # Authenticate using the guild-specific API key (from ActivityTracker's settings)
             await self._authenticate_request_guild_key(request, main_guild.id)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
             
-        military_ranks = await self.cog.config.guild(main_guild).at_military_ranks()
+        military_ranks = await self.cog.config.guild(main_guild).at_military_ranks() # Use central config
         if not military_ranks:
             return web.json_response([], status=200)
         try:
@@ -214,6 +270,7 @@ class WebApiManager:
             raise web.HTTPInternalServerError(reason="Main Discord guild not found")
         
         try:
+            # Authenticate using the guild-specific API key (from ActivityTracker's settings)
             await self._authenticate_request_guild_key(request, main_guild.id)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
@@ -221,15 +278,17 @@ class WebApiManager:
         user_activity_config = await self.cog.config.guild(main_guild).at_user_activity()
         
         activity_data = []
+        # Ensure cog.activity_tracking_logic is initialized before accessing voice_tracking
         if self.cog.activity_tracking_logic and hasattr(self.cog.activity_tracking_logic, 'voice_tracking'):
             voice_tracking_data = self.cog.activity_tracking_logic.voice_tracking
         else:
-            voice_tracking_data = {}
+            voice_tracking_data = {} # Fallback if not initialized or attribute missing
 
         for user_id_str, minutes in user_activity_config.items():
             user_id = int(user_id_str)
             total_minutes = minutes
             
+            # Add current session time if user is in voice (from ActivityTrackingLogic)
             if main_guild.id in voice_tracking_data and user_id in voice_tracking_data[main_guild.id]:
                 join_time = voice_tracking_data[main_guild.id][user_id]
                 current_session_minutes = int((datetime.utcnow() - join_time).total_seconds() / 60)
@@ -244,7 +303,9 @@ class WebApiManager:
         log.info(f"Successfully returned {len(activity_data)} activity records for guild {main_guild.id}.")
         return web.json_response(activity_data)
 
-    # --- COMMANDS ---
+    # --- COMMANDS (These are not @commands.command() directly, but are called by main cog) ---
+    # These methods are designed to be called from the main cog's command definitions.
+
     async def set_host_command(self, ctx, host: str):
         """Set the host for the web server."""
         await self.cog.config.webserver_host.set(host)
@@ -269,8 +330,8 @@ class WebApiManager:
     async def restart_server_command(self, ctx):
         """Restart the web server."""
         await ctx.send("Restarting web server...")
-        await self.cog.shutdown_webserver()
-        await self.cog.initialize_webserver()
+        await self.cog.shutdown_webserver() # Call main cog's shutdown
+        await self.cog.initialize_webserver() # Call main cog's initialize
         await ctx.send("Web server restarted.")
 
     async def show_config_command(self, ctx):

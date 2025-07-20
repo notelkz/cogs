@@ -1,12 +1,11 @@
 # zerolivesleft/calendar_sync.py
-# Complete, updated file
 
 import discord
 import asyncio
 import aiohttp
 import logging
 import datetime
-import os
+import os # Ensure os is imported
 from discord.ext import commands, tasks
 from typing import Optional, Dict, List, Any
 
@@ -18,20 +17,28 @@ class CalendarSyncLogic:
     """
     
     def __init__(self, cog_instance):
-        self.cog = cog_instance
+        self.cog = cog_instance # Reference to the main Zerolivesleft cog
+        
+        # Access central config and session
         self.config = cog_instance.config
         self.session = cog_instance.session
-        self.sync_loop_task = self.sync_events_periodic
+
+        # Initialize the loop directly here
+        self.sync_loop_task = self.sync_events_periodic # Reference the decorated method
 
     def start_tasks(self):
         """Starts the periodic event sync task."""
+        # Check if the task is already running
         if self.sync_loop_task.is_running():
             log.info("CalendarSync: Task is already running, skipping start.")
             return
+
+        # Fetch interval from config before starting the task
         self.cog.bot.loop.create_task(self._start_sync_loop_wrapper())
 
     async def _start_sync_loop_wrapper(self):
         await self.cog.bot.wait_until_ready()
+        # Use cal_interval if available, otherwise default to 15
         interval_minutes = await self.config.cal_interval() if hasattr(self.config, 'cal_interval') else 15
         
         if interval_minutes < 1:
@@ -50,7 +57,7 @@ class CalendarSyncLogic:
         else:
             log.info("CalendarSync: sync loop not running or not initialized.")
     
-    @tasks.loop(minutes=15)
+    @tasks.loop(minutes=15) # Actual interval set by _start_sync_loop_wrapper
     async def sync_events_periodic(self):
         """Periodically sync events between Discord and the website."""
         await self.cog.bot.wait_until_ready()
@@ -85,7 +92,7 @@ class CalendarSyncLogic:
             return []
         
         try:
-            async with self.session.get(
+            async with self.session.get( # Use central session
                 api_url,
                 headers={"Authorization": f"Token {api_key}", "X-API-Key": api_key}
             ) as resp:
@@ -130,7 +137,7 @@ class CalendarSyncLogic:
         
         events_created = 0
         
-        for guild in self.cog.bot.guilds:
+        for guild in self.cog.bot.guilds: # Use main cog's bot instance
             try:
                 events = await guild.fetch_scheduled_events()
                 
@@ -156,7 +163,7 @@ class CalendarSyncLogic:
             return False
         
         try:
-            async with self.session.get(
+            async with self.session.get( # Use central session
                 f"{api_url}?discord_event_id={discord_event_id}",
                 headers={"Authorization": f"Token {api_key}", "X-API-Key": api_key}
             ) as resp:
@@ -172,45 +179,51 @@ class CalendarSyncLogic:
     
     async def create_discord_event(self, event_data: Dict[str, Any]) -> Optional[discord.ScheduledEvent]:
         """Create a Discord scheduled event from website event data."""
-        guild_id_env_str = os.environ.get("DISCORD_GUILD_ID")
+        # This will need DISCORD_GUILD_ID from env, or assume bot is only in one guild.
+        # For a single-guild bot, it's often bot.guilds[0] or from a config setting.
+        guild_id_env_str = os.environ.get("DISCORD_GUILD_ID") # Re-using this env var as ActivityTracker did
         guild = self.cog.bot.get_guild(int(guild_id_env_str)) if guild_id_env_str and guild_id_env_str.isdigit() else self.cog.bot.guilds[0] if self.cog.bot.guilds else None
         
         if not guild:
             log.error("CalendarSync: No guild found to create Discord event in.")
             return None
         
-        start_time = datetime.datetime.fromisoformat(event_data["start"].replace('Z', '+00:00'))
+        start_time = datetime.datetime.fromisoformat(event_data["start"].replace('Z', '+00:00')) # Adjusted key from 'start_time' to 'start' for FullCalendar API compatibility
         
         end_time = None
-        if event_data.get("end"):
+        if event_data.get("end"): # Adjusted key from 'end_time' to 'end'
             end_time = datetime.datetime.fromisoformat(event_data["end"].replace('Z', '+00:00'))
         else:
             end_time = start_time + datetime.timedelta(hours=1)
         
+        # --- FIX: Determine entity_type and channel/location ---
         event_location_str = event_data.get("location", "Online")
-        discord_channel_id_str = event_data.get("discord_channel_id")
+        discord_channel_id_str = event_data.get("discord_channel_id") # If website stored a Discord channel ID
 
         channel = None
-        entity_type = discord.EntityType.external
-        scheduled_location = event_location_str
+        entity_type = discord.EntityType.external # Default to external
+        scheduled_location = event_location_str # Default to external location string
 
         if discord_channel_id_str:
             try:
                 channel = guild.get_channel(int(discord_channel_id_str))
                 if isinstance(channel, discord.VoiceChannel):
                     entity_type = discord.EntityType.voice
-                    scheduled_location = channel
+                    scheduled_location = channel # Pass the channel object
                 elif isinstance(channel, discord.StageChannel):
                     entity_type = discord.EntityType.stage_instance
-                    scheduled_location = channel
+                    scheduled_location = channel # Pass the channel object
                 else:
                     log.warning(f"CalendarSync: discord_channel_id {discord_channel_id_str} is not a voice/stage channel. Treating as external.")
-                    channel = None
+                    channel = None # Reset channel if not voice/stage
             except (ValueError, TypeError):
                 log.warning(f"CalendarSync: Invalid discord_channel_id {discord_channel_id_str}. Treating as external.")
-                channel = None
+                channel = None # Invalid ID, treat as external
         
+        # If still no channel, and location is just a string, it's EXTERNAL
+        # Discord API requires external events to have a string location.
         if entity_type == discord.EntityType.external and not scheduled_location:
+            # Fallback if no specific location provided for an external event
             scheduled_location = "Online" 
             log.debug("CalendarSync: Defaulting external event location to 'Online'.")
 
@@ -220,15 +233,17 @@ class CalendarSyncLogic:
                 "description": event_data.get("description", ""),
                 "start_time": start_time,
                 "end_time": end_time,
-                "entity_type": entity_type,
+                "entity_type": entity_type, # Required
                 "privacy_level": discord.PrivacyLevel.guild_only
             }
             
             if scheduled_location:
+                # If it's a channel object, it goes into 'channel' argument
+                # If it's a string, it goes into 'location' argument
                 if isinstance(scheduled_location, (discord.VoiceChannel, discord.StageChannel)):
                     event_kwargs["channel"] = scheduled_location
                 else:
-                    event_kwargs["location"] = str(scheduled_location)
+                    event_kwargs["location"] = str(scheduled_location) # Ensure it's a string for location
 
             event = await guild.create_scheduled_event(**event_kwargs)
             
@@ -250,17 +265,17 @@ class CalendarSyncLogic:
         event_data = {
             "title": discord_event.name,
             "description": discord_event.description or "",
-            "start": discord_event.start_time.isoformat(),
-            "end": discord_event.end_time.isoformat() if discord_event.end_time else None,
+            "start": discord_event.start_time.isoformat(), # Adjusted key for FullCalendar API compatibility
+            "end": discord_event.end_time.isoformat() if discord_event.end_time else None, # Adjusted key
             "location": discord_event.location or "Online",
             "discord_event_id": str(discord_event.id),
             "discord_channel_id": str(discord_event.channel_id) if discord_event.channel_id else None,
-            "type": "community",
+            "type": "community",  # Default type, adjusted key from 'event_type'
             "status": "scheduled"
         }
         
         try:
-            async with self.session.post(
+            async with self.session.post( # Use central session
                 api_url,
                 headers={
                     "Authorization": f"Token {api_key}",
@@ -285,7 +300,7 @@ class CalendarSyncLogic:
             return
         
         try:
-            async with self.session.patch(
+            async with self.session.patch( # Use central session
                 f"{api_url}{uuid}/",
                 headers={
                     "Authorization": f"Token {api_key}",
@@ -302,8 +317,11 @@ class CalendarSyncLogic:
         except Exception as e:
             log.error(f"CalendarSync: Exception updating website event {uuid}: {e}", exc_info=True)
     
+    # --- DISCORD LISTENERS ---
+    
     @commands.Cog.listener()
     async def on_scheduled_event_create(self, event):
+        """When a Discord event is created, sync it to the website."""
         log.info(f"CalendarSync: Discord event created: {event.name} ({event.id}). Syncing to website.")
         try:
             exists = await self.check_event_exists_on_website(str(event.id))
@@ -314,6 +332,7 @@ class CalendarSyncLogic:
     
     @commands.Cog.listener()
     async def on_scheduled_event_update(self, before, after):
+        """When a Discord event is updated, sync the changes to the website."""
         log.info(f"CalendarSync: Discord event updated: {before.name} -> {after.name} ({after.id}). Syncing to website.")
         try:
             api_url = await self.config.cal_api_url()
@@ -322,7 +341,7 @@ class CalendarSyncLogic:
                 log.warning("CalendarSync: API URL or API key not set. Cannot sync event update.")
                 return
 
-            async with self.session.get(
+            async with self.session.get( # Use central session
                 f"{api_url}?discord_event_id={after.id}",
                 headers={"Authorization": f"Token {api_key}", "X-API-Key": api_key}
             ) as resp:
@@ -351,6 +370,7 @@ class CalendarSyncLogic:
     
     @commands.Cog.listener()
     async def on_scheduled_event_delete(self, event):
+        """When a Discord event is deleted, update the website event status."""
         log.info(f"CalendarSync: Discord event deleted: {event.name} ({event.id}). Syncing status to website.")
         try:
             api_url = await self.config.cal_api_url()
@@ -359,7 +379,7 @@ class CalendarSyncLogic:
                 log.warning("CalendarSync: API URL or API key not set. Cannot sync event deletion.")
                 return
 
-            async with self.session.get(
+            async with self.session.get( # Use central session
                 f"{api_url}?discord_event_id={event.id}",
                 headers={"Authorization": f"Token {api_key}", "X-API-Key": api_key}
             ) as resp:
@@ -376,10 +396,13 @@ class CalendarSyncLogic:
                 
                 await self.update_website_event(
                     website_event["uuid"], 
-                    {"status": "canceled"}
+                    {"status": "canceled"} # Mark as canceled on the website
                 )
         except Exception as e:
             log.error(f"CalendarSync: Error handling event deletion for {event.id}: {e}", exc_info=True)
+
+    # --- Commands (These are not @commands.command() directly, but are called by main cog) ---
+    # These methods are designed to be called from the main cog's command definitions.
 
     async def set_api_url(self, ctx, url: str):
         """Set the API URL for the calendar integration."""
@@ -387,23 +410,25 @@ class CalendarSyncLogic:
             await ctx.send("URL must start with http:// or https://")
             return
             
-        await self.config.cal_api_url.set(url)
+        await self.config.cal_api_url.set(url) # Use central config
         await ctx.send(f"API URL set to: {url}")
     
     async def set_api_key(self, ctx, api_key: str):
         """Set the API key for the calendar integration."""
-        await self.config.cal_api_key.set(api_key)
+        await self.config.cal_api_key.set(api_key) # Use central config
         await ctx.send("API key has been set.")
         
         try:
             await ctx.message.delete()
-        except (discord.Forbidden, discord.HTTPException):
+        except discord.Forbidden:
+            pass
+        except discord.HTTPException:
             pass
     
     async def show_config(self, ctx):
         """Show the current calendar configuration."""
-        api_url = await self.config.cal_api_url()
-        api_key = await self.config.cal_api_key()
+        api_url = await self.config.cal_api_url() # Use central config
+        api_key = await self.config.cal_api_key() # Use central config
         
         try:
             await ctx.author.send(
@@ -430,10 +455,14 @@ class CalendarSyncLogic:
             await ctx.send(f"API URL or API key not set. Use `{ctx.prefix}zll calendar setapiurl` and `{ctx.prefix}zll calendar setapikey` first.")
             return
             
-        await ctx.send("Manually triggering sync between Discord and the website...")
+        await ctx.send("Syncing events between Discord and the website...")
         try:
-            await self.sync_events_periodic()
-            await ctx.send("Manual sync triggered successfully!")
+            # Call the periodic sync method directly to execute the sync logic
+            # This method will return the sync results
+            result = await self.sync_events_periodic() 
+            await ctx.send(f"Sync completed successfully!\n"
+                         f"• Found {result.get('website_events', 0)} events on website\n"
+                         f"• Pushed {result.get('discord_events_pushed', 0)} Discord events to website")
         except Exception as e:
             await ctx.send(f"Error during sync: {e}")
     

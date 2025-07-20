@@ -1,4 +1,5 @@
 # zerolivesleft/__init__.py
+# Complete, updated file
 
 import asyncio
 import logging
@@ -6,6 +7,7 @@ from aiohttp import web
 import aiohttp 
 import discord
 import os
+from datetime import datetime
 
 from redbot.core import commands, Config
 from redbot.core.bot import Red
@@ -78,11 +80,7 @@ class Zerolivesleft(commands.Cog):
         self.application_roles_logic = ApplicationRolesLogic(self)
 
         # --- WEB SERVER SETUP ---
-        self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
-        self.web_app.router.add_post("/api/applications/approved", self.application_roles_logic.handle_application_approved)
-        self.web_app.router.add_post("/api/applications/update-status", self.application_roles_logic.handle_application_update)
-        self.web_app.router.add_post("/api/ranked-members", self.web_manager.get_members_by_roles)
-        self.web_app.router.add_post("/api/applications/submitted", self.application_roles_logic.handle_application_submitted) # NEW
+        # All routes are now registered in one place inside WebApiManager
         self.web_manager.register_all_routes()
 
         # Start the web server initialization task
@@ -137,6 +135,16 @@ class Zerolivesleft(commands.Cog):
         finally:
             self.web_runner = None
             self.web_site = None
+
+    # --- LISTENER ADDED HERE ---
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        """This now correctly listens for voice channel joins and leaves."""
+        if member.bot:
+            return
+        # We delegate the actual work to the ActivityTrackingLogic class
+        await self.activity_tracking_logic.handle_voice_state_update(member, before, after)
+    # -------------------------
 
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
     @commands.is_owner()

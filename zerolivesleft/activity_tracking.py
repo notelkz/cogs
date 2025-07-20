@@ -1,4 +1,5 @@
 # zerolivesleft/activity_tracking.py
+# Complete, updated file
 
 import discord
 import asyncio
@@ -395,10 +396,8 @@ class ActivityTrackingLogic:
         bar = '█' * filled_length + '░' * (length - filled_length)
         return f"[{bar}]"
 
-
-    # --- DISCORD LISTENERS ---
-    @commands.Cog.listener()
-    async def on_voice_state_update(self, member, before, after):
+    # --- THIS IS THE NEW METHOD THAT REPLACES THE OLD LISTENER ---
+    async def handle_voice_state_update(self, member, before, after):
         if member.bot:
             return
         
@@ -411,27 +410,26 @@ class ActivityTrackingLogic:
         if guild_id not in self.voice_tracking:
             self.voice_tracking[guild_id] = {}
         
+        # User JOINS a voice channel
         if before.channel is None and after.channel is not None:
             self.voice_tracking[guild_id][user_id] = datetime.utcnow()
-            log.debug(f"ActivityTracking: {member.name} joined voice channel {after.channel.name}. Started tracking.")
+            log.info(f"ActivityTracking: {member.name} joined voice channel {after.channel.name}. Started tracking.")
         
+        # User LEAVES a voice channel
         elif before.channel is not None and after.channel is None:
             if user_id in self.voice_tracking[guild_id]:
-                join_time = self.voice_tracking[guild_id][user_id]
+                join_time = self.voice_tracking[guild_id].pop(user_id) # Use pop to safely remove
                 duration = datetime.utcnow() - join_time
                 minutes = duration.total_seconds() / 60
                 
-                log.debug(f"ActivityTracking: {member.name} left voice channel {before.channel.name}. Duration: {minutes:.2f} minutes.")
+                log.info(f"ActivityTracking: {member.name} left voice channel {before.channel.name}. Duration: {minutes:.2f} minutes.")
                 
                 if minutes >= 1:
                     await self._update_user_voice_minutes(guild, member, int(minutes))
                 else:
                     log.debug(f"ActivityTracking: Duration too short ({minutes:.2f}m). Skipping sync.")
-                
-                del self.voice_tracking[guild_id][user_id]
             else:
-                log.warning(f"ActivityTracking: {member.name} left voice but wasn't being tracked.")
-
+                log.warning(f"ActivityTracking: {member.name} left voice but was not being tracked.")
 
     # --- COMMANDS (These are not @commands.command() directly, but are called by main cog) ---
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role):
