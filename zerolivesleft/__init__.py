@@ -1,5 +1,5 @@
 # zerolivesleft/__init__.py
-# Complete, updated file
+# Complete and Correct File
 
 import asyncio
 import logging
@@ -18,6 +18,7 @@ from .rolecount import RoleCountingLogic
 from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
 from .application_roles import ApplicationRolesLogic
+from .role_menus import RoleMenuLogic # Import for the new feature
 
 log = logging.getLogger("red.Elkz.zerolivesleft") # Main cog logger
 
@@ -65,6 +66,10 @@ class Zerolivesleft(commands.Cog):
             cal_api_key=None,
             cal_interval=15
         )
+        # ADDED THIS NEW CONFIG FOR ROLE MENUS
+        self.config.register_guild(
+            role_menus={}
+        )
 
         # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
@@ -78,15 +83,19 @@ class Zerolivesleft(commands.Cog):
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
         self.application_roles_logic = ApplicationRolesLogic(self)
+        self.role_menu_logic = RoleMenuLogic(self) # <-- ADDED THIS INSTANCE
+
+        # --- SETUP PERSISTENT VIEWS ---
+        # This is crucial for the buttons to work after a bot restart
+        self.bot.add_view(self.role_menu_logic.create_view_from_config(None))
+        self.bot.add_view(self.role_menu_logic.AutoRoleView())
+
 
         # --- WEB SERVER SETUP ---
-        # All routes are now registered in one place inside WebApiManager
         self.web_manager.register_all_routes()
-
-        # Start the web server initialization task
         asyncio.create_task(self.initialize_webserver())
 
-        # Start periodic tasks
+        # --- START PERIODIC TASKS ---
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
@@ -136,15 +145,12 @@ class Zerolivesleft(commands.Cog):
             self.web_runner = None
             self.web_site = None
 
-    # --- LISTENER ADDED HERE ---
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         """This now correctly listens for voice channel joins and leaves."""
         if member.bot:
             return
-        # We delegate the actual work to the ActivityTrackingLogic class
         await self.activity_tracking_logic.handle_voice_state_update(member, before, after)
-    # -------------------------
 
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
     @commands.is_owner()
@@ -378,7 +384,70 @@ class Zerolivesleft(commands.Cog):
     async def approles_set_default_guild(self, ctx, guild: discord.Guild):
         """Set the default guild for all application actions."""
         await self.application_roles_logic.set_default_guild(ctx, guild)
-        
+    
+    # ===== NEW DYNAMIC ROLE MENU COMMAND GROUP =====
+    @zerolivesleft_group.group(name="roles")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def zeroroles_group(self, ctx: commands.Context):
+        """Manage and post dynamic role-selector menus."""
+        pass
+
+    @zeroroles_group.group(name="menu", autohelp=True)
+    async def zeroroles_menu_group(self, ctx: commands.Context):
+        """Manage role menus (create, delete, edit, list)."""
+        pass
+
+    @zeroroles_menu_group.command(name="create")
+    async def menu_create(self, ctx: commands.Context, name: str):
+        """Creates a new, empty role menu."""
+        await self.role_menu_logic.create_menu(ctx, name)
+
+    @zeroroles_menu_group.command(name="delete")
+    async def menu_delete(self, ctx: commands.Context, name: str):
+        """Deletes a role menu."""
+        await self.role_menu_logic.delete_menu(ctx, name)
+    
+    @zeroroles_menu_group.command(name="list")
+    async def menu_list(self, ctx: commands.Context):
+        """Lists all configured role menus."""
+        await self.role_menu_logic.list_menus(ctx)
+
+    @zeroroles_menu_group.command(name="edit")
+    async def menu_edit(self, ctx: commands.Context, name: str, setting: str, *, value: str):
+        """Edits a menu setting. Options: color, footer, style, image_url."""
+        await self.role_menu_logic.edit_menu(ctx, name, setting, value)
+
+    @zeroroles_menu_group.command(name="image")
+    async def menu_image(self, ctx: commands.Context, name: str, image_url: str):
+        """Sets the image for a menu via URL."""
+        await self.role_menu_logic.edit_menu(ctx, name, "image_url", image_url)
+
+    @zeroroles_group.command(name="addrole")
+    async def zeroroles_add_role(self, ctx: commands.Context, menu_name: str, role: discord.Role, *, label: str = None):
+        """Adds a role to a menu. The label is optional."""
+        await self.role_menu_logic.add_role_to_menu(ctx, menu_name, role, label)
+    
+    @zeroroles_group.command(name="removerole")
+    async def zeroroles_remove_role(self, ctx: commands.Context, menu_name: str, role: discord.Role):
+        """Removes a role from a menu."""
+        await self.role_menu_logic.remove_role_from_menu(ctx, menu_name, role)
+
+    @zeroroles_group.command(name="post")
+    async def zeroroles_post(self, ctx: commands.Context, menu_name: str, channel: discord.TextChannel = None):
+        """Posts a menu to a channel for the first time."""
+        await self.role_menu_logic.post_menu(ctx, menu_name, channel)
+
+    @zeroroles_group.command(name="update")
+    async def zeroroles_update(self, ctx: commands.Context, menu_name: str):
+        """Finds and updates a previously posted menu message."""
+        await self.role_menu_logic.update_menu_message(ctx, menu_name)
+
+    @zeroroles_group.command(name="autoroles")
+    async def zeroroles_autoroles(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """(STATIC) Sends the auto-roles embed with toggle button."""
+        await self.role_menu_logic.send_autoroles_menu(ctx, channel)
+    # =====================================
+
 async def setup(bot: Red):
     cog = Zerolivesleft(bot)
     await bot.add_cog(cog)
