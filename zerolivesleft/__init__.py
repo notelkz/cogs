@@ -19,6 +19,7 @@ from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
 from .application_roles import ApplicationRolesLogic
 from .role_menus import RoleMenuLogic # Import for the new feature
+from . import role_menus # Import for the new feature
 
 log = logging.getLogger("red.Elkz.zerolivesleft") # Main cog logger
 
@@ -88,7 +89,7 @@ class Zerolivesleft(commands.Cog):
         # --- SETUP PERSISTENT VIEWS ---
         # This is crucial for the buttons to work after a bot restart
         self.bot.add_view(self.role_menu_logic.create_view_from_config(None))
-        self.bot.add_view(self.role_menu_logic.AutoRoleView())
+        self.bot.add_view(role_menus.AutoRoleView())
 
 
         # --- WEB SERVER SETUP ---
@@ -148,15 +149,12 @@ class Zerolivesleft(commands.Cog):
             self.web_runner = None
             self.web_site = None
 
-    # --- LISTENER ADDED HERE ---
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         """This now correctly listens for voice channel joins and leaves."""
         if member.bot:
             return
-        # We delegate the actual work to the ActivityTrackingLogic class
         await self.activity_tracking_logic.handle_voice_state_update(member, before, after)
-    # -------------------------
 
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
     @commands.is_owner()
@@ -448,7 +446,7 @@ class Zerolivesleft(commands.Cog):
         """(STATIC) Sends the auto-roles embed with toggle button."""
         await self.role_menu_logic.send_autoroles_menu(ctx, channel)
     # =======================================================
-
+        
 async def setup(bot: Red):
     cog = Zerolivesleft(bot)
     await bot.add_cog(cog)
