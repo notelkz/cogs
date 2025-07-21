@@ -34,6 +34,9 @@ class WebApiManager:
             self.web_app.router.add_get("/api/get-military-ranks", self.get_military_ranks_handler)
             self.web_app.router.add_get("/api/get-all-activity", self.get_all_activity_handler)
 
+            # --- User Profile Routes (from user_profile.py) ---
+            self.web_app.router.add_get("/api/user/{user_id}/details", self.get_user_details_handler)
+
             log.info(f"Successfully registered routes for web_app.")
         except RuntimeError as e:
             log.critical(f"Failed to register web routes: {e}. Router might be frozen prematurely. This is a critical error.", exc_info=True)
@@ -283,3 +286,43 @@ class WebApiManager:
             await ctx.send("Configuration sent to your DMs.")
         except discord.Forbidden:
             await ctx.send(f"**Web Server Configuration**\n- Host: `{host}`\n- Port: `{port}`\n- API Key: `{'Set' if api_key else 'Not set'}`")
+
+async def get_user_details_handler(self, request: web.Request):
+    """Web API handler to return details for a specific user, including roles."""
+    try:
+        await self._authenticate_request_webserver_key(request)
+    except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+        return e
+
+    user_id_str = request.match_info.get("user_id")
+    try:
+        user_id = int(user_id_str)
+    except (ValueError, TypeError):
+        raise web.HTTPBadRequest(reason="Invalid user_id format.")
+
+    # We need to find which guild the user is in. We'll check the main one.
+    guild_id = await self.cog.config.ar_default_guild_id()
+    guild = self.cog.bot.get_guild(int(guild_id))
+
+    if not guild:
+        raise web.HTTPNotFound(reason=f"Main guild with ID {guild_id} not found.")
+
+    member = guild.get_member(user_id)
+    if not member:
+        raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
+
+    # Get all non-default roles for the user
+    role_data = [
+        {"id": str(role.id), "name": role.name, "color": f"#{role.color.value:06x}"}
+        for role in member.roles if role.name != "@everyone"
+    ]
+
+    user_data = {
+        "id": str(member.id),
+        "name": member.name,
+        "display_name": member.display_name,
+        "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
+        "roles": role_data
+    }
+
+    return web.json_response(user_data)
