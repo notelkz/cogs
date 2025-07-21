@@ -79,7 +79,7 @@ class WebApiManager:
 
 
     # --- API HANDLERS ---
-    # These functions are all methods of the WebApiManager class
+    # ALL OF THESE FUNCTIONS MUST BE INDENTED EXACTLY AS SHOWN, INSIDE THE CLASS
 
     async def health_check_handler(self, request: web.Request):
         """Handles /health endpoint."""
