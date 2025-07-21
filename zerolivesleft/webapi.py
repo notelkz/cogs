@@ -35,7 +35,11 @@ class WebApiManager:
             self.web_app.router.add_get("/api/get-all-activity", self.get_all_activity_handler)
 
             # --- User Profile Routes (from user_profile.py) ---
-            self.web_app.router.add_get("/api/user/{user_id}/details", self.get_user_details_handler)
+            # CHANGE: The /api/user/{user_id}/details endpoint will now be at /api/user/{user_id}
+            self.web_app.router.add_get("/api/user/{user_id}", self.get_user_details_handler) # <--- UPDATED ROUTE
+
+            # NEW: Route for getting just user roles
+            self.web_app.router.add_get("/api/user/{user_id}/roles", self.get_user_roles_handler) # <--- NEW ROUTE ADDED
 
             log.info(f"Successfully registered routes for web_app.")
         except RuntimeError as e:
@@ -43,6 +47,48 @@ class WebApiManager:
         except Exception as e:
             log.critical(f"An unexpected error occurred during web route registration: {e}", exc_info=True)
 
+    async def get_user_roles_handler(self, request: web.Request): # <--- NEW FUNCTION ADDED
+        log.info("--- BOT DEBUG: /api/user/.../roles endpoint hit ---")
+        try:
+            await self._authenticate_request_webserver_key(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.error("BOT DEBUG: FAILED. Authentication failed.")
+            return e
+
+        user_id_str = request.match_info.get("user_id")
+        log.info(f"BOT DEBUG: Received roles request for user ID: {user_id_str}")
+        
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            log.error("BOT DEBUG: FAILED. Invalid user_id format for roles.")
+            raise web.HTTPBadRequest(reason="Invalid user_id format.")
+
+        guild_id_from_config = await self.cog.config.ar_default_guild_id() # Assuming this is your main guild ID config
+        if not guild_id_from_config:
+            log.error("BOT DEBUG: FAILED. ar_default_guild_id is not set for roles.")
+            raise web.HTTPInternalServerError(reason="Default Guild ID not configured on bot.")
+
+        guild = self.cog.bot.get_guild(int(guild_id_from_config))
+        if not guild:
+            log.error(f"BOT DEBUG: FAILED. Bot could not find guild with ID {guild_id_from_config} for roles. Is the bot in this server?")
+            raise web.HTTPNotFound(reason=f"Bot is not in the configured default guild.")
+
+        member = guild.get_member(user_id)
+        if not member:
+            log.warning(f"BOT DEBUG: guild.get_member({user_id}) returned None for roles. User may not be in server or cache is incomplete.")
+            log.warning("BOT DEBUG: Returning 404 Not Found for roles.")
+            raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
+
+        # Extract role data from the member
+        role_data = [
+            {"id": str(role.id), "name": role.name, "color": f"#{role.color.value:06x}"}
+            for role in member.roles if role.name != "@everyone"
+        ]
+        
+        log.info(f"BOT DEBUG: Successfully built role_data for {member.name}. Returning {len(role_data)} roles.")
+        return web.json_response(role_data)
+    
     async def _authenticate_request_webserver_key(self, request: web.Request):
         """Authenticates incoming web API requests using the WebServer's API key."""
         expected_key = await self.cog.config.webserver_api_key()
