@@ -410,7 +410,7 @@ class ApplicationRolesLogic:
         log.info(f"Listed {len(region_roles)} region role mappings")
     
     async def show_config(self, ctx: commands.Context):
-        all_config = await self.config.all_global()
+        all_config = await self.config.all() # This will get all global settings for the cog
         ar_config = {k: v for k, v in all_config.items() if k.startswith("ar_")}
         embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
         for key, value in ar_config.items():
