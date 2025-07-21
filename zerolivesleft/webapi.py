@@ -292,9 +292,8 @@ class WebApiManager:
         except discord.Forbidden:
             await ctx.send(f"**Web Server Configuration**\n- Host: `{host}`\n- Port: `{port}`\n- API Key: `{'Set' if api_key else 'Not set'}`")
 
-    # This function should be moved inside the WebApiManager class
     async def get_user_details_handler(self, request: web.Request):
-        log.info("--- BOT DEBUG: /api/user/.../details endpoint hit ---")
+        log.info("--- BOT DEBUG: /api/user/... endpoint hit (general details) ---")
         try:
             await self._authenticate_request_webserver_key(request)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
@@ -324,7 +323,6 @@ class WebApiManager:
 
         log.info(f"BOT DEBUG: Found guild: '{guild.name}' ({guild.id})")
 
-        # --- This is the most important check ---
         member = guild.get_member(user_id)
         if not member:
             log.warning(f"BOT DEBUG: guild.get_member({user_id}) returned None. User may not be in server or cache is incomplete.")
