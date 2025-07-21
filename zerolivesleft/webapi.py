@@ -79,6 +79,7 @@ class WebApiManager:
 
 
     # --- API HANDLERS ---
+    # These functions are all methods of the WebApiManager class
 
     async def health_check_handler(self, request: web.Request):
         """Handles /health endpoint."""
@@ -291,55 +292,55 @@ class WebApiManager:
         except discord.Forbidden:
             await ctx.send(f"**Web Server Configuration**\n- Host: `{host}`\n- Port: `{port}`\n- API Key: `{'Set' if api_key else 'Not set'}`")
 
-# Replace the existing function with this one
-async def get_user_details_handler(self, request: web.Request):
-    log.info("--- BOT DEBUG: /api/user/.../details endpoint hit ---")
-    try:
-        await self._authenticate_request_webserver_key(request)
-    except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
-        log.error("BOT DEBUG: FAILED. Authentication failed.")
-        return e
+    # This function should be moved inside the WebApiManager class
+    async def get_user_details_handler(self, request: web.Request):
+        log.info("--- BOT DEBUG: /api/user/.../details endpoint hit ---")
+        try:
+            await self._authenticate_request_webserver_key(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.error("BOT DEBUG: FAILED. Authentication failed.")
+            return e
 
-    user_id_str = request.match_info.get("user_id")
-    log.info(f"BOT DEBUG: Received request for user ID: {user_id_str}")
-    
-    try:
-        user_id = int(user_id_str)
-    except (ValueError, TypeError):
-        log.error("BOT DEBUG: FAILED. Invalid user_id format.")
-        raise web.HTTPBadRequest(reason="Invalid user_id format.")
+        user_id_str = request.match_info.get("user_id")
+        log.info(f"BOT DEBUG: Received request for user ID: {user_id_str}")
+        
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            log.error("BOT DEBUG: FAILED. Invalid user_id format.")
+            raise web.HTTPBadRequest(reason="Invalid user_id format.")
 
-    guild_id_from_config = await self.cog.config.ar_default_guild_id()
-    log.info(f"BOT DEBUG: Default guild ID from config is: {guild_id_from_config}")
+        guild_id_from_config = await self.cog.config.ar_default_guild_id()
+        log.info(f"BOT DEBUG: Default guild ID from config is: {guild_id_from_config}")
 
-    if not guild_id_from_config:
-        log.error("BOT DEBUG: FAILED. ar_default_guild_id is not set.")
-        raise web.HTTPInternalServerError(reason="Default Guild ID not configured on bot.")
+        if not guild_id_from_config:
+            log.error("BOT DEBUG: FAILED. ar_default_guild_id is not set.")
+            raise web.HTTPInternalServerError(reason="Default Guild ID not configured on bot.")
 
-    guild = self.cog.bot.get_guild(int(guild_id_from_config))
-    if not guild:
-        log.error(f"BOT DEBUG: FAILED. Bot could not find guild with ID {guild_id_from_config}. Is the bot in this server?")
-        raise web.HTTPNotFound(reason=f"Bot is not in the configured default guild.")
+        guild = self.cog.bot.get_guild(int(guild_id_from_config))
+        if not guild:
+            log.error(f"BOT DEBUG: FAILED. Bot could not find guild with ID {guild_id_from_config}. Is the bot in this server?")
+            raise web.HTTPNotFound(reason=f"Bot is not in the configured default guild.")
 
-    log.info(f"BOT DEBUG: Found guild: '{guild.name}' ({guild.id})")
+        log.info(f"BOT DEBUG: Found guild: '{guild.name}' ({guild.id})")
 
-    # --- This is the most important check ---
-    member = guild.get_member(user_id)
-    if not member:
-        log.warning(f"BOT DEBUG: guild.get_member({user_id}) returned None. User may not be in server or cache is incomplete.")
-        log.warning("BOT DEBUG: Returning 404 Not Found.")
-        raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
+        # --- This is the most important check ---
+        member = guild.get_member(user_id)
+        if not member:
+            log.warning(f"BOT DEBUG: guild.get_member({user_id}) returned None. User may not be in server or cache is incomplete.")
+            log.warning("BOT DEBUG: Returning 404 Not Found.")
+            raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
 
-    log.info(f"BOT DEBUG: Found member: '{member.name}' ({member.id})")
+        log.info(f"BOT DEBUG: Found member: '{member.name}' ({member.id})")
 
-    role_data = [
-        {"id": str(role.id), "name": role.name, "color": f"#{role.color.value:06x}"}
-        for role in member.roles if role.name != "@everyone"
-    ]
-    user_data = {
-        "id": str(member.id), "name": member.name, "display_name": member.display_name,
-        "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
-        "roles": role_data
-    }
-    log.info(f"BOT DEBUG: Successfully built user_data. Returning 200 OK.")
-    return web.json_response(user_data)
+        role_data = [
+            {"id": str(role.id), "name": role.name, "color": f"#{role.color.value:06x}"}
+            for role in member.roles if role.name != "@everyone"
+        ]
+        user_data = {
+            "id": str(member.id), "name": member.name, "display_name": member.display_name,
+            "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
+            "roles": role_data
+        }
+        log.info(f"BOT DEBUG: Successfully built user_data. Returning 200 OK.")
+        return web.json_response(user_data)
