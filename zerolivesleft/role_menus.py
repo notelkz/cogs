@@ -1,5 +1,5 @@
 # zerolivesleft-alpha/role_menus.py
-# Complete, rewritten file for dynamic menus
+# Complete, corrected file
 
 import discord
 from redbot.core import commands, Config
@@ -78,11 +78,6 @@ class RoleMenuLogic:
         self.cog = cog_instance
         self.bot = cog_instance.bot
         self.config = cog_instance.config
-
-    def create_view_from_config(self, menu_name: Optional[str] = None, menu_data: Optional[dict] = None):
-        """Helper to create a view, used for re-initialising persistent views on startup"""
-        # This is a dummy call for the initial add_view. The real views are built when posted/updated.
-        return ZeroRolesView(self, 0, "dummy", {})
 
     async def _get_menu(self, guild: discord.Guild, name: str) -> Optional[dict]:
         menus = await self.config.guild(guild).role_menus()

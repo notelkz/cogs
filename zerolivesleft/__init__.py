@@ -1,5 +1,5 @@
-# zerolivesleft/__init__.py
-# Complete and Correct File
+# zerolivesleft-alpha/__init__.py
+# Complete, corrected file
 
 import asyncio
 import logging
@@ -43,8 +43,8 @@ class Zerolivesleft(commands.Cog):
         # GameCounter/RoleCounter settings
         self.config.register_global(
             gc_api_base_url=None, 
-            gc_api_key=None,      
-            gc_interval=1,        
+            gc_api_key=None,       
+            gc_interval=1,       
             gc_counting_guild_id=None,
             gc_game_role_mappings={}
         )
@@ -84,12 +84,14 @@ class Zerolivesleft(commands.Cog):
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
         self.application_roles_logic = ApplicationRolesLogic(self)
-        self.role_menu_logic = RoleMenuLogic(self) # <-- ADDED THIS INSTANCE
+        self.role_menu_logic = RoleMenuLogic(self)
 
         # --- SETUP PERSISTENT VIEWS ---
         # This is crucial for the buttons to work after a bot restart
-        self.bot.add_view(self.role_menu_logic.create_view_from_config(None))
         self.bot.add_view(role_menus.AutoRoleView())
+        
+        # Start the task to re-register dynamic role menu views on startup
+        self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
 
 
         # --- WEB SERVER SETUP ---
@@ -103,6 +105,31 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
+
+    async def initialize_persistent_views(self):
+        """Loop through saved menus and re-register their views."""
+        await self.bot.wait_until_ready() # Ensure the bot's cache is ready
+        log.info("Initializing persistent role menu views...")
+        
+        all_guild_data = await self.config.all_guilds()
+        
+        for guild_id, data in all_guild_data.items():
+            guild = self.bot.get_guild(guild_id)
+            if not guild or "role_menus" not in data:
+                continue
+
+            for menu_name, menu_data in data["role_menus"].items():
+                # Only re-initialize views that have been posted to a channel
+                if menu_data.get("message_id") and menu_data.get("channel_id"):
+                    try:
+                        # Use your existing logic to build the components
+                        components = await self.role_menu_logic._build_menu_components(guild, menu_name)
+                        if components:
+                            _, view = components
+                            self.bot.add_view(view, message_id=menu_data["message_id"])
+                            log.info(f"Re-registered view for menu '{menu_name}' in guild {guild_id}.")
+                    except Exception as e:
+                        log.error(f"Failed to re-register view for menu '{menu_name}' in guild {guild_id}: {e}")
 
     async def initialize_webserver(self):
         """Start the web server."""
@@ -127,6 +154,9 @@ class Zerolivesleft(commands.Cog):
         self.calendar_sync_logic.stop_tasks()
         self.activity_tracking_logic.stop_tasks()
         self.application_roles_logic.stop_tasks()
+        
+        if hasattr(self, 'view_init_task'):
+            self.view_init_task.cancel()
 
         if self.web_runner:
             asyncio.create_task(self.shutdown_webserver())
