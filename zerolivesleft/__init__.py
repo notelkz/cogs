@@ -1,5 +1,5 @@
 # zerolivesleft-alpha/__init__.py
-# Complete, corrected file with all command groups fully included
+# Final complete version with all configs registered correctly
 
 import asyncio
 import logging
@@ -31,11 +31,8 @@ class Zerolivesleft(commands.Cog):
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=6789012345, force_registration=True)
-        self.config.register_global(webserver_host="0.0.0.0", webserver_port=5000, webserver_api_key=None)
-        self.config.register_global(gc_api_base_url=None, gc_api_key=None, gc_interval=1, gc_counting_guild_id=None, gc_game_role_mappings={})
-        self.config.register_guild(at_user_activity={}, at_recruit_role_id=None, at_member_role_id=None, at_promotion_threshold_hours=24.0, at_military_ranks=[], at_api_url=None, at_api_key=None, at_promotion_update_url=None, at_military_rank_update_url=None, at_promotion_channel_id=None)
-        self.config.register_global(cal_api_url="https://zerolivesleft.net/api/events/", cal_api_key=None, cal_interval=15)
-        self.config.register_guild(role_menus={})
+        
+        # ✅ --- CORRECTED: All configs registered in their respective logic classes ---
 
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
@@ -56,6 +53,8 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
+
+    # ... (the rest of your __init__.py remains unchanged, I am providing the full file) ...
 
     async def initialize_persistent_views(self):
         await self.bot.wait_until_ready()
@@ -134,7 +133,6 @@ class Zerolivesleft(commands.Cog):
     async def webserver_group(self, ctx: commands.Context):
         """Commands to manage the central web server."""
         if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
-    
     @webserver_group.command(name="sethost")
     async def webserver_set_host(self, ctx, host: str): await self.web_manager.set_host_command(ctx, host)
     @webserver_group.command(name="setport")
@@ -225,7 +223,6 @@ class Zerolivesleft(commands.Cog):
     async def approles_group(self, ctx):
         """Manage application role assignment settings."""
         if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
-
     @approles_group.command(name="setapiurl")
     async def approles_set_api_url(self, ctx, url: str): await self.application_roles_logic.set_api_url(ctx, url)
     @approles_group.command(name="setapikey")
@@ -249,30 +246,25 @@ class Zerolivesleft(commands.Cog):
     @approles_group.command(name="setdefaultguild")
     async def approles_set_default_guild(self, ctx, guild: discord.Guild): await self.application_roles_logic.set_default_guild(ctx, guild)
         
-    # ✅ --- CORRECTED: Message Management Group is now a top-level group under `zll` ---
     @zerolivesleft_group.group(name="message", aliases=["msg"])
     async def message_group(self, ctx: commands.Context):
         """Manage the automated messages sent to new members."""
         if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
-
     @message_group.command(name="public")
     async def toggle_public(self, ctx, enabled: bool):
         """[On|Off] :: Enable or disable sending public welcome embeds."""
         await self.application_roles_logic.config.ar_send_public_welcome.set(enabled)
         await ctx.send(f"Public welcome embeds are now **{'ENABLED' if enabled else 'DISABLED'}**.")
-
     @message_group.command(name="private")
     async def toggle_private(self, ctx, enabled: bool):
         """[On|Off] :: Enable or disable sending private welcome DMs."""
         await self.application_roles_logic.config.ar_send_private_welcome.set(enabled)
         await ctx.send(f"Private welcome DMs are now **{'ENABLED' if enabled else 'DISABLED'}**.")
-
     @message_group.command(name="setunverified")
     async def set_unverified_message(self, ctx, *, message: str):
         """Sets the welcome DM sent to new, unverified members."""
         await self.application_roles_logic.config.ar_unverified_message.set(message)
         await ctx.send(f"The 'Unverified' welcome message has been updated.")
-        
     @message_group.command(name="setpending")
     async def set_pending_message(self, ctx, *, message: str):
         """Sets the confirmation DM sent after an application is submitted."""
