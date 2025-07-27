@@ -1,4 +1,5 @@
-# zerolivesleft/__init__.py
+# zerolivesleft-alpha/__init__.py
+# Complete, corrected file
 
 import asyncio
 import logging
@@ -6,6 +7,7 @@ from aiohttp import web
 import aiohttp 
 import discord
 import os
+from datetime import datetime
 
 from redbot.core import commands, Config
 from redbot.core.bot import Red
@@ -16,6 +18,8 @@ from .rolecount import RoleCountingLogic
 from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
 from .application_roles import ApplicationRolesLogic
+from .role_menus import RoleMenuLogic # Import for the new feature
+from . import role_menus # Import for the new feature
 
 log = logging.getLogger("red.Elkz.zerolivesleft") # Main cog logger
 
@@ -63,6 +67,10 @@ class Zerolivesleft(commands.Cog):
             cal_api_key=None,
             cal_interval=15
         )
+        # ADDED THIS NEW CONFIG FOR ROLE MENUS
+        self.config.register_guild(
+            role_menus={}
+        )
 
         # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
@@ -76,13 +84,18 @@ class Zerolivesleft(commands.Cog):
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
         self.application_roles_logic = ApplicationRolesLogic(self)
+        self.role_menu_logic = RoleMenuLogic(self)
+
+        # --- SETUP PERSISTENT VIEWS ---
+        # This is crucial for the buttons to work after a bot restart
+        self.bot.add_view(role_menus.AutoRoleView())
+        
+        # Start the task to re-register dynamic role menu views on startup
+        self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
+
 
         # --- WEB SERVER SETUP ---
-        self.web_app.router.add_get("/health", self.web_manager.health_check_handler)
-        self.web_app.router.add_post("/api/applications/approved", self.application_roles_logic.handle_application_approved)
-        self.web_app.router.add_post("/api/applications/update-status", self.application_roles_logic.handle_application_update)
-        self.web_app.router.add_post("/api/ranked-members", self.web_manager.get_members_by_roles)
-        self.web_app.router.add_post("/api/applications/submitted", self.application_roles_logic.handle_application_submitted) # NEW
+        # All routes are now registered in one place inside WebApiManager
         self.web_manager.register_all_routes()
 
         # Start the web server initialization task
@@ -92,6 +105,31 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
+
+    async def initialize_persistent_views(self):
+        """Loop through saved menus and re-register their views."""
+        await self.bot.wait_until_ready() # Ensure the bot's cache is ready
+        log.info("Initializing persistent role menu views...")
+        
+        all_guild_data = await self.config.all_guilds()
+        
+        for guild_id, data in all_guild_data.items():
+            guild = self.bot.get_guild(guild_id)
+            if not guild or "role_menus" not in data:
+                continue
+
+            for menu_name, menu_data in data["role_menus"].items():
+                # Only re-initialize views that have been posted to a channel
+                if menu_data.get("message_id") and menu_data.get("channel_id"):
+                    try:
+                        # Use your existing logic to build the components
+                        components = await self.role_menu_logic._build_menu_components(guild, menu_name)
+                        if components:
+                            _, view = components
+                            self.bot.add_view(view, message_id=menu_data["message_id"])
+                            log.info(f"Re-registered view for menu '{menu_name}' in guild {guild_id}.")
+                    except Exception as e:
+                        log.error(f"Failed to re-register view for menu '{menu_name}' in guild {guild_id}: {e}")
 
     async def initialize_webserver(self):
         """Start the web server."""
@@ -116,6 +154,9 @@ class Zerolivesleft(commands.Cog):
         self.calendar_sync_logic.stop_tasks()
         self.activity_tracking_logic.stop_tasks()
         self.application_roles_logic.stop_tasks()
+        
+        if hasattr(self, 'view_init_task'):
+            self.view_init_task.cancel()
 
         if self.web_runner:
             asyncio.create_task(self.shutdown_webserver())
@@ -137,6 +178,13 @@ class Zerolivesleft(commands.Cog):
         finally:
             self.web_runner = None
             self.web_site = None
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member, before, after):
+        """This now correctly listens for voice channel joins and leaves."""
+        if member.bot:
+            return
+        await self.activity_tracking_logic.handle_voice_state_update(member, before, after)
 
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
     @commands.is_owner()
@@ -341,11 +389,6 @@ class Zerolivesleft(commands.Cog):
         """Set the channel for welcome messages."""
         await self.application_roles_logic.set_welcome_channel(ctx, channel)
 
-    @approles_group.command(name="setwelcomemessage")
-    async def approles_set_welcome_message(self, ctx, *, message: str):
-        """Set the welcome message. Use {mention} to ping the user."""
-        await self.application_roles_logic.set_welcome_message(ctx, message=message)
-
     @approles_group.command(name="addregion")
     async def approles_add_region(self, ctx, region: str, role: discord.Role):
         """Add a mapping from a region code to a Discord role."""
@@ -370,6 +413,95 @@ class Zerolivesleft(commands.Cog):
     async def approles_set_default_guild(self, ctx, guild: discord.Guild):
         """Set the default guild for all application actions."""
         await self.application_roles_logic.set_default_guild(ctx, guild)
+
+    # ✅ --- ADDED: New Message Management Group ---
+    @approles_group.group(name="message", aliases=["msg"])
+    async def approles_message_group(self, ctx: commands.Context):
+        """Manage the automated messages sent to new members."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @approles_message_group.command(name="public")
+    async def approles_toggle_public(self, ctx, enabled: bool):
+        """[On|Off] :: Enable or disable sending public welcome embeds."""
+        await self.application_roles_logic.config.ar_send_public_welcome.set(enabled)
+        await ctx.send(f"Public welcome embeds are now **{'ENABLED' if enabled else 'DISABLED'}**.")
+
+    @approles_message_group.command(name="private")
+    async def approles_toggle_private(self, ctx, enabled: bool):
+        """[On|Off] :: Enable or disable sending private welcome DMs."""
+        await self.application_roles_logic.config.ar_send_private_welcome.set(enabled)
+        await ctx.send(f"Private welcome DMs are now **{'ENABLED' if enabled else 'DISABLED'}**.")
+
+    @approles_message_group.command(name="setunverified")
+    async def approles_set_unverified_message(self, ctx, *, message: str):
+        """Sets the welcome DM sent to new, unverified members."""
+        await self.application_roles_logic.config.ar_unverified_message.set(message)
+        await ctx.send(f"The 'Unverified' welcome message has been updated.")
+        
+    @approles_message_group.command(name="setpending")
+    async def approles_set_pending_message(self, ctx, *, message: str):
+        """Sets the confirmation DM sent after an application is submitted."""
+        await self.application_roles_logic.config.ar_pending_message.set(message)
+        await ctx.send(f"The 'Pending' confirmation message has been updated.")
+        
+    # ===== CORRECTED ROLE MENU COMMAND GROUP =====
+    @zerolivesleft_group.group(name="rolemenu")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def rolemenu_group(self, ctx: commands.Context):
+        """Manage and post dynamic role-selector menus."""
+        pass
+
+    @rolemenu_group.command(name="create")
+    async def menu_create(self, ctx: commands.Context, name: str):
+        """Creates a new, empty role menu."""
+        await self.role_menu_logic.create_menu(ctx, name)
+
+    @rolemenu_group.command(name="delete")
+    async def menu_delete(self, ctx: commands.Context, name: str):
+        """Deletes a role menu."""
+        await self.role_menu_logic.delete_menu(ctx, name)
+    
+    @rolemenu_group.command(name="list")
+    async def menu_list(self, ctx: commands.Context):
+        """Lists all configured role menus."""
+        await self.role_menu_logic.list_menus(ctx)
+
+    @rolemenu_group.command(name="edit")
+    async def menu_edit(self, ctx: commands.Context, name: str, setting: str, *, value: str):
+        """Edits a menu setting. Options: color, footer, style, image_url."""
+        await self.role_menu_logic.edit_menu(ctx, name, setting, value)
+
+    @rolemenu_group.command(name="image")
+    async def menu_image(self, ctx: commands.Context, name: str, image_url: str):
+        """Sets the image for a menu via URL."""
+        await self.role_menu_logic.edit_menu(ctx, name, "image_url", image_url)
+
+    @rolemenu_group.command(name="addrole")
+    async def rolemenu_add_role(self, ctx: commands.Context, menu_name: str, role: discord.Role, *, label: str = None):
+        """Adds a role to a menu. The label is optional."""
+        await self.role_menu_logic.add_role_to_menu(ctx, menu_name, role, label)
+    
+    @rolemenu_group.command(name="removerole")
+    async def rolemenu_remove_role(self, ctx: commands.Context, menu_name: str, role: discord.Role):
+        """Removes a role from a menu."""
+        await self.role_menu_logic.remove_role_from_menu(ctx, menu_name, role)
+
+    @rolemenu_group.command(name="post")
+    async def rolemenu_post(self, ctx: commands.Context, menu_name: str, channel: discord.TextChannel = None):
+        """Posts a menu to a channel for the first time."""
+        await self.role_menu_logic.post_menu(ctx, menu_name, channel)
+
+    @rolemenu_group.command(name="update")
+    async def rolemenu_update(self, ctx: commands.Context, menu_name: str):
+        """Finds and updates a previously posted menu message."""
+        await self.role_menu_logic.update_menu_message(ctx, menu_name)
+
+    @rolemenu_group.command(name="autoroles")
+    async def rolemenu_autoroles(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """(STATIC) Sends the auto-roles embed with toggle button."""
+        await self.role_menu_logic.send_autoroles_menu(ctx, channel)
+    # =======================================================
         
 async def setup(bot: Red):
     cog = Zerolivesleft(bot)
