@@ -1,5 +1,5 @@
 # zerolivesleft/application_roles.py
-# Complete, corrected file with API check on join and message toggles
+# Complete, corrected file with SyntaxError fixed
 
 import discord
 import logging
@@ -237,7 +237,10 @@ class ApplicationRolesLogic:
         msg = ""
         for region, role_id in region_roles.items():
             role = ctx.guild.get_role(role_id)
-            msg += f"**{region}**: {role.mention if role else f'Unknown Role (`{role_id}`)}\n"
+            # ✅ --- SYNTAX ERROR FIX ---
+            # The newline character \n is moved outside the f-string to prevent the error.
+            line = f"**{region}**: {role.mention if role else f'Unknown Role (`{role_id}`)}'"
+            msg += line + "\n"
         embed.description = msg
         await ctx.send(embed=embed)
     
