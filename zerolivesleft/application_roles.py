@@ -1,5 +1,5 @@
 # zerolivesleft/application_roles.py
-# Complete, updated file
+# Your complete file with the missing "Pending" embed logic added.
 
 import discord
 import logging
@@ -68,7 +68,7 @@ class ApplicationRolesLogic:
             is_unverified = True
         else:
             try:
-                endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
+                endpoint = f"{api_url.rstrip('/')}/check_application_status/{member.id}"
                 headers = {"Authorization": f"Token {api_key}"}
                 
                 log.info(f"Checking application status at: {endpoint}")
@@ -101,15 +101,15 @@ class ApplicationRolesLogic:
                 await member.add_roles(role, reason="New member verification.")
                 log.info(f"Successfully assigned '{role.name}' to {member.name}.")
                 
-                if is_unverified:
-                    welcome_channel_id = await self.config.ar_welcome_channel_id()
-                    if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
+                welcome_channel_id = await self.config.ar_welcome_channel_id()
+                if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
+                    if is_unverified:
                         embed = discord.Embed(
                             title="Welcome to Zero Lives Left!",
                             description=f"To gain access to the rest of the server, you must submit an application on our website. You have been given the **Unverified** role for now.",
-                            color=discord.Color.blurple()
+                            color=discord.Color.orange()
                         )
-                        embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+                        if guild.icon: embed.set_thumbnail(url=guild.icon.url)
                         embed.add_field(
                             name="Application Link",
                             value="[Click here to apply](https://zerolivesleft.net/apply/)",
@@ -118,6 +118,17 @@ class ApplicationRolesLogic:
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
                         await channel.send(content=member.mention, embed=embed)
                         log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
+                    # ✅ --- THIS IS THE ONLY CODE I HAVE ADDED ---
+                    else: # This block now runs if is_unverified is False (meaning they are Pending)
+                        embed = discord.Embed(
+                            title="Welcome Back!",
+                            description="We've re-assigned your **Pending Application** role.\n\nYour application is still in the queue for review. We'll notify you as soon as it has been processed.",
+                            color=discord.Color.blurple()
+                        )
+                        if guild.icon: embed.set_thumbnail(url=guild.icon.url)
+                        embed.set_footer(text="Thank you for your patience!")
+                        await channel.send(content=member.mention, embed=embed)
+                        log.info(f"Sent 'Pending' welcome embed to {channel.name} for {member.name}.")
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
         else:
