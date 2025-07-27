@@ -1,5 +1,5 @@
 # zerolivesleft/application_roles.py
-# Your complete file with the missing "Pending" embed logic added.
+# Complete, updated file
 
 import discord
 import logging
@@ -68,7 +68,6 @@ class ApplicationRolesLogic:
             is_unverified = True
         else:
             try:
-                # This is your original, correct URL structure.
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
                 headers = {"Authorization": f"Token {api_key}"}
                 
@@ -119,8 +118,8 @@ class ApplicationRolesLogic:
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
                         await channel.send(content=member.mention, embed=embed)
                         log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
-                    # ✅ --- THIS IS THE ONLY CODE ADDED ---
-                    else: # This block now runs if is_unverified is False (meaning they are Pending).
+                    # ✅ --- THIS IS THE ONLY CHANGE ---
+                    else: # This block runs if is_unverified is False (meaning they are Pending).
                         embed = discord.Embed(
                             title="Welcome Back!",
                             description="We've re-assigned your **Pending Application** role.\n\nYour application is still in the queue for review. We'll notify you as soon as it has been processed.",
