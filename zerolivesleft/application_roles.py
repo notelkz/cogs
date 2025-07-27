@@ -68,7 +68,8 @@ class ApplicationRolesLogic:
             is_unverified = True
         else:
             try:
-                endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
+                # ✅ CORRECTED ENDPOINT PATH
+                endpoint = f"{api_url.rstrip('/')}/check_application_status/{member.id}"
                 headers = {"Authorization": f"Token {api_key}"}
                 
                 log.info(f"Checking application status at: {endpoint}")
@@ -101,6 +102,7 @@ class ApplicationRolesLogic:
                 await member.add_roles(role, reason="New member verification.")
                 log.info(f"Successfully assigned '{role.name}' to {member.name}.")
                 
+                # --- THIS IS THE MODIFIED BLOCK ---
                 if is_unverified:
                     welcome_channel_id = await self.config.ar_welcome_channel_id()
                     if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
@@ -109,7 +111,7 @@ class ApplicationRolesLogic:
                             description=f"To gain access to the rest of the server, you must submit an application on our website. You have been given the **Unverified** role for now.",
                             color=discord.Color.blurple()
                         )
-                        embed.set_thumbnail(url=guild.icon.url if guild.icon else None)
+                        if guild.icon: embed.set_thumbnail(url=guild.icon.url)
                         embed.add_field(
                             name="Application Link",
                             value="[Click here to apply](https://zerolivesleft.net/apply/)",
@@ -118,6 +120,14 @@ class ApplicationRolesLogic:
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
                         await channel.send(content=member.mention, embed=embed)
                         log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
+                else:
+                    # ✅ ADDED THIS LOGIC to send a message when a returning user is given the Pending role.
+                    try:
+                        await member.send("Welcome back! We've re-assigned your **Pending** role while we continue to review your application.")
+                        log.info(f"Sent 'Pending' welcome back DM to {member.name}.")
+                    except discord.Forbidden:
+                        log.warning(f"Could not send 'Pending' welcome back DM to {member.name}, their DMs are closed.")
+
             except Exception as e:
                 log.error(f"An error occurred during post-join actions for {member.name}: {e}")
         else:
