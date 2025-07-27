@@ -25,14 +25,11 @@ log = logging.getLogger("red.Elkz.zerolivesleft")
 
 class Zerolivesleft(commands.Cog):
     """
-    A consolidated cog for Zero Lives Left website integration,
-    including web APIs, game counting, activity tracking, and calendar sync.
+    A consolidated cog for Zero Lives Left website integration.
     """
 
     def __init__(self, bot: Red):
         self.bot = bot
-        
-        # --- CENTRALIZED CONFIG ---
         self.config = Config.get_conf(self, identifier=6789012345, force_registration=True)
         self.config.register_global(webserver_host="0.0.0.0", webserver_port=5000, webserver_api_key=None)
         self.config.register_global(gc_api_base_url=None, gc_api_key=None, gc_interval=1, gc_counting_guild_id=None, gc_game_role_mappings={})
@@ -40,13 +37,11 @@ class Zerolivesleft(commands.Cog):
         self.config.register_global(cal_api_url="https://zerolivesleft.net/api/events/", cal_api_key=None, cal_interval=15)
         self.config.register_guild(role_menus={})
 
-        # --- SHARED RESOURCES ---
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
         self.web_runner = None
         self.web_site = None
         
-        # --- INSTANTIATE LOGIC MANAGERS ---
         self.web_manager = WebApiManager(self)
         self.role_counting_logic = RoleCountingLogic(self)
         self.activity_tracking_logic = ActivityTrackingLogic(self)
@@ -54,15 +49,10 @@ class Zerolivesleft(commands.Cog):
         self.application_roles_logic = ApplicationRolesLogic(self)
         self.role_menu_logic = RoleMenuLogic(self)
 
-        # --- SETUP PERSISTENT VIEWS ---
         self.bot.add_view(role_menus.AutoRoleView())
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
-
-        # --- WEB SERVER SETUP ---
         self.web_manager.register_all_routes()
         asyncio.create_task(self.initialize_webserver())
-
-        # --- START PERIODIC TASKS ---
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
@@ -73,8 +63,7 @@ class Zerolivesleft(commands.Cog):
         all_guild_data = await self.config.all_guilds()
         for guild_id, data in all_guild_data.items():
             guild = self.bot.get_guild(guild_id)
-            if not guild or "role_menus" not in data:
-                continue
+            if not guild or "role_menus" not in data: continue
             for menu_name, menu_data in data["role_menus"].items():
                 if menu_data.get("message_id") and menu_data.get("channel_id"):
                     try:
@@ -89,8 +78,7 @@ class Zerolivesleft(commands.Cog):
     async def initialize_webserver(self):
         await self.bot.wait_until_ready()
         if not self.web_runner:
-            host = await self.config.webserver_host()
-            port = await self.config.webserver_port()
+            host, port = await self.config.webserver_host(), await self.config.webserver_port()
             try:
                 self.web_runner = web.AppRunner(self.web_app)
                 await self.web_runner.setup()
@@ -106,31 +94,25 @@ class Zerolivesleft(commands.Cog):
         self.calendar_sync_logic.stop_tasks()
         self.activity_tracking_logic.stop_tasks()
         self.application_roles_logic.stop_tasks()
-        if hasattr(self, 'view_init_task'):
-            self.view_init_task.cancel()
-        if self.web_runner:
-            asyncio.create_task(self.shutdown_webserver())
+        if hasattr(self, 'view_init_task'): self.view_init_task.cancel()
+        if self.web_runner: asyncio.create_task(self.shutdown_webserver())
         asyncio.create_task(self.session.close())
         log.info("Zerolivesleft cog unloaded.")
 
     async def shutdown_webserver(self):
         log.info("Shutting down central web server...")
         try:
-            if self.web_app:
-                await self.web_app.shutdown()
-            if self.web_runner:
-                await self.web_runner.cleanup()
+            if self.web_app: await self.web_app.shutdown()
+            if self.web_runner: await self.web_runner.cleanup()
             log.info("Central web server shut down successfully.")
         except Exception as e:
             log.error(f"Error during web server shutdown: {e}")
         finally:
-            self.web_runner = None
-            self.web_site = None
+            self.web_runner, self.web_site = None, None
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        if member.bot:
-            return
+        if member.bot: return
         await self.activity_tracking_logic.handle_voice_state_update(member, before, after)
 
     @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
@@ -245,86 +227,54 @@ class Zerolivesleft(commands.Cog):
         if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
     @approles_group.command(name="setapiurl")
-    async def approles_set_api_url(self, ctx, url: str):
-        """Set the API URL for checking application statuses."""
-        await self.application_roles_logic.set_api_url(ctx, url)
-
+    async def approles_set_api_url(self, ctx, url: str): await self.application_roles_logic.set_api_url(ctx, url)
     @approles_group.command(name="setapikey")
-    async def approles_set_api_key(self, ctx, *, key: str):
-        """Set the API key for authenticating with the website."""
-        await self.application_roles_logic.set_api_key(ctx, key=key)
-        
+    async def approles_set_api_key(self, ctx, *, key: str): await self.application_roles_logic.set_api_key(ctx, key=key)
     @approles_group.command(name="setpendingrole")
-    async def approles_set_pending_role(self, ctx, role: discord.Role):
-        """Set the role for members with a PENDING application."""
-        await self.application_roles_logic.set_pending_role(ctx, role)
-
+    async def approles_set_pending_role(self, ctx, role: discord.Role): await self.application_roles_logic.set_pending_role(ctx, role)
     @approles_group.command(name="setmemberrole")
-    async def approles_set_member_role(self, ctx, role: discord.Role):
-        """Set the main role for APPROVED members."""
-        await self.application_roles_logic.set_member_role(ctx, role)
-
+    async def approles_set_member_role(self, ctx, role: discord.Role): await self.application_roles_logic.set_member_role(ctx, role)
     @approles_group.command(name="setunverifiedrole")
-    async def approles_set_unverified_role(self, ctx, role: discord.Role):
-        """Set the role for new members who have NOT applied."""
-        await self.application_roles_logic.set_unverified_role(ctx, role)
-
+    async def approles_set_unverified_role(self, ctx, role: discord.Role): await self.application_roles_logic.set_unverified_role(ctx, role)
     @approles_group.command(name="setwelcomechannel")
-    async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel for public welcome embeds."""
-        await self.application_roles_logic.set_welcome_channel(ctx, channel)
-
+    async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel): await self.application_roles_logic.set_welcome_channel(ctx, channel)
     @approles_group.command(name="addregion")
-    async def approles_add_region(self, ctx, region: str, role: discord.Role):
-        """Add a mapping from a region code to a Discord role."""
-        await self.application_roles_logic.add_region_role(ctx, region, role)
-
+    async def approles_add_region(self, ctx, region: str, role: discord.Role): await self.application_roles_logic.add_region_role(ctx, region, role)
     @approles_group.command(name="removeregion")
-    async def approles_remove_region(self, ctx, region: str):
-        """Remove a region role mapping."""
-        await self.application_roles_logic.remove_region_role(ctx, region)
-
+    async def approles_remove_region(self, ctx, region: str): await self.application_roles_logic.remove_region_role(ctx, region)
     @approles_group.command(name="listregions")
-    async def approles_list_regions(self, ctx):
-        """List all configured region-to-role mappings."""
-        await self.application_roles_logic.list_region_roles(ctx)
-
+    async def approles_list_regions(self, ctx): await self.application_roles_logic.list_region_roles(ctx)
     @approles_group.command(name="showconfig")
-    async def approles_show_config(self, ctx):
-        """Show the current configuration for the application module."""
-        await self.application_roles_logic.show_config(ctx)
-
+    async def approles_show_config(self, ctx): await self.application_roles_logic.show_config(ctx)
     @approles_group.command(name="setdefaultguild")
-    async def approles_set_default_guild(self, ctx, guild: discord.Guild):
-        """Set the default guild for all application actions."""
-        await self.application_roles_logic.set_default_guild(ctx, guild)
+    async def approles_set_default_guild(self, ctx, guild: discord.Guild): await self.application_roles_logic.set_default_guild(ctx, guild)
         
-    # ✅ --- NEW MESSAGE MANAGEMENT GROUP ---
-    @approles_group.group(name="message", aliases=["msg"])
-    async def approles_message_group(self, ctx: commands.Context):
+    # ✅ --- CORRECTED: Message Management Group is now a top-level group under `zll` ---
+    @zerolivesleft_group.group(name="message", aliases=["msg"])
+    async def message_group(self, ctx: commands.Context):
         """Manage the automated messages sent to new members."""
         if ctx.invoked_subcommand is None: await ctx.send_help(ctx.command)
 
-    @approles_message_group.command(name="public")
-    async def approles_toggle_public(self, ctx, enabled: bool):
+    @message_group.command(name="public")
+    async def toggle_public(self, ctx, enabled: bool):
         """[On|Off] :: Enable or disable sending public welcome embeds."""
         await self.application_roles_logic.config.ar_send_public_welcome.set(enabled)
         await ctx.send(f"Public welcome embeds are now **{'ENABLED' if enabled else 'DISABLED'}**.")
 
-    @approles_message_group.command(name="private")
-    async def approles_toggle_private(self, ctx, enabled: bool):
+    @message_group.command(name="private")
+    async def toggle_private(self, ctx, enabled: bool):
         """[On|Off] :: Enable or disable sending private welcome DMs."""
         await self.application_roles_logic.config.ar_send_private_welcome.set(enabled)
         await ctx.send(f"Private welcome DMs are now **{'ENABLED' if enabled else 'DISABLED'}**.")
 
-    @approles_message_group.command(name="setunverified")
-    async def approles_set_unverified_message(self, ctx, *, message: str):
+    @message_group.command(name="setunverified")
+    async def set_unverified_message(self, ctx, *, message: str):
         """Sets the welcome DM sent to new, unverified members."""
         await self.application_roles_logic.config.ar_unverified_message.set(message)
         await ctx.send(f"The 'Unverified' welcome message has been updated.")
         
-    @approles_message_group.command(name="setpending")
-    async def approles_set_pending_message(self, ctx, *, message: str):
+    @message_group.command(name="setpending")
+    async def set_pending_message(self, ctx, *, message: str):
         """Sets the confirmation DM sent after an application is submitted."""
         await self.application_roles_logic.config.ar_pending_message.set(message)
         await ctx.send(f"The 'Pending' confirmation message has been updated.")

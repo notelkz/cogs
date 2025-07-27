@@ -238,7 +238,7 @@ class ApplicationRolesLogic:
         for region, role_id in region_roles.items():
             role = ctx.guild.get_role(role_id)
             # ✅ --- SYNTAX ERROR FIX ---
-            # The extra quote at the end of the line has been removed.
+            # Correctly formatted f-string.
             line = f"**{region}**: {role.mention if role else f'Unknown Role (`{role_id}`)'}"
             msg += line + "\n"
         embed.description = msg
