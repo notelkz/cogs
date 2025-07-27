@@ -25,16 +25,14 @@ log = logging.getLogger("red.Elkz.zerolivesleft")
 
 class Zerolivesleft(commands.Cog):
     """
-    A consolidated cog for Zero Lives Left website integration,
-    including web APIs, game counting, activity tracking, and calendar sync.
+    A consolidated cog for Zero Lives Left website integration.
     """
 
     def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=6789012345, force_registration=True)
         
-        # Config registration is now handled in each logic file's __init__
-        # This keeps the main file cleaner.
+        # ✅ --- CORRECTED: All configs registered in their respective logic classes ---
 
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
@@ -55,6 +53,8 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
+
+    # ... (the rest of your __init__.py remains unchanged, I am providing the full file) ...
 
     async def initialize_persistent_views(self):
         await self.bot.wait_until_ready()
@@ -77,8 +77,7 @@ class Zerolivesleft(commands.Cog):
     async def initialize_webserver(self):
         await self.bot.wait_until_ready()
         if not self.web_runner:
-            host = await self.web_manager.config.webserver_host()
-            port = await self.web_manager.config.webserver_port()
+            host, port = await self.config.webserver_host(), await self.config.webserver_port()
             try:
                 self.web_runner = web.AppRunner(self.web_app)
                 await self.web_runner.setup()
@@ -87,6 +86,7 @@ class Zerolivesleft(commands.Cog):
                 log.info(f"Central web server started on http://{host}:{port}")
             except Exception as e:
                 log.error(f"Failed to start central web server: {e}")
+                self.web_runner = None
 
     def cog_unload(self):
         self.role_counting_logic.stop_tasks()
@@ -96,21 +96,25 @@ class Zerolivesleft(commands.Cog):
         if hasattr(self, 'view_init_task'): self.view_init_task.cancel()
         if self.web_runner: asyncio.create_task(self.shutdown_webserver())
         asyncio.create_task(self.session.close())
+        log.info("Zerolivesleft cog unloaded.")
 
     async def shutdown_webserver(self):
-        log.info("Shutting down web server...")
+        log.info("Shutting down central web server...")
         try:
-            if self.web_site: await self.web_site.stop()
+            if self.web_app: await self.web_app.shutdown()
             if self.web_runner: await self.web_runner.cleanup()
+            log.info("Central web server shut down successfully.")
         except Exception as e:
             log.error(f"Error during web server shutdown: {e}")
+        finally:
+            self.web_runner, self.web_site = None, None
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member.bot: return
         await self.activity_tracking_logic.handle_voice_state_update(member, before, after)
 
-    @commands.hybrid_group(name="zll")
+    @commands.hybrid_group(name="zll", aliases=["zerolivesleft"])
     @commands.is_owner()
     async def zerolivesleft_group(self, ctx: commands.Context):
         """Central commands for Zero Lives Left website integration."""
@@ -229,10 +233,8 @@ class Zerolivesleft(commands.Cog):
     async def approles_set_member_role(self, ctx, role: discord.Role): await self.application_roles_logic.set_member_role(ctx, role)
     @approles_group.command(name="setunverifiedrole")
     async def approles_set_unverified_role(self, ctx, role: discord.Role): await self.application_roles_logic.set_unverified_role(ctx, role)
-    @approles_group.command(name="setunverifiedchannel")
-    async def approles_set_unverified_channel(self, ctx, channel: discord.TextChannel): await self.application_roles_logic.set_unverified_channel(ctx, channel)
-    @approles_group.command(name="setpendingchannel")
-    async def approles_set_pending_channel(self, ctx, channel: discord.TextChannel): await self.application_roles_logic.set_pending_channel(ctx, channel)
+    @approles_group.command(name="setwelcomechannel")
+    async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel): await self.application_roles_logic.set_welcome_channel(ctx, channel)
     @approles_group.command(name="addregion")
     async def approles_add_region(self, ctx, region: str, role: discord.Role): await self.application_roles_logic.add_region_role(ctx, region, role)
     @approles_group.command(name="removeregion")
