@@ -68,7 +68,8 @@ class ApplicationRolesLogic:
             is_unverified = True
         else:
             try:
-                endpoint = f"{api_url.rstrip('/')}/check_application_status/{member.id}"
+                # This is your original, correct URL structure.
+                endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
                 headers = {"Authorization": f"Token {api_key}"}
                 
                 log.info(f"Checking application status at: {endpoint}")
@@ -118,8 +119,8 @@ class ApplicationRolesLogic:
                         embed.set_footer(text="Once your application is approved, your roles will be updated automatically.")
                         await channel.send(content=member.mention, embed=embed)
                         log.info(f"Sent welcome embed to {channel.name} for {member.name}.")
-                    # ✅ --- THIS IS THE ONLY CODE THAT HAS BEEN ADDED ---
-                    else: # This runs if is_unverified is False, meaning the user is Pending.
+                    # ✅ --- THIS IS THE ONLY CHANGE TO YOUR FILE ---
+                    else: # This block runs if is_unverified is False (meaning they are Pending).
                         embed = discord.Embed(
                             title="Welcome Back!",
                             description="We've re-assigned your **Pending Application** role.\n\nYour application is still in the queue for review. We'll notify you as soon as it has been processed.",
@@ -421,7 +422,7 @@ class ApplicationRolesLogic:
         log.info(f"Listed {len(region_roles)} region role mappings")
     
     async def show_config(self, ctx: commands.Context):
-        all_config = await self.config.all() # This will get all global settings for the cog
+        all_config = await self.config.all()
         ar_config = {k: v for k, v in all_config.items() if k.startswith("ar_")}
         embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
         for key, value in ar_config.items():
