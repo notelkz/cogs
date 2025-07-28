@@ -1,5 +1,9 @@
-# zerolivesleft/application_roles.py
-# Your complete file with the missing "Pending" embed logic added.
+# Enhanced application_roles.py with full combination approach
+# Key improvements:
+# 1. Pre-approved user detection
+# 2. Channel notifications for status changes
+# 3. Self-service status check command
+# 4. Better embed messaging
 
 import discord
 import logging
@@ -21,8 +25,8 @@ class ApplicationRolesLogic:
     def __init__(self, cog):
         self.cog = cog
         self.bot = cog.bot
-        self.config = cog.config # Assumes cog has a config attribute
-        self.session = cog.session # Assumes cog has a session attribute
+        self.config = cog.config
+        self.session = cog.session
         
         self.config.register_global(
             ar_api_url=None,
@@ -34,12 +38,12 @@ class ApplicationRolesLogic:
             ar_pending_role_id=None,
             ar_member_role_id=None,
             ar_unverified_role_id=None,
-            # Old welcome channel, kept for now but new channels below are preferred
-            ar_welcome_channel_id=None, 
+            # Channel configurations
+            ar_welcome_channel_id=None,  # For approved members
+            ar_unverified_channel_id=None,  # For unverified members
+            ar_pending_channel_id=None,     # For pending members
+            ar_notifications_channel_id=None,  # NEW: For status update notifications
             ar_welcome_message="Welcome {mention}! To join our community, please submit an application at https://zerolivesleft.net/apply/",
-            # NEW CHANNELS FOR PRIVATE STAGES
-            ar_unverified_channel_id=None, # Channel for members with unverified role
-            ar_pending_channel_id=None,     # Channel for members with pending role
         )
         
         self.guild_invites = {}
@@ -52,25 +56,24 @@ class ApplicationRolesLogic:
         log.info("ApplicationRolesLogic initialized")
 
     async def on_member_join(self, member: discord.Member):
-        if member.bot: return
+        if member.bot:
+            return
 
         guild = member.guild
         log.info(f"New member joined: {member.name} ({member.id}). Checking application status.")
         
         default_guild_id = await self.config.ar_default_guild_id()
-        if not default_guild_id or guild.id != int(default_guild_id): return
+        if not default_guild_id or guild.id != int(default_guild_id):
+            return
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
         
-        role_to_assign_id = None
-        is_unverified = False
+        # Default to unverified
+        status = "none"
+        app_data = {}
         
-        if not api_url or not api_key:
-            log.error("Cannot check application status: Application API URL or Key not set. Assigning Unverified.")
-            role_to_assign_id = await self.config.ar_unverified_role_id()
-            is_unverified = True
-        else:
+        if api_url and api_key:
             try:
                 endpoint = f"{api_url.rstrip('/')}/api/applications/check/{member.id}/"
                 headers = {"Authorization": f"Token {api_key}"}
@@ -81,80 +84,160 @@ class ApplicationRolesLogic:
                     if resp.status == 200:
                         data = await resp.json()
                         log.info(f"Application check data: {data}")
-                        status = data.get("status")
-                        
-                        if status == "pending":
-                            role_to_assign_id = await self.config.ar_pending_role_id()
-                            log.info(f"User {member.name} has a pending application. Assigning 'Pending' role.")
-                        else:
-                            role_to_assign_id = await self.config.ar_unverified_role_id()
-                            is_unverified = True
-                            log.info(f"User {member.name} does not have a pending application. Assigning 'Unverified' role.")
+                        status = data.get("status", "none")
+                        app_data = data.get("application_data", {})
                     else:
-                        log.error(f"Failed to check application status for {member.name}: {resp.status} - {await resp.text()}")
-                        role_to_assign_id = await self.config.ar_unverified_role_id()
-                        is_unverified = True
+                        log.error(f"Failed to check application status for {member.name}: {resp.status}")
 
             except Exception as e:
                 log.error(f"Exception checking application status for {member.name}: {e}")
-                role_to_assign_id = await self.config.ar_unverified_role_id()
-                is_unverified = True
 
-        if role_to_assign_id and (role := guild.get_role(int(role_to_assign_id))):
-            try:
-                await member.add_roles(role, reason="New member verification.")
-                log.info(f"Successfully assigned '{role.name}' to {member.name}.")
-                
-                # --- NEW LOGIC FOR SENDING EMBEDS TO SPECIFIC CHANNELS ---
-                unverified_channel_id = await self.config.ar_unverified_channel_id()
-                pending_channel_id = await self.config.ar_pending_channel_id()
+        # Handle different statuses
+        await self._handle_member_by_status(member, status, app_data)
 
-                target_channel = None
-                if is_unverified and unverified_channel_id:
-                    target_channel = guild.get_channel(int(unverified_channel_id))
-                elif not is_unverified and pending_channel_id: # Meaning status is pending
-                    target_channel = guild.get_channel(int(pending_channel_id))
-                
-                if target_channel:
-                    if is_unverified:
-                        embed = discord.Embed(
-                            title="Welcome to Zero Lives Left!",
-                            description=(
-                                f"To gain access to the rest of the server, you must submit an application on our website. "
-                                f"You have been given the **Unverified** role for now. Please read the information below carefully."
-                            ),
-                            color=discord.Color.orange()
-                        )
-                        if guild.icon: embed.set_thumbnail(url=guild.icon.url)
-                        embed.add_field(
-                            name="Application Link",
-                            value="[Click here to apply](https://zerolivesleft.net/apply/)",
-                            inline=False
-                        )
-                        embed.set_footer(text="Once your application is submitted and reviewed, your roles will be updated automatically and you'll be moved to a new channel.")
-                        await target_channel.send(content=member.mention, embed=embed)
-                        log.info(f"Sent 'Unverified' welcome embed to {target_channel.name} for {member.name}.")
-                    else: # Member has pending status
-                        embed = discord.Embed(
-                            title="Welcome Back!",
-                            description=(
-                                f"We've re-assigned your **Pending Application** role. "
-                                f"Your application is still in the queue for review. We'll notify you as soon as it has been processed. "
-                                f"Please wait here patiently."
-                            ),
-                            color=discord.Color.blurple()
-                        )
-                        if guild.icon: embed.set_thumbnail(url=guild.icon.url)
-                        embed.set_footer(text="Thank you for your patience!")
-                        await target_channel.send(content=member.mention, embed=embed)
-                        log.info(f"Sent 'Pending' re-join embed to {target_channel.name} for {member.name}.")
-                else:
-                    log.warning(f"No configured channel found for sending welcome/pending embed for {member.name}.")
-
-            except Exception as e:
-                log.error(f"An error occurred during post-join actions for {member.name}: {e}", exc_info=True)
+    async def _handle_member_by_status(self, member: discord.Member, status: str, app_data: dict):
+        """Handle member join based on their application status"""
+        guild = member.guild
+        
+        if status == "approved":
+            # Pre-approved user - give them full access immediately
+            await self._handle_pre_approved_member(member, app_data)
+        elif status == "pending":
+            # User has pending application
+            await self._handle_pending_member(member)
+        elif status == "rejected":
+            # Previously rejected - treat as unverified
+            await self._handle_unverified_member(member, is_returning_rejected=True)
         else:
-            log.warning(f"No appropriate role ('Pending' or 'Unverified') could be found or assigned to {member.name}.")
+            # No application or unknown status
+            await self._handle_unverified_member(member)
+
+    async def _handle_pre_approved_member(self, member: discord.Member, app_data: dict):
+        """Handle a member who was approved before joining Discord"""
+        guild = member.guild
+        log.info(f"Pre-approved member joined: {member.name}")
+        
+        # Assign all appropriate roles immediately
+        roles_to_add = []
+        
+        # Add member role
+        if member_role_id := await self.config.ar_member_role_id():
+            if role := guild.get_role(int(member_role_id)):
+                roles_to_add.append(role)
+        
+        # Add region role
+        if region_code := app_data.get("region"):
+            region_roles = await self.config.ar_region_roles()
+            if region_role_id := region_roles.get(region_code.upper()):
+                if role := guild.get_role(int(region_role_id)):
+                    roles_to_add.append(role)
+        
+        # Add platform and game roles
+        for role_type in ["platform_role_ids", "game_role_ids"]:
+            role_ids = app_data.get(role_type, [])
+            for role_id in role_ids:
+                if role_id and (role := guild.get_role(int(role_id))):
+                    roles_to_add.append(role)
+        
+        if roles_to_add:
+            await member.add_roles(*roles_to_add, reason="Pre-approved application")
+            log.info(f"Added roles to pre-approved member {member.name}: {[r.name for r in roles_to_add]}")
+        
+        # Send welcome message to main welcome channel
+        welcome_channel_id = await self.config.ar_welcome_channel_id()
+        if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
+            embed = discord.Embed(
+                title="Welcome to Zero Lives Left!",
+                description=(
+                    f"Welcome {member.mention}! Your application was already approved - "
+                    f"you now have full access to the server! 🎉"
+                ),
+                color=discord.Color.green()
+            )
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            embed.add_field(
+                name="You're all set!",
+                value="Feel free to explore all the channels and get involved in the community.",
+                inline=False
+            )
+            embed.set_footer(text="Welcome to the community!")
+            await channel.send(content=member.mention, embed=embed)
+            log.info(f"Sent pre-approved welcome embed to {channel.name} for {member.name}.")
+
+    async def _handle_pending_member(self, member: discord.Member):
+        """Handle a member who has a pending application"""
+        guild = member.guild
+        log.info(f"Member with pending application joined: {member.name}")
+        
+        # Assign pending role
+        pending_role_id = await self.config.ar_pending_role_id()
+        if pending_role_id and (role := guild.get_role(int(pending_role_id))):
+            await member.add_roles(role, reason="Has pending application")
+            log.info(f"Assigned pending role to {member.name}")
+        
+        # Send message to pending channel
+        pending_channel_id = await self.config.ar_pending_channel_id()
+        if pending_channel_id and (channel := guild.get_channel(int(pending_channel_id))):
+            embed = discord.Embed(
+                title="Welcome Back!",
+                description=(
+                    f"Welcome back {member.mention}! We see you have a pending application "
+                    f"that's currently being reviewed. Please wait here patiently while our team "
+                    f"processes your application."
+                ),
+                color=discord.Color.blurple()
+            )
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            embed.set_footer(text="We'll notify you here once your application has been processed!")
+            await channel.send(content=member.mention, embed=embed)
+            log.info(f"Sent pending welcome embed to {channel.name} for {member.name}.")
+
+    async def _handle_unverified_member(self, member: discord.Member, is_returning_rejected: bool = False):
+        """Handle an unverified member (new or previously rejected)"""
+        guild = member.guild
+        log.info(f"Unverified member joined: {member.name} (returning rejected: {is_returning_rejected})")
+        
+        # Assign unverified role
+        unverified_role_id = await self.config.ar_unverified_role_id()
+        if unverified_role_id and (role := guild.get_role(int(unverified_role_id))):
+            await member.add_roles(role, reason="Unverified member")
+            log.info(f"Assigned unverified role to {member.name}")
+        
+        # Send message to unverified channel
+        unverified_channel_id = await self.config.ar_unverified_channel_id()
+        if unverified_channel_id and (channel := guild.get_channel(int(unverified_channel_id))):
+            if is_returning_rejected:
+                embed = discord.Embed(
+                    title="Welcome Back!",
+                    description=(
+                        f"Welcome back {member.mention}! We see your previous application was not approved. "
+                        f"You're welcome to submit a new application when you're ready."
+                    ),
+                    color=discord.Color.orange()
+                )
+            else:
+                embed = discord.Embed(
+                    title="Welcome to Zero Lives Left!",
+                    description=(
+                        f"Welcome {member.mention}! To gain access to the rest of the server, "
+                        f"you must submit an application on our website. You have been given the "
+                        f"**Unverified** role for now."
+                    ),
+                    color=discord.Color.orange()
+                )
+            
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            embed.add_field(
+                name="Application Link",
+                value="[Click here to apply](https://zerolivesleft.net/apply/)",
+                inline=False
+            )
+            embed.set_footer(text="Once your application is submitted and approved, your roles will be updated automatically!")
+            await channel.send(content=member.mention, embed=embed)
+            log.info(f"Sent unverified welcome embed to {channel.name} for {member.name}.")
 
     async def handle_application_update(self, request):
         log.info("Application update endpoint called")
@@ -273,7 +356,12 @@ class ApplicationRolesLogic:
             else:
                 log.info(f"{member.name} already has the {pending_role.name} role")
             
-            # --- Send embed to pending channel upon submission ---
+            # Send notification to notifications channel
+            await self._send_notification(guild, member, "Application Received", 
+                f"{member.mention}, your application has been received and is now under review! You've been moved to the pending applications area.", 
+                discord.Color.blue())
+            
+            # Send embed to pending channel upon submission
             pending_channel_id = await self.config.ar_pending_channel_id()
             if pending_channel_id and (channel := guild.get_channel(int(pending_channel_id))):
                 embed = discord.Embed(
@@ -286,12 +374,11 @@ class ApplicationRolesLogic:
                     ),
                     color=discord.Color.blue()
                 )
-                if guild.icon: embed.set_thumbnail(url=guild.icon.url)
+                if guild.icon:
+                    embed.set_thumbnail(url=guild.icon.url)
                 embed.set_footer(text="We'll notify you here once your application has been processed.")
                 await channel.send(content=member.mention, embed=embed)
                 log.info(f"Sent 'Application Received' embed to {channel.name} for {member.name}.")
-            else:
-                log.warning(f"No pending channel configured or found for sending application received embed for {member.name}.")
 
             log.info(f"Successfully updated roles for {member.name} ({member.id}) after application submission")
             log.info(f"New roles: {[role.name for role in member.roles]}")
@@ -305,6 +392,7 @@ class ApplicationRolesLogic:
         discord_id = data.get("discord_id")
         status = data.get("status")
         app_data = data.get("application_data", {})
+        
         if not all([discord_id, status]): 
             log.error(f"Missing required data in process_role_update: discord_id={discord_id}, status={status}")
             return
@@ -331,20 +419,24 @@ class ApplicationRolesLogic:
 
         if status == "rejected":
             log.info(f"Application rejected for {member.name}. Removing roles and kicking.")
+            
+            # Send notification before kicking
+            await self._send_notification(guild, member, "Application Rejected", 
+                f"{member.mention}, unfortunately your application has been rejected. You will be removed from the server.", 
+                discord.Color.red())
+            
             roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
             if roles_to_remove: 
                 await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
                 log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
             
-            # Optionally send a message to the member before kicking
+            # Try to DM them before kicking
             try:
                 await member.send(
                     f"Your application to {guild.name} has been rejected. You have been removed from the server."
                 )
-            except discord.Forbidden:
+            except (discord.Forbidden, discord.HTTPException):
                 log.warning(f"Could not DM {member.name} about application rejection.")
-            except Exception as e:
-                log.error(f"Error sending rejection DM to {member.name}: {e}")
 
             await member.kick(reason="Application Rejected.")
             log.info(f"Kicked {member.name} due to rejected application")
@@ -352,6 +444,12 @@ class ApplicationRolesLogic:
 
         if status == "approved":
             log.info(f"Application approved for {member.name}. Updating roles.")
+            
+            # Send notification first
+            await self._send_notification(guild, member, "Application Approved", 
+                f"🎉 {member.mention}, your application has been **APPROVED**! Welcome to the community!", 
+                discord.Color.green())
+            
             roles_to_add = []
             roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
 
@@ -383,30 +481,127 @@ class ApplicationRolesLogic:
                 await member.remove_roles(*roles_to_remove, reason="Application Approved")
                 log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
             
-            # --- Send success message to a relevant channel for approved members ---
-            # Consider sending this to a 'general' or 'approved' channel, not the unverified/pending ones
-            # For now, we'll send it to the main welcome channel if set, or just log.
-            
-            approved_channel_id = await self.config.ar_welcome_channel_id() # Reusing this for approved messages for now
-            if approved_channel_id and (channel := guild.get_channel(int(approved_channel_id))):
+            # Send success message to welcome channel
+            welcome_channel_id = await self.config.ar_welcome_channel_id()
+            if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
                 embed = discord.Embed(
-                    title="Application Approved!",
+                    title="Welcome to the Community!",
                     description=(
-                        f"Congratulations, {member.mention}! Your application has been approved! "
-                        f"You now have full access to the server. "
-                        f"Please check out the <#YOUR_WELCOME_OR_INFO_CHANNEL_ID_HERE> channel to get started." # TODO: Replace with actual channel ID
+                        f"🎊 Please welcome our newest member: {member.mention}!\n\n"
+                        f"Your application has been approved and you now have full access to the server. "
+                        f"Feel free to explore all the channels and get involved!"
                     ),
                     color=discord.Color.green()
                 )
-                if guild.icon: embed.set_thumbnail(url=guild.icon.url)
-                embed.set_footer(text="Welcome to the community!")
+                if guild.icon:
+                    embed.set_thumbnail(url=guild.icon.url)
+                embed.set_footer(text="Welcome to Zero Lives Left!")
                 await channel.send(content=member.mention, embed=embed)
                 log.info(f"Sent 'Application Approved' embed to {channel.name} for {member.name}.")
-            else:
-                log.warning(f"No approved channel configured or found for sending application approved embed for {member.name}.")
 
             log.info(f"Role update complete for {member.name}")
+
+    async def _send_notification(self, guild: discord.Guild, member: discord.Member, title: str, message: str, color: discord.Color):
+        """Send a notification to the configured notifications channel"""
+        notifications_channel_id = await self.config.ar_notifications_channel_id()
+        if notifications_channel_id and (channel := guild.get_channel(int(notifications_channel_id))):
+            embed = discord.Embed(title=title, description=message, color=color)
+            embed.set_footer(text=f"User: {member.name}#{member.discriminator} ({member.id})")
+            await channel.send(embed=embed)
+            log.info(f"Sent notification to {channel.name}: {title} for {member.name}")
+
+    # Self-service status check command
+    async def check_application_status(self, ctx, member: discord.Member = None):
+        """Check application status for yourself or another member"""
+        target = member or ctx.author
+        
+        # Only allow checking others if user has manage roles permission
+        if member and not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You can only check your own application status.", ephemeral=True)
+            return
+        
+        api_url = await self.config.ar_api_url()
+        api_key = await self.config.ar_api_key()
+        
+        if not api_url or not api_key:
+            await ctx.send("Application system is not configured.", ephemeral=True)
+            return
+        
+        try:
+            endpoint = f"{api_url.rstrip('/')}/api/applications/check/{target.id}/"
+            headers = {"Authorization": f"Token {api_key}"}
+            
+            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    status = data.get("status", "none")
+                    submission_date = data.get("submitted_date")
+                    
+                    embed = discord.Embed(
+                        title=f"Application Status for {target.display_name}",
+                        color=discord.Color.blue()
+                    )
+                    
+                    status_messages = {
+                        "pending": "🟡 **Pending** - Your application is under review",
+                        "approved": "🟢 **Approved** - Your application has been approved!",
+                        "rejected": "🔴 **Rejected** - Your application was not approved",
+                        "none": "⚪ **No Application** - No application found"
+                    }
+                    
+                    embed.add_field(
+                        name="Status",
+                        value=status_messages.get(status, f"❓ **Unknown** - {status}"),
+                        inline=False
+                    )
+                    
+                    if submission_date:
+                        embed.add_field(
+                            name="Submitted",
+                            value=submission_date,
+                            inline=True
+                        )
+                    
+                    if status == "none":
+                        embed.add_field(
+                            name="Next Steps",
+                            value="[Submit an application here](https://zerolivesleft.net/apply/)",
+                            inline=False
+                        )
+                    elif status == "rejected":
+                        embed.add_field(
+                            name="Next Steps",
+                            value="You may submit a new application when ready.",
+                            inline=False
+                        )
+                    
+                    await ctx.send(embed=embed, ephemeral=True)
+                    
+                elif resp.status == 404:
+                    embed = discord.Embed(
+                        title=f"Application Status for {target.display_name}",
+                        description="⚪ **No Application Found**\n\n[Submit an application here](https://zerolivesleft.net/apply/)",
+                        color=discord.Color.light_grey()
+                    )
+                    await ctx.send(embed=embed, ephemeral=True)
+                    
+                else:
+                    await ctx.send(f"Error checking application status: {resp.status}", ephemeral=True)
+                    
+        except Exception as e:
+            log.error(f"Error checking application status for {target.name}: {e}")
+            await ctx.send("An error occurred while checking application status.", ephemeral=True)
+
+    # Configuration methods (keeping existing ones and adding new ones)
+    async def set_notifications_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for application status notifications"""
+        await self.config.ar_notifications_channel_id.set(channel.id)
+        await ctx.send(f"Application notifications channel set to {channel.mention}")
+        log.info(f"Notifications channel set to {channel.name} ({channel.id})")
+
+    # ... (keep all existing configuration methods from your original code) ...
     
+    # Existing methods (keeping all of them - just showing a few key ones for space)
     async def cache_all_invites(self):
         await self.bot.wait_until_ready()
         for guild in self.bot.guilds:
@@ -417,7 +612,8 @@ class ApplicationRolesLogic:
                 log.error(f"Failed to cache invites for guild {guild.name}: {e}")
     
     async def on_invite_create(self, invite):
-        if invite.guild.id not in self.guild_invites: self.guild_invites[invite.guild.id] = []
+        if invite.guild.id not in self.guild_invites: 
+            self.guild_invites[invite.guild.id] = []
         self.guild_invites[invite.guild.id].append(invite)
         log.info(f"New invite created and cached for {invite.guild.name}: {invite.code}")
 
@@ -426,6 +622,7 @@ class ApplicationRolesLogic:
             self.cache_invites_task.cancel()
             log.info("Invite cache task cancelled")
 
+    # Configuration methods
     async def set_api_url(self, ctx, url):
         await self.config.ar_api_url.set(url)
         await ctx.send(f"API URL set to: {url}")
@@ -457,38 +654,28 @@ class ApplicationRolesLogic:
         log.info(f"Unverified role set to {role.name} ({role.id})")
 
     async def set_welcome_channel(self, ctx, channel: discord.TextChannel):
-        """
-        [DEPRECATED/OLD] Sets the generic welcome message channel.
-        Use `set_unverified_channel` and `set_pending_channel` instead.
-        """
+        """Sets the channel for approved member welcome messages"""
         await self.config.ar_welcome_channel_id.set(channel.id)
-        await ctx.send(f"**[DEPRECATED]** Generic welcome message channel set to {channel.mention}. Consider using `setunverifiedchannel` and `setpendingchannel` for staged welcomes.")
-        log.info(f"Generic welcome channel set to {channel.name} ({channel.id}) - consider using new specific channels.")
+        await ctx.send(f"Welcome channel (for approved members) set to {channel.mention}.")
+        log.info(f"Welcome channel set to {channel.name} ({channel.id})")
 
     async def set_unverified_channel(self, ctx, channel: discord.TextChannel):
-        """
-        Sets the channel where new members with the Unverified role receive their welcome.
-        """
+        """Sets the channel where new members with the Unverified role receive their welcome"""
         await self.config.ar_unverified_channel_id.set(channel.id)
         await ctx.send(f"**Unverified** welcome channel set to {channel.mention}. New unverified members will now receive messages here.")
         log.info(f"Unverified channel set to {channel.name} ({channel.id})")
 
     async def set_pending_channel(self, ctx, channel: discord.TextChannel):
-        """
-        Sets the channel where members with a Pending application role receive their updates.
-        """
+        """Sets the channel where members with a Pending application role receive their updates"""
         await self.config.ar_pending_channel_id.set(channel.id)
         await ctx.send(f"**Pending** application channel set to {channel.mention}. Members with pending applications will now receive messages here.")
         log.info(f"Pending channel set to {channel.name} ({channel.id})")
 
     async def set_welcome_message(self, ctx: commands.Context, *, message: str):
-        """
-        [DEPRECATED/OLD] Sets the generic welcome message.
-        The new staged welcome embeds don't use this directly.
-        """
+        """Sets the generic welcome message (legacy)"""
         await self.config.ar_welcome_message.set(message)
-        await ctx.send(f"**[DEPRECATED]** Generic welcome message has been set to:\n\n{message}")
-        log.info(f"Generic welcome message updated - consider using the new embed logic.")
+        await ctx.send(f"Generic welcome message has been set to:\n\n{message}")
+        log.info(f"Generic welcome message updated")
     
     async def add_region_role(self, ctx, region: str, role: discord.Role):
         async with self.config.ar_region_roles() as region_roles:
@@ -533,13 +720,13 @@ class ApplicationRolesLogic:
                     role = ctx.guild.get_role(int(value))
                     value_str = role.mention if role else f"<@&{value}> (Not found: `{value}`)"
                 else:
-                    value_str = f"`{value}`" # Cannot resolve role mention in DM
+                    value_str = f"`{value}`"
             elif "channel_id" in key:
                 if ctx.guild:
                     channel = ctx.guild.get_channel(int(value))
                     value_str = channel.mention if channel else f"<#{value}> (Not found: `{value}`)"
                 else:
-                    value_str = f"`{value}`" # Cannot resolve channel mention in DM
+                    value_str = f"`{value}`"
             elif key == "ar_region_roles":
                 if value:
                     mapped_roles = []

@@ -1,5 +1,5 @@
-# zerolivesleft-alpha/__init__.py
-# Final complete version with all configs registered correctly
+# Updated __init__.py with new commands added
+# Here's your complete file with the new commands integrated:
 
 import asyncio
 import logging
@@ -188,6 +188,12 @@ class Zerolivesleft(commands.Cog):
     async def myvoicetime(self, ctx): await self.activity_tracking_logic.myvoicetime(ctx)
     @commands.hybrid_command(name="status")
     async def status(self, ctx, member: discord.Member = None): await self.activity_tracking_logic.status(ctx, member)
+    
+    # NEW: Application status check command
+    @commands.hybrid_command(name="appstatus", aliases=["application", "checkapp"])
+    async def check_application_status(self, ctx, member: discord.Member = None):
+        """Check your application status or another member's status (if you have permissions)"""
+        await self.application_roles_logic.check_application_status(ctx, member)
 
     @zerolivesleft_group.group(name="militaryranks")
     async def militaryranks_group(self, ctx):
@@ -234,21 +240,21 @@ class Zerolivesleft(commands.Cog):
     @approles_group.command(name="setwelcomechannel")
     async def approles_set_welcome_channel(self, ctx, channel: discord.TextChannel): await self.application_roles_logic.set_welcome_channel(ctx, channel)
     
-    # --- NEW COMMANDS ADDED HERE ---
     @approles_group.command(name="setunverifiedchannel")
     async def approles_set_unverified_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """
-        Sets the channel where new members with the Unverified role receive their welcome message.
-        """
+        """Sets the channel where new members with the Unverified role receive their welcome message."""
         await self.application_roles_logic.set_unverified_channel(ctx, channel)
 
     @approles_group.command(name="setpendingchannel")
     async def approles_set_pending_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """
-        Sets the channel where members with a Pending application role receive their updates.
-        """
+        """Sets the channel where members with a Pending application role receive their updates."""
         await self.application_roles_logic.set_pending_channel(ctx, channel)
-    # --- END NEW COMMANDS ---
+        
+    # NEW: Notifications channel command
+    @approles_group.command(name="setnotificationschannel")
+    async def approles_set_notifications_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Sets the channel where application status notifications are sent."""
+        await self.application_roles_logic.set_notifications_channel(ctx, channel)
 
     @approles_group.command(name="addregion")
     async def approles_add_region(self, ctx, region: str, role: discord.Role): await self.application_roles_logic.add_region_role(ctx, region, role)
@@ -268,25 +274,21 @@ class Zerolivesleft(commands.Cog):
     @message_group.command(name="public")
     async def toggle_public(self, ctx, enabled: bool):
         """[On|Off] :: Enable or disable sending public welcome embeds."""
-        # Assuming ar_send_public_welcome is in application_roles_logic.config
         await self.application_roles_logic.config.ar_send_public_welcome.set(enabled)
         await ctx.send(f"Public welcome embeds are now **{'ENABLED' if enabled else 'DISABLED'}**.")
     @message_group.command(name="private")
     async def toggle_private(self, ctx, enabled: bool):
         """[On|Off] :: Enable or disable sending private welcome DMs."""
-        # Assuming ar_send_private_welcome is in application_roles_logic.config
         await self.application_roles_logic.config.ar_send_private_welcome.set(enabled)
         await ctx.send(f"Private welcome DMs are now **{'ENABLED' if enabled else 'DISABLED'}**.")
     @message_group.command(name="setunverified")
     async def set_unverified_message(self, ctx, *, message: str):
         """Sets the welcome DM sent to new, unverified members."""
-        # Assuming ar_unverified_message is in application_roles_logic.config
         await self.application_roles_logic.config.ar_unverified_message.set(message)
         await ctx.send(f"The 'Unverified' welcome message has been updated.")
     @message_group.command(name="setpending")
     async def set_pending_message(self, ctx, *, message: str):
         """Sets the confirmation DM sent after an application is submitted."""
-        # Assuming ar_pending_message is in application_roles_logic.config
         await self.application_roles_logic.config.ar_pending_message.set(message)
         await ctx.send(f"The 'Pending' confirmation message has been updated.")
         
