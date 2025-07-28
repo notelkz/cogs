@@ -240,11 +240,11 @@ class Zerolivesleft(commands.Cog):
             await ctx.send_help(ctx.command)
 
     # Legacy commands (redirected to XP versions)
-    @activityset_group.command()
+    @activityset_group.command(name="setroles")
     async def roles(self, ctx, recruit: discord.Role, member: discord.Role): 
         await self.activity_tracking_logic.roles(ctx, recruit, member)
 
-    @activityset_group.command()
+    @activityset_group.command(name="setthreshold")
     async def threshold(self, ctx, xp_amount: int): 
         await self.activity_tracking_logic.threshold(ctx, xp_amount)
 
@@ -282,11 +282,11 @@ class Zerolivesleft(commands.Cog):
         await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
 
     # Debug Commands
-    @activityset_group.command(name="debug")
+    @activityset_group.command(name="debuginfo")
     async def activity_debug_info(self, ctx): 
         await self.activity_tracking_logic.debug_info(ctx)
 
-    @activityset_group.command(name="forcesync")
+    @activityset_group.command(name="sync")
     async def activity_force_sync(self, ctx): 
         await self.activity_tracking_logic.force_sync(ctx)
 
