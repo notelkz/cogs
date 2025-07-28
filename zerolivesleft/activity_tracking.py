@@ -766,13 +766,72 @@ class ActivityTrackingLogic:
         await ctx.send(
             "ℹ️ **Role Creation Not Needed**\n"
             "Your server already has a complete military rank structure!\n\n"
-            f"Use `{ctx.prefix}zll setupdefaultranks` to configure your existing 29 military ranks with XP requirements.\n\n"
+            f"Use `{ctx.prefix}zll xp setupranks` to configure your existing 29 military ranks with XP requirements.\n\n"
             "**Your Current Rank Structure:**\n"
             "• **Enlisted Ranks**: Private → Sergeant Major of the Army (12 ranks)\n"
             "• **Warrant Officers**: WO1 → CW5 (5 ranks)\n"
             "• **Officers**: 2nd Lieutenant → General of the Army (12 ranks)\n\n"
             "Total: **29 ranks** with realistic military progression!"
         )
+
+    async def setup_dual_system(self, ctx):
+        """Set up the dual progression system with your server's roles."""
+        recruit_role_id = 1358140362367041827  # Your Recruit role
+        private_role_id = 1274274605435060224  # Your Private role
+        
+        recruit_role = ctx.guild.get_role(recruit_role_id)
+        private_role = ctx.guild.get_role(private_role_id)
+        
+        if not recruit_role:
+            return await ctx.send(f"❌ Recruit role not found (ID: {recruit_role_id})")
+        if not private_role:
+            return await ctx.send(f"❌ Private role not found (ID: {private_role_id})")
+        
+        # Set up community membership track (Recruit → Member at 24 hours)
+        await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit_role_id)
+        await self.config.guild(ctx.guild).at_member_threshold_hours.set(24)
+        
+        # Set up military ranking track (starts at 12 hours)
+        await self.config.guild(ctx.guild).at_military_start_hours.set(12)
+        
+        embed = discord.Embed(
+            title="⚖️ Dual Progression System Setup Complete",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="🏘️ Community Track",
+            value=(
+                f"Recruit → Member\n"
+                f"• **24 hours** total activity\n"
+                f"• Removes {recruit_role.mention}\n"
+                f"• Adds Member role (managed by other cog)\n"
+                f"• **Permanent membership upgrade**"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🎖️ Military Track", 
+            value=(
+                f"Recruit → {private_role.mention} → Higher Ranks\n"
+                f"• **12 hours** to start military progression\n"
+                f"• XP-based rank progression\n"
+                f"• Keeps Recruit role until 24 hours\n"
+                f"• Can be both Recruit + Private simultaneously"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="📅 Example Timeline",
+            value=(
+                f"• **0-12 hrs**: Just {recruit_role.mention}\n"
+                f"• **12-24 hrs**: {recruit_role.mention} + {private_role.mention} (dual roles!)\n"
+                f"• **24+ hrs**: Member + {private_role.mention}+ (community upgrade)"
+            ),
+            inline=False
+        )
+        embed.set_footer(text="Next: Use !zll xp setupranks to configure your 29 military ranks")
+        
+        await ctx.send(embed=embed)
 
     async def setup_recruit_system(self, ctx):
         """Set up the recruit to private promotion system."""
