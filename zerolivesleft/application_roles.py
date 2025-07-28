@@ -180,19 +180,41 @@ class ApplicationRolesLogic:
         # Send message to #enlistment (pending channel)
         pending_channel_id = await self.config.ar_pending_channel_id()
         if pending_channel_id and (channel := guild.get_channel(int(pending_channel_id))):
-            embed = discord.Embed(
-                title="Welcome Back!",
-                description=(
-                    f"Welcome back {member.mention}! We see you have a pending application "
-                    f"that's currently being reviewed.\n\n"
-                    f"You've been placed in the **enlistment** area while we process your application. "
-                    f"Please wait here patiently."
-                ),
-                color=discord.Color.blurple()
-            )
+            # Check if this is likely a returning member by looking at account age vs guild creation
+            account_age_days = (datetime.utcnow() - member.created_at).days
+            is_likely_returning = account_age_days > 30  # Assume accounts older than 30 days might be returning
+            
+            if is_likely_returning:
+                embed = discord.Embed(
+                    title="Welcome Back to Enlistment!",
+                    description=(
+                        f"Welcome back {member.mention}! We see you have a pending application "
+                        f"that's currently being reviewed.\n\n"
+                        f"You've been placed in the **Enlistment** area while we process your application. "
+                        f"Please wait here patiently for our team to review it."
+                    ),
+                    color=discord.Color.blurple()
+                )
+            else:
+                embed = discord.Embed(
+                    title="Welcome to Enlistment!",
+                    description=(
+                        f"Welcome {member.mention}! Great news - you already have an application "
+                        f"submitted and it's currently under review.\n\n"
+                        f"You've been placed in the **Enlistment** area while our team processes "
+                        f"your application. This means you're one step closer to full access!"
+                    ),
+                    color=discord.Color.blurple()
+                )
+            
             if guild.icon:
                 embed.set_thumbnail(url=guild.icon.url)
-            embed.set_footer(text="We'll notify you here once your application has been processed!")
+            embed.add_field(
+                name="What's Next?",
+                value="Our team will review your application and you'll be notified here once it's processed. Thank you for your patience!",
+                inline=False
+            )
+            embed.set_footer(text="You're in the review queue - we'll update you soon!")
             await channel.send(content=member.mention, embed=embed)
             log.info(f"Sent pending welcome embed to #enlistment ({channel.name}) for {member.name}.")
 
@@ -212,23 +234,49 @@ class ApplicationRolesLogic:
         if unverified_channel_id and (channel := guild.get_channel(int(unverified_channel_id))):
             if is_returning_rejected:
                 embed = discord.Embed(
-                    title="Welcome Back to the DMZ!",
+                    title="Back to the DMZ",
                     description=(
-                        f"Welcome back {member.mention}! We see your previous application was not approved. "
+                        f"Welcome back {member.mention}. We see your previous application was not approved. "
                         f"You're welcome to submit a new application when you're ready.\n\n"
-                        f"You've been placed in the **DMZ** (De-Militarized Zone) until you apply."
+                        f"You've been placed back in the **DMZ** (De-Militarized Zone) until you submit "
+                        f"a new application. Take your time to review our requirements and try again!"
                     ),
                     color=discord.Color.orange()
                 )
+                embed.add_field(
+                    name="Ready for Round Two?",
+                    value="When you're ready, submit a new application and we'll give it a fresh review.",
+                    inline=False
+                )
             else:
-                embed = discord.Embed(
-                    title="Welcome to the DMZ!",
-                    description=(
-                        f"Welcome {member.mention}! You've been placed in the **DMZ** (De-Militarized Zone).\n\n"
-                        f"To gain access to the rest of the server, you must submit an application on our website. "
-                        f"You have been given the **Unverified** role for now."
-                    ),
-                    color=discord.Color.orange()
+                # Check if this is likely a new member
+                account_age_days = (datetime.utcnow() - member.created_at).days
+                if account_age_days < 7:  # Very new Discord account
+                    embed = discord.Embed(
+                        title="Welcome to Zero Lives Left!",
+                        description=(
+                            f"Hello {member.mention}! Welcome to our Discord server! 👋\n\n"
+                            f"You've been placed in the **DMZ** (De-Militarized Zone) because you need "
+                            f"to submit an application to gain access to the rest of our community. "
+                            f"This is our way of keeping the server organized and safe for everyone."
+                        ),
+                        color=discord.Color.blue()
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="Welcome to the DMZ!",
+                        description=(
+                            f"Welcome {member.mention}! You've been placed in the **DMZ** (De-Militarized Zone).\n\n"
+                            f"To gain access to the rest of the server, you'll need to submit an application "
+                            f"on our website. This helps us maintain a great community atmosphere!"
+                        ),
+                        color=discord.Color.orange()
+                    )
+                
+                embed.add_field(
+                    name="How to Get Full Access",
+                    value="1. Submit an application using the link below\n2. Wait for approval (you'll be moved to Enlistment)\n3. Once approved, you'll get full server access!",
+                    inline=False
                 )
             
             if guild.icon:
@@ -238,7 +286,12 @@ class ApplicationRolesLogic:
                 value="[Click here to apply](https://zerolivesleft.net/apply/)",
                 inline=False
             )
-            embed.set_footer(text="Once your application is submitted, you'll be moved to the enlistment area for review!")
+            
+            if is_returning_rejected:
+                embed.set_footer(text="Learn from feedback and come back stronger!")
+            else:
+                embed.set_footer(text="Once submitted, you'll be moved to Enlistment for review!")
+                
             await channel.send(content=member.mention, embed=embed)
             log.info(f"Sent unverified welcome embed to #dmz ({channel.name}) for {member.name}.")
 
@@ -362,17 +415,25 @@ class ApplicationRolesLogic:
         pending_channel_id = await self.config.ar_pending_channel_id()
         if pending_channel_id and (channel := guild.get_channel(int(pending_channel_id))):
             embed = discord.Embed(
-                title="Application Received!",
+                title="🎯 Application Received!",
                 description=(
-                    f"Thank you for submitting your application, {member.mention}! "
-                    f"You have been moved from the **DMZ** to the **Enlistment** area. "
-                    f"Our team will review your application as soon as possible."
+                    f"Excellent, {member.mention}! Your application has been successfully submitted! "
+                    f"You've been promoted from the **DMZ** to the **Enlistment** area.\n\n"
+                    f"**What happens now?**\n"
+                    f"• Our staff team will review your application\n"
+                    f"• You'll receive an update right here when it's processed\n"
+                    f"• If approved, you'll get full server access automatically!"
                 ),
                 color=discord.Color.blue()
             )
             if guild.icon:
                 embed.set_thumbnail(url=guild.icon.url)
-            embed.set_footer(text="We'll notify you here once your application has been processed.")
+            embed.add_field(
+                name="⏱️ Review Time",
+                value="Applications are typically reviewed within 24-48 hours. We'll notify you here as soon as there's an update!",
+                inline=False
+            )
+            embed.set_footer(text="Thank you for taking the time to apply! 🚀")
             await channel.send(content=member.mention, embed=embed)
             log.info(f"Sent 'Application Received' embed to #enlistment ({channel.name}) for {member.name}.")
 
@@ -500,17 +561,26 @@ class ApplicationRolesLogic:
             welcome_channel_id = await self.config.ar_welcome_channel_id()
             if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
                 embed = discord.Embed(
-                    title="Welcome to the Community!",
+                    title="🎊 New Member Approved!",
                     description=(
-                        f"🎊 Please welcome our newest member: {member.mention}!\n\n"
-                        f"Your application has been approved and you now have full access to the server. "
-                        f"You've been moved from the enlistment area to the full community!"
+                        f"🎉 **Congratulations {member.mention}!** Your application has been **APPROVED**!\n\n"
+                        f"**You now have full access to:**\n"
+                        f"• All server channels and voice rooms\n"
+                        f"• Game-specific roles and channels\n"
+                        f"• Community events and activities\n"
+                        f"• Everything Zero Lives Left has to offer!\n\n"
+                        f"**Welcome to the community!** 🚀"
                     ),
                     color=discord.Color.green()
                 )
                 if guild.icon:
                     embed.set_thumbnail(url=guild.icon.url)
-                embed.set_footer(text="Welcome to Zero Lives Left!")
+                embed.add_field(
+                    name="🎮 Get Started",
+                    value="Check out the game role channels, introduce yourself, and jump into some games with the community!",
+                    inline=False
+                )
+                embed.set_footer(text="Welcome to Zero Lives Left! 🎯")
                 await channel.send(content=member.mention, embed=embed)
                 log.info(f"Sent 'Application Approved' embed to main welcome channel ({channel.name}) for {member.name}.")
 
