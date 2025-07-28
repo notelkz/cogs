@@ -1,5 +1,5 @@
 # zerolivesleft-alpha/__init__.py
-# Updated version with XP-based activity tracking system
+# Clean version with organized XP-based activity tracking commands
 
 import asyncio
 import logging
@@ -158,6 +158,191 @@ class Zerolivesleft(commands.Cog):
         await self.application_roles_logic.show_config(ctx)
 
     # =============================================================================
+    # XP ACTIVITY TRACKING COMMANDS (CLEANED UP)
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="xp", aliases=["activityset", "atset"])
+    async def xp_group(self, ctx: commands.Context):
+        """🎯 XP-based Activity Tracking System"""
+        if ctx.invoked_subcommand is None: 
+            await ctx.send_help(ctx.command)
+
+    # === SETUP COMMANDS (Start Here!) ===
+    @xp_group.command(name="quicksetup")
+    async def xp_quick_setup(self, ctx):
+        """🚀 Complete setup guide for the XP system."""
+        embed = discord.Embed(
+            title="🎯 XP System Quick Setup Guide",
+            description="Follow these steps in order:",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="1️⃣ Setup Military Ranks",
+            value="`!zll xp setupranks` - Configure your 29 existing ranks",
+            inline=False
+        )
+        embed.add_field(
+            name="2️⃣ Setup Recruit System", 
+            value="`!zll xp setuprecruit` - Recruit → Private promotion",
+            inline=False
+        )
+        embed.add_field(
+            name="3️⃣ Configure XP Rates",
+            value="`!zll xp rates 1 3 1 5` - Voice/Message/Reaction/Join XP",
+            inline=False
+        )
+        embed.add_field(
+            name="4️⃣ Enable Prestige",
+            value="`!zll prestige enable true 0.5` - Enable prestige system",
+            inline=False
+        )
+        embed.add_field(
+            name="5️⃣ Set Channels & API",
+            value="`!zll xp channel #promotions`\n`!zll xp api <url> <key>`",
+            inline=False
+        )
+        embed.set_footer(text="Use !zll xp config to view your current settings")
+        await ctx.send(embed=embed)
+
+    @xp_group.command(name="setupranks")
+    async def xp_setup_ranks(self, ctx):
+        """Set up your server's 29 military ranks with XP requirements."""
+        await self.activity_tracking_logic.setup_default_ranks(ctx)
+
+    @xp_group.command(name="setuprecruit")  
+    async def xp_setup_recruit(self, ctx):
+        """Set up Recruit → Private promotion system."""
+        await self.activity_tracking_logic.setup_recruit_system(ctx)
+
+    # === XP CONFIGURATION ===
+    @xp_group.command(name="rates")
+    async def xp_set_rates(self, ctx, voice: int = 1, message: int = 3, reaction: int = 1, voice_join: int = 5):
+        """Set XP rates: !zll xp rates <voice/min> <message> <reaction> <voice_join>"""
+        await self.activity_tracking_logic.set_xp_rates(ctx, voice, message, reaction, voice_join)
+
+    @xp_group.command(name="cooldown")
+    async def xp_set_cooldown(self, ctx, seconds: int = 60):
+        """Set message XP cooldown to prevent spam."""
+        await self.activity_tracking_logic.set_message_cooldown(ctx, seconds)
+
+    # === ADMIN TOOLS ===
+    @xp_group.command(name="give")
+    async def xp_give(self, ctx, member: discord.Member, amount: int, *, reason: str = "Admin award"):
+        """Give XP to a user: !zll xp give @user 500 Good job!"""
+        await self.activity_tracking_logic.add_xp_command(ctx, member, amount, reason)
+
+    @xp_group.command(name="reset")
+    async def xp_reset(self, ctx, member: discord.Member):
+        """Reset a user's XP completely."""
+        await self.activity_tracking_logic.reset_user_xp(ctx, member)
+
+    @xp_group.command(name="award")
+    async def xp_bulk_award(self, ctx, amount: int, role: discord.Role = None):
+        """Award XP to all members or specific role: !zll xp award 100 @Role"""
+        await self.activity_tracking_logic.bulk_award_xp(ctx, amount, role)
+
+    # === CONFIGURATION ===
+    @xp_group.command(name="api")
+    async def xp_set_api(self, ctx, url: str, key: str):
+        """Set website API: !zll xp api https://site.com/api/ your-key"""
+        await self.activity_tracking_logic.set_api(ctx, url, key)
+
+    @xp_group.command(name="channel")
+    async def xp_set_channel(self, ctx, channel: discord.TextChannel):
+        """Set promotion announcement channel."""
+        await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
+
+    # === INFO & DEBUG ===
+    @xp_group.command(name="config")
+    async def xp_show_config(self, ctx):
+        """Show current XP system configuration."""
+        await self.activity_tracking_logic.show_config_command(ctx)
+
+    @xp_group.command(name="info")
+    async def xp_debug_info(self, ctx):
+        """Show debug information and system status."""
+        await self.activity_tracking_logic.debug_info(ctx)
+
+    @xp_group.command(name="sync")
+    async def xp_force_sync(self, ctx):
+        """Force sync all active voice users."""
+        await self.activity_tracking_logic.force_sync(ctx)
+
+    # =============================================================================
+    # PRESTIGE SYSTEM COMMANDS
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="prestige")
+    async def prestige_group(self, ctx):
+        """🌟 Prestige system commands."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @prestige_group.command(name="enable")
+    async def prestige_enable(self, ctx, enabled: bool = True, multiplier: float = 0.5):
+        """Enable prestige: !zll prestige enable true 0.5"""
+        await self.activity_tracking_logic.setup_prestige(ctx, enabled, multiplier)
+
+    # =============================================================================
+    # MILITARY RANKS COMMANDS
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="ranks")
+    async def ranks_group(self, ctx):
+        """🎖️ Manage military ranks."""
+        if ctx.invoked_subcommand is None: 
+            await ctx.send_help(ctx.command)
+
+    @ranks_group.command(name="add")
+    async def ranks_add(self, ctx, role: discord.Role, required_xp: int):
+        """Add military rank: !zll ranks add @Role 1000"""
+        await self.activity_tracking_logic.add_rank(ctx, role, required_xp)
+
+    @ranks_group.command(name="remove")
+    async def ranks_remove(self, ctx, role_or_name: str):
+        """Remove military rank by name or ID."""
+        await self.activity_tracking_logic.remove_rank(ctx, role_or_name)
+
+    @ranks_group.command(name="list")
+    async def ranks_list(self, ctx):
+        """List all configured military ranks."""
+        await self.activity_tracking_logic.list_ranks(ctx)
+
+    @ranks_group.command(name="clear")
+    async def ranks_clear(self, ctx):
+        """Clear all military ranks (dangerous!)"""
+        await self.activity_tracking_logic.clear_ranks(ctx)
+
+    # =============================================================================
+    # USER COMMANDS (XP & Activity)
+    # =============================================================================
+
+    @commands.hybrid_command(name="myxp")
+    async def myxp(self, ctx):
+        """Check your XP and prestige level."""
+        await self.activity_tracking_logic.myxp(ctx)
+
+    @commands.hybrid_command(name="myvoicetime")
+    async def myvoicetime(self, ctx): 
+        """Check your total voice activity time."""
+        await self.activity_tracking_logic.myvoicetime(ctx)
+
+    @commands.hybrid_command(name="status")
+    async def status(self, ctx, member: discord.Member = None): 
+        """Show detailed progression status for yourself or another user."""
+        await self.activity_tracking_logic.status(ctx, member)
+
+    @commands.hybrid_command(name="leaderboard", aliases=["lb", "top"])
+    async def leaderboard(self, ctx, page: int = 1):
+        """Show XP leaderboard for the server."""
+        await self.activity_tracking_logic.leaderboard(ctx, page)
+
+    @commands.hybrid_command(name="prestige")
+    async def prestige_command(self, ctx):
+        """Prestige if you're eligible (resets XP for higher prestige level)."""
+        await self.activity_tracking_logic.prestige_command(ctx)
+
+    # =============================================================================
     # WEBSERVER COMMANDS
     # =============================================================================
 
@@ -230,197 +415,7 @@ class Zerolivesleft(commands.Cog):
         await self.role_counting_logic.show_config_command(ctx)
 
     # =============================================================================
-    # XP ACTIVITY TRACKING COMMANDS
-    # =============================================================================
-
-    @zerolivesleft_group.group(name="activityset", aliases=["atset"])
-    async def activityset_group(self, ctx: commands.Context):
-        """Manage XP ActivityTracker settings."""
-        if ctx.invoked_subcommand is None: 
-            await ctx.send_help(ctx.command)
-
-    # Legacy commands (redirected to XP versions)
-    @activityset_group.command(name="setroles")
-    async def roles(self, ctx, recruit: discord.Role, member: discord.Role): 
-        await self.activity_tracking_logic.roles(ctx, recruit, member)
-
-    @activityset_group.command(name="setthreshold")
-    async def threshold(self, ctx, xp_amount: int): 
-        await self.activity_tracking_logic.threshold(ctx, xp_amount)
-
-    # XP System Configuration
-    @activityset_group.command(name="setxprates")
-    async def set_xp_rates(self, ctx, voice_per_minute: int = 1, message_xp: int = 3, reaction_xp: int = 1, voice_join_bonus: int = 5):
-        """Set XP rates for different activities."""
-        await self.activity_tracking_logic.set_xp_rates(ctx, voice_per_minute, message_xp, reaction_xp, voice_join_bonus)
-
-    @activityset_group.command(name="setmessagecooldown")
-    async def set_message_cooldown(self, ctx, seconds: int):
-        """Set cooldown between message XP awards."""
-        await self.activity_tracking_logic.set_message_cooldown(ctx, seconds)
-
-    @activityset_group.command(name="setrecruitxp")
-    async def set_recruit_member_xp(self, ctx, recruit_role: discord.Role, member_role: discord.Role, required_xp: int):
-        """Set recruit/member roles and XP threshold."""
-        await self.activity_tracking_logic.set_recruit_member_xp(ctx, recruit_role, member_role, required_xp)
-
-    # API Configuration
-    @activityset_group.command(name="setapi")
-    async def activity_set_api(self, ctx, url: str, key: str): 
-        await self.activity_tracking_logic.set_api(ctx, url, key)
-
-    @activityset_group.command(name="setpromotionurl")
-    async def activity_set_promotion_url(self, ctx, url: str): 
-        await self.activity_tracking_logic.set_promotion_url(ctx, url)
-
-    @activityset_group.command(name="setmilitaryrankurl")
-    async def activity_set_military_rank_url(self, ctx, url: str): 
-        await self.activity_tracking_logic.set_military_rank_url(ctx, url)
-
-    @activityset_group.command(name="setpromotionchann")
-    async def activity_set_promotion_channel(self, ctx, channel: discord.TextChannel): 
-        await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
-
-    # Debug Commands
-    @activityset_group.command(name="debuginfo")
-    async def activity_debug_info(self, ctx): 
-        await self.activity_tracking_logic.debug_info(ctx)
-
-    @activityset_group.command(name="sync")
-    async def activity_force_sync(self, ctx): 
-        await self.activity_tracking_logic.force_sync(ctx)
-
-    # =============================================================================
-    # PRESTIGE SYSTEM COMMANDS (Top level to avoid nesting issues)
-    # =============================================================================
-
-    @zerolivesleft_group.group(name="prestige")
-    async def prestige_group(self, ctx):
-        """Prestige system commands."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @prestige_group.command(name="enable")
-    async def prestige_enable(self, ctx, enabled: bool = True, multiplier: float = 0.5):
-        """Enable/disable prestige system and set XP multiplier."""
-        await self.activity_tracking_logic.setup_prestige(ctx, enabled, multiplier)
-
-    # Rank Setup Commands
-    @activityset_group.command(name="setupdefaultranks")
-    async def setup_default_ranks(self, ctx):
-        """Set up your server's military ranks with XP scaling."""
-        await self.activity_tracking_logic.setup_default_ranks(ctx)
-
-    @activityset_group.command(name="setuprecruitsystem")
-    async def setup_recruit_system(self, ctx):
-        """Set up the recruit to private promotion system."""
-        await self.activity_tracking_logic.setup_recruit_system(ctx)
-
-    @activityset_group.command(name="createranks")
-    async def create_default_rank_roles(self, ctx):
-        """Info about your existing rank structure."""
-        await self.activity_tracking_logic.create_default_rank_roles(ctx)
-
-    # Admin XP Commands
-    @activityset_group.command(name="addxp")
-    async def add_xp_command(self, ctx, member: discord.Member, amount: int, *, reason: str = "Admin award"):
-        """Manually add XP to a user."""
-        await self.activity_tracking_logic.add_xp_command(ctx, member, amount, reason)
-
-    @activityset_group.command(name="resetxp")
-    async def reset_user_xp(self, ctx, member: discord.Member):
-        """Reset a user's XP (admin only)."""
-        await self.activity_tracking_logic.reset_user_xp(ctx, member)
-
-    @activityset_group.command(name="bulkaward")
-    async def bulk_award_xp(self, ctx, xp_amount: int, role: discord.Role = None):
-        """Award XP to all members or members with a specific role."""
-        await self.activity_tracking_logic.bulk_award_xp(ctx, xp_amount, role)
-
-    # API Configuration
-    @activityset_group.command(name="api")
-    async def activity_set_api(self, ctx, url: str, key: str): 
-        await self.activity_tracking_logic.set_api(ctx, url, key)
-
-    @activityset_group.command(name="promotionurl")
-    async def activity_set_promotion_url(self, ctx, url: str): 
-        await self.activity_tracking_logic.set_promotion_url(ctx, url)
-
-    @activityset_group.command(name="militaryrankurl")
-    async def activity_set_military_rank_url(self, ctx, url: str): 
-        await self.activity_tracking_logic.set_military_rank_url(ctx, url)
-
-    @activityset_group.command(name="promotionchannel")
-    async def activity_set_promotion_channel(self, ctx, channel: discord.TextChannel): 
-        await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
-
-    # Debug Commands
-    @activityset_group.command(name="debug")
-    async def activity_debug_info(self, ctx): 
-        await self.activity_tracking_logic.debug_info(ctx)
-
-    @activityset_group.command(name="forcesync")
-    async def activity_force_sync(self, ctx): 
-        await self.activity_tracking_logic.force_sync(ctx)
-
-    # =============================================================================
-    # USER COMMANDS (XP & Activity)
-    # =============================================================================
-
-    @commands.hybrid_command(name="myvoicetime")
-    async def myvoicetime(self, ctx): 
-        """Shows your total accumulated voice time."""
-        await self.activity_tracking_logic.myvoicetime(ctx)
-
-    @commands.hybrid_command(name="myxp")
-    async def myxp(self, ctx):
-        """Shows your total XP and prestige level."""
-        await self.activity_tracking_logic.myxp(ctx)
-
-    @commands.hybrid_command(name="status")
-    async def status(self, ctx, member: discord.Member = None): 
-        """Show detailed XP status and progression for a user."""
-        await self.activity_tracking_logic.status(ctx, member)
-
-    @commands.hybrid_command(name="leaderboard", aliases=["lb", "top"])
-    async def leaderboard(self, ctx, page: int = 1):
-        """Show XP leaderboard for the server."""
-        await self.activity_tracking_logic.leaderboard(ctx, page)
-
-    @commands.hybrid_command(name="prestige")
-    async def prestige_command(self, ctx):
-        """Allow a user to prestige if eligible."""
-        await self.activity_tracking_logic.prestige_command(ctx)
-
-    # =============================================================================
-    # MILITARY RANKS COMMANDS
-    # =============================================================================
-
-    @zerolivesleft_group.group(name="militaryranks")
-    async def militaryranks_group(self, ctx):
-        """Manage military ranks (add, remove, list, clear)."""
-        if ctx.invoked_subcommand is None: 
-            await ctx.send_help(ctx.command)
-
-    @militaryranks_group.command(name="add")
-    async def militaryranks_add_rank(self, ctx, role: discord.Role, required_xp: int): 
-        """Add a new military rank with XP requirement."""
-        await self.activity_tracking_logic.add_rank(ctx, role, required_xp)
-
-    @militaryranks_group.command(name="remove")
-    async def militaryranks_remove_rank(self, ctx, role_or_name: str): 
-        await self.activity_tracking_logic.remove_rank(ctx, role_or_name)
-
-    @militaryranks_group.command(name="clear")
-    async def militaryranks_clear_ranks(self, ctx): 
-        await self.activity_tracking_logic.clear_ranks(ctx)
-
-    @militaryranks_group.command(name="list")
-    async def militaryranks_list_ranks(self, ctx): 
-        await self.activity_tracking_logic.list_ranks(ctx)
-
-    # =============================================================================
-    # OTHER MODULE COMMANDS (unchanged)
+    # OTHER MODULE COMMANDS
     # =============================================================================
 
     # Application status check command
