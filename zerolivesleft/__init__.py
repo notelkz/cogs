@@ -224,6 +224,11 @@ class Zerolivesleft(commands.Cog):
         """🎯 Set up the dual progression system (Community + Military tracks)."""
         await self.activity_tracking_logic.setup_dual_system(ctx)
 
+    @xp_group.command(name="baseroles")
+    async def xp_manage_base_roles(self, ctx, action: str, role: discord.Role = None):
+        """Manage base roles required for XP earning: list/add/remove/clear"""
+        await self.activity_tracking_logic.manage_base_roles(ctx, action, role)
+
     @xp_group.command(name="setuprecruit")  
     async def xp_setup_recruit(self, ctx):
         """⚠️ DEPRECATED: Use setupdual instead for the new dual-track system."""

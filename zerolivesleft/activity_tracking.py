@@ -1,4 +1,143 @@
-# zerolivesleft/activity_tracking.py
+async def setup_dual_system(self, ctx):
+        """Set up the dual progression system with your server's roles."""
+        recruit_role_id = 1358140362367041827  # Your Recruit role
+        private_role_id = 1274274605435060224  # Your Private role
+        
+        recruit_role = ctx.guild.get_role(recruit_role_id)
+        private_role = ctx.guild.get_role(private_role_id)
+        
+        if not recruit_role:
+            return await ctx.send(f"❌ Recruit role not found (ID: {recruit_role_id})")
+        if not private_role:
+            return await ctx.send(f"❌ Private role not found (ID: {private_role_id})")
+        
+        # Ask user what the Member role ID is
+        await ctx.send(
+            "🤔 **What is your Member role?**\n"
+            "Please mention the role that users get when they complete their 24-hour community membership requirement.\n"
+            "Example: `@Member` or provide the role ID"
+        )
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            response = await ctx.bot.wait_for('message', check=check, timeout=60.0)
+            
+            # Try to extract role from mention or ID
+            member_role = None
+            if response.role_mentions:
+                member_role = response.role_mentions[0]
+            else:
+                # Try to parse as role ID
+                try:
+                    role_id = int(response.content.strip())
+                    member_role = ctx.guild.get_role(role_id)
+                except ValueError:
+                    return await ctx.send("❌ Invalid role. Please mention a role or provide a valid role ID.")
+            
+            if not member_role:
+                return await ctx.send("❌ Could not find that role. Please try again.")
+            
+        except asyncio.TimeoutError:
+            return await ctx.send("⏰ Timed out waiting for Member role. Please try the command again.")
+        
+        # Ask for additional base roles (Veteran, The Old Guard)
+        await ctx.send(
+            "🎖️ **Additional Base Roles (Optional)**\n"
+            "Do you have Veteran and/or The Old Guard roles? Please mention them or type 'none' to skip.\n"
+            "These roles will also allow XP earning. Example: `@Veteran @The Old Guard` or `none`"
+        )
+        
+        additional_base_roles = []
+        try:
+            response2 = await ctx.bot.wait_for('message', check=check, timeout=60.0)
+            
+            if response2.content.lower().strip() != 'none':
+                if response2.role_mentions:
+                    additional_base_roles = response2.role_mentions
+                else:
+                    # Try to parse role IDs separated by spaces
+                    role_ids = response2.content.strip().split()
+                    for role_id_str in role_ids:
+                        try:
+                            role_id = int(role_id_str)
+                            role = ctx.guild.get_role(role_id)
+                            if role:
+                                additional_base_roles.append(role)
+                        except ValueError:
+                            continue
+        
+        except asyncio.TimeoutError:
+            await ctx.send("⏰ Timed out, proceeding without additional base roles.")
+        
+        # Set up both tracks and base roles
+        await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit_role_id)
+        await self.config.guild(ctx.guild).at_member_role_id.set(member_role.id)
+        await self.config.guild(ctx.guild).at_member_threshold_hours.set(24)
+        await self.config.guild(ctx.guild).at_military_start_hours.set(12)
+        
+        # Configure base roles for XP earning
+        base_role_ids = [recruit_role_id, member_role.id]
+        for role in additional_base_roles:
+            base_role_ids.append(role.id)
+        
+        await self.config.guild(ctx.guild).at_base_role_ids.set(base_role_ids)
+        
+        embed = discord.Embed(
+            title="⚖️ Dual Progression System Setup Complete",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="🏘️ Community Track",
+            value=(
+                f"{recruit_role.mention} → {member_role.mention}\n"
+                f"• **24 hours** total activity\n"
+                f"• Removes {recruit_role.mention}\n"
+                f"• Adds {member_role.mention}\n"
+                f"• **Permanent membership upgrade**"
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🎖️ Military Track", 
+            value=(
+                f"{recruit_role.mention} → {private_role.mention} → Higher Ranks\n"
+                f"• **12 hours** to start military progression\n"
+                f"• XP-based rank progression\n"
+                f"• Keeps {recruit_role.mention} until 24 hours\n"
+                f"• Can have both community + military roles"
+            ),
+            inline=False
+        )
+        
+        # Build base roles display
+        base_roles_display = [recruit_role.mention, member_role.mention]
+        for role in additional_base_roles:
+            base_roles_display.append(role.mention)
+        
+        embed.add_field(
+            name="🎯 XP Earning Requirements",
+            value=(
+                f"**Users must have one of these roles to earn XP:**\n"
+                f"{', '.join(base_roles_display)}\n\n"
+                f"*Users without these roles cannot earn XP from any activity.*"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="📅 Example Timeline",
+            value=(
+                f"• **0-12 hrs**: Just {recruit_role.mention} (earning XP)\n"
+                f"• **12-24 hrs**: {recruit_role.mention} + {private_role.mention} (dual roles!)\n"
+                f"• **24+ hrs**: {member_role.mention} + {private_role.mention}+ (community upgrade)"
+            ),
+            inline=False
+        )
+        embed.set_footer(text="XP earning is now restricted to members with base community roles!")
+        
+        await ctx.send(embed=embed)# zerolivesleft/activity_tracking.py
 # XP-Based Activity Tracking System with Prestige
 
 import discord
@@ -62,6 +201,9 @@ class ActivityTrackingLogic:
             # NEW: Dual progression system
             "at_member_threshold_hours": 24,  # Hours needed for Recruit → Member
             "at_military_start_hours": 12,   # Hours needed to start military progression
+            
+            # NEW: Base role requirements for XP earning
+            "at_base_role_ids": [],  # List of role IDs that allow XP earning
         }
         
         self.config.register_guild(**default_guild)
@@ -92,8 +234,25 @@ class ActivityTrackingLogic:
 
     # --- XP SYSTEM CORE ---
     
+    async def _check_base_role_eligibility(self, guild, member):
+        """Check if user has a required base role for XP earning."""
+        base_role_ids = await self.config.guild(guild).at_base_role_ids()
+        
+        if not base_role_ids:
+            # If no base roles configured, everyone can earn XP
+            return True
+        
+        # Check if user has any of the required base roles
+        user_role_ids = {role.id for role in member.roles}
+        return any(role_id in user_role_ids for role_id in base_role_ids)
+    
     async def _add_xp(self, guild, member, xp_amount, source="unknown"):
         """Add XP to a user and check for promotions."""
+        # Check if user is eligible for XP earning
+        if not await self._check_base_role_eligibility(guild, member):
+            log.debug(f"ActivityTracking: {member.name} not eligible for XP (missing base role)")
+            return
+        
         async with self.config.guild(guild).at_user_xp() as user_xp:
             uid = str(member.id)
             old_xp = user_xp.get(uid, 0)
