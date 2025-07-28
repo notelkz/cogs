@@ -1,4 +1,4 @@
-# Complete fixed application_roles.py with correct channel routing and status handling
+# Complete clean application_roles.py with join history tracking
 
 import discord
 import logging
@@ -39,7 +39,7 @@ class ApplicationRolesLogic:
             ar_pending_channel_id=None,     # For pending members (#enlistment)
             ar_notifications_channel_id=None,  # For status update notifications
             ar_welcome_message="Welcome {mention}! To join our community, please submit an application at https://zerolivesleft.net/apply/",
-            # NEW: Join history tracking
+            # Join history tracking
             ar_member_history={},  # {guild_id: {user_id: {"joins": [timestamps], "leaves": [timestamps], "total_joins": int}}}
         )
         
@@ -382,6 +382,7 @@ class ApplicationRolesLogic:
                     inline=False
                 )
             else:
+                # Brand new member
                 embed = discord.Embed(
                     title="Welcome to Zero Lives Left!",
                     description=(
@@ -409,61 +410,6 @@ class ApplicationRolesLogic:
                 embed.set_footer(text="Learn from feedback and come back stronger!")
             elif is_returning:
                 embed.set_footer(text="Welcome back! Once submitted, you'll be moved to Enlistment for review!")
-            else:
-                embed.set_footer(text="Once submitted, you'll be moved to Enlistment for review!")
-                
-            await channel.send(content=member.mention, embed=embed)
-            log.info(f"Sent unverified welcome embed to #dmz ({channel.name}) for {member.name}.")Militarized Zone).\n\n"
-                        f"To gain access to the rest of the server, you'll need to submit an application "
-                        f"on our website. This helps us maintain a great community atmosphere!"
-                    ),
-                    color=discord.Color.orange()
-                )
-                embed.add_field(
-                    name="How to Get Full Access",
-                    value="1. Submit an application using the link below\n2. Wait for approval (you'll be moved to Enlistment)\n3. Once approved, you'll get full server access!",
-                    inline=False
-                )
-            
-            if guild.icon:
-                embed.set_thumbnail(url=guild.icon.url)
-            embed.add_field(
-                name="Application Link",
-                value="[Click here to apply](https://zerolivesleft.net/apply/)",
-                inline=False
-            )
-            
-            if is_returning_rejected:
-                embed.set_footer(text="Learn from feedback and come back stronger!")
-            elif is_returning:
-                embed.set_footer(text="Welcome back! Once submitted, you'll be moved to Enlistment for review!")
-            else:
-                embed.set_footer(text="Once submitted, you'll be moved to Enlistment for review!")
-                
-            await channel.send(content=member.mention, embed=embed)
-            log.info(f"Sent unverified welcome embed to #dmz ({channel.name}) for {member.name}.")Militarized Zone).\n\n"
-                        f"To gain access to the rest of the server, you'll need to submit an application "
-                        f"on our website. This helps us maintain a great community atmosphere!"
-                    ),
-                    color=discord.Color.orange()
-                )
-                
-                embed.add_field(
-                    name="How to Get Full Access",
-                    value="1. Submit an application using the link below\n2. Wait for approval (you'll be moved to Enlistment)\n3. Once approved, you'll get full server access!",
-                    inline=False
-                )
-            
-            if guild.icon:
-                embed.set_thumbnail(url=guild.icon.url)
-            embed.add_field(
-                name="Application Link",
-                value="[Click here to apply](https://zerolivesleft.net/apply/)",
-                inline=False
-            )
-            
-            if is_returning_rejected:
-                embed.set_footer(text="Learn from feedback and come back stronger!")
             else:
                 embed.set_footer(text="Once submitted, you'll be moved to Enlistment for review!")
                 
@@ -1003,6 +949,12 @@ class ApplicationRolesLogic:
                     value_str = "None"
             elif "api_key" in key:
                 value_str = "`Set`" if value else "`Not Set`"
+            elif key == "ar_member_history":
+                if value:
+                    total_users = sum(len(guild_data) for guild_data in value.values())
+                    value_str = f"`{total_users} users tracked`"
+                else:
+                    value_str = "`No history tracked`"
             else:
                 value_str = f"`{value}`"
             
@@ -1030,7 +982,7 @@ class ApplicationRolesLogic:
         await ctx.send(f"Invite channel set to: {channel.mention}")
         log.info(f"Invite channel set to {channel.name} ({channel.id})")
 
-    # Additional helper methods for testing and debugging
+    # Testing and debugging methods
     async def test_member_flow(self, ctx, member: discord.Member, test_status: str):
         """Test command to simulate different application statuses for a member"""
         if not ctx.author.guild_permissions.manage_roles:
@@ -1042,6 +994,8 @@ class ApplicationRolesLogic:
             "platform_role_ids": [],
             "game_role_ids": []
         }
+        
+        guild = member.guild
         
         # Update the test flow to also track history
         await ctx.send(f"Testing {member.mention} with status: {test_status}")
@@ -1187,7 +1141,6 @@ class ApplicationRolesLogic:
         await ctx.send(f"Move complete: {member.mention} → {to_status} (returning: {is_returning})")
         log.info(f"Manual move performed: {member.name} from {from_status} to {to_status}, returning: {is_returning}")
 
-    # New command to view member history
     async def view_member_history(self, ctx, member: discord.Member = None):
         """View detailed join/leave history for a member"""
         if not ctx.author.guild_permissions.manage_roles:
@@ -1246,7 +1199,6 @@ class ApplicationRolesLogic:
         await ctx.send(embed=embed)
         log.info(f"Member history displayed for {target.name}")
 
-    # Clear history command for testing
     async def clear_member_history(self, ctx, member: discord.Member):
         """Clear a member's join/leave history (for testing)"""
         if not ctx.author.guild_permissions.administrator:
