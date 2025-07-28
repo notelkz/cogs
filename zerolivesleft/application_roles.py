@@ -39,11 +39,14 @@ class ApplicationRolesLogic:
             ar_pending_channel_id=None,     # For pending members (#enlistment)
             ar_notifications_channel_id=None,  # For status update notifications
             ar_welcome_message="Welcome {mention}! To join our community, please submit an application at https://zerolivesleft.net/apply/",
+            # NEW: Join history tracking
+            ar_member_history={},  # {guild_id: {user_id: {"joins": [timestamps], "leaves": [timestamps], "total_joins": int}}}
         )
         
         self.guild_invites = {}
         
         self.bot.add_listener(self.on_member_join, "on_member_join")
+        self.bot.add_listener(self.on_member_remove, "on_member_remove")
         self.bot.add_listener(self.on_invite_create, "on_invite_create")
         
         self.cache_invites_task = asyncio.create_task(self.cache_all_invites())
@@ -60,6 +63,10 @@ class ApplicationRolesLogic:
         default_guild_id = await self.config.ar_default_guild_id()
         if not default_guild_id or guild.id != int(default_guild_id):
             return
+
+        # Track this join in our history
+        is_returning = await self._track_member_join(guild.id, member.id)
+        log.info(f"Member {member.name} join tracked. Returning member: {is_returning}")
 
         api_key = await self.config.ar_api_key()
         api_url = await self.config.ar_api_url()
@@ -87,32 +94,129 @@ class ApplicationRolesLogic:
             except Exception as e:
                 log.error(f"Exception checking application status for {member.name}: {e}")
 
-        # Handle different statuses
-        await self._handle_member_by_status(member, status, app_data)
+        # Handle different statuses with returning member info
+        await self._handle_member_by_status(member, status, app_data, is_returning)
 
-    async def _handle_member_by_status(self, member: discord.Member, status: str, app_data: dict):
-        """Handle member join based on their application status"""
+    async def on_member_remove(self, member: discord.Member):
+        """Track when members leave the server"""
+        if member.bot:
+            return
+            
+        guild = member.guild
+        default_guild_id = await self.config.ar_default_guild_id()
+        if not default_guild_id or guild.id != int(default_guild_id):
+            return
+            
+        # Track this leave in our history
+        await self._track_member_leave(guild.id, member.id)
+        log.info(f"Member {member.name} ({member.id}) leave tracked for guild {guild.name}")
+
+    async def _track_member_join(self, guild_id: int, user_id: int) -> bool:
+        """
+        Track a member joining and return True if they've been here before
+        """
+        async with self.config.ar_member_history() as history:
+            guild_str = str(guild_id)
+            user_str = str(user_id)
+            
+            if guild_str not in history:
+                history[guild_str] = {}
+            
+            if user_str not in history[guild_str]:
+                history[guild_str][user_str] = {
+                    "joins": [],
+                    "leaves": [],
+                    "total_joins": 0
+                }
+            
+            user_history = history[guild_str][user_str]
+            current_time = datetime.now().isoformat()
+            
+            # Add this join
+            user_history["joins"].append(current_time)
+            user_history["total_joins"] += 1
+            
+            # Keep only last 10 joins/leaves to prevent data bloat
+            if len(user_history["joins"]) > 10:
+                user_history["joins"] = user_history["joins"][-10:]
+            
+            # Return True if this is NOT their first join
+            is_returning = user_history["total_joins"] > 1
+            
+            log.info(f"Tracked join for user {user_id} in guild {guild_id}. Total joins: {user_history['total_joins']}, Returning: {is_returning}")
+            return is_returning
+
+    async def _track_member_leave(self, guild_id: int, user_id: int):
+        """
+        Track a member leaving
+        """
+        async with self.config.ar_member_history() as history:
+            guild_str = str(guild_id)
+            user_str = str(user_id)
+            
+            if guild_str not in history:
+                history[guild_str] = {}
+            
+            if user_str not in history[guild_str]:
+                # They're leaving but we have no join record - initialize
+                history[guild_str][user_str] = {
+                    "joins": [],
+                    "leaves": [],
+                    "total_joins": 0
+                }
+            
+            user_history = history[guild_str][user_str]
+            current_time = datetime.now().isoformat()
+            
+            # Add this leave
+            user_history["leaves"].append(current_time)
+            
+            # Keep only last 10 joins/leaves to prevent data bloat
+            if len(user_history["leaves"]) > 10:
+                user_history["leaves"] = user_history["leaves"][-10:]
+            
+            log.info(f"Tracked leave for user {user_id} in guild {guild_id}")
+
+    async def _get_member_history(self, guild_id: int, user_id: int) -> dict:
+        """
+        Get a member's join/leave history
+        """
+        history = await self.config.ar_member_history()
+        guild_str = str(guild_id)
+        user_str = str(user_id)
+        
+        if guild_str in history and user_str in history[guild_str]:
+            return history[guild_str][user_str]
+        
+        return {
+            "joins": [],
+            "leaves": [],
+            "total_joins": 0
+        }
+
+    async def _handle_member_by_status(self, member: discord.Member, status: str, app_data: dict, is_returning: bool = False):
+        """Handle member join based on their application status and history"""
         guild = member.guild
         
-        log.info(f"Handling member {member.name} with status: {status}")
+        log.info(f"Handling member {member.name} with status: {status}, returning: {is_returning}")
         
         if status == "approved":
             # Pre-approved user - give them full access immediately (NOT pending role)
-            await self._handle_approved_member(member, app_data)
+            await self._handle_approved_member(member, app_data, is_returning)
         elif status == "pending":
             # User has pending application - goes to #enlistment
-            await self._handle_pending_member(member)
+            await self._handle_pending_member(member, is_returning)
         elif status == "rejected":
             # Previously rejected - treat as unverified, goes to #dmz
-            await self._handle_unverified_member(member, is_returning_rejected=True)
+            await self._handle_unverified_member(member, is_returning_rejected=True, is_returning=is_returning)
         else:
             # No application or unknown status - goes to #dmz
-            await self._handle_unverified_member(member)
+            await self._handle_unverified_member(member, is_returning=is_returning)
 
-    async def _handle_approved_member(self, member: discord.Member, app_data: dict):
+    async def _handle_approved_member(self, member: discord.Member, app_data: dict, is_returning: bool = False):
         """Handle a member who was APPROVED before joining Discord - they get full access immediately"""
         guild = member.guild
-        log.info(f"Pre-approved member joined: {member.name} - assigning full member roles immediately")
+        log.info(f"Pre-approved member joined: {member.name} - assigning full member roles immediately (returning: {is_returning})")
         
         # Assign all appropriate roles immediately (NOT pending role)
         roles_to_add = []
@@ -146,30 +250,47 @@ class ApplicationRolesLogic:
         # Send welcome message to main welcome channel (they skip DMZ and enlistment entirely)
         welcome_channel_id = await self.config.ar_welcome_channel_id()
         if welcome_channel_id and (channel := guild.get_channel(int(welcome_channel_id))):
-            embed = discord.Embed(
-                title="Welcome to Zero Lives Left!",
-                description=(
-                    f"Welcome {member.mention}! Your application was already approved - "
-                    f"you now have full access to the server! 🎉\n\n"
-                    f"You've been granted all your roles and can explore the entire server."
-                ),
-                color=discord.Color.green()
-            )
+            if is_returning:
+                embed = discord.Embed(
+                    title="Welcome Back to Zero Lives Left!",
+                    description=(
+                        f"Welcome back {member.mention}! Your application was already approved - "
+                        f"you now have full access to the server again! 🎉\n\n"
+                        f"All your roles have been restored and you can jump right back into the action!"
+                    ),
+                    color=discord.Color.green()
+                )
+                embed.add_field(
+                    name="You're all set!",
+                    value="Great to have you back! Feel free to pick up where you left off.",
+                    inline=False
+                )
+            else:
+                embed = discord.Embed(
+                    title="Welcome to Zero Lives Left!",
+                    description=(
+                        f"Welcome {member.mention}! Your application was already approved - "
+                        f"you now have full access to the server! 🎉\n\n"
+                        f"You've been granted all your roles and can explore the entire server."
+                    ),
+                    color=discord.Color.green()
+                )
+                embed.add_field(
+                    name="You're all set!",
+                    value="Feel free to explore all the channels and get involved in the community.",
+                    inline=False
+                )
+            
             if guild.icon:
                 embed.set_thumbnail(url=guild.icon.url)
-            embed.add_field(
-                name="You're all set!",
-                value="Feel free to explore all the channels and get involved in the community.",
-                inline=False
-            )
-            embed.set_footer(text="Welcome to the community!")
+            embed.set_footer(text="Welcome to the community!" if not is_returning else "Welcome back!")
             await channel.send(content=member.mention, embed=embed)
             log.info(f"Sent pre-approved welcome embed to {channel.name} for {member.name}.")
 
-    async def _handle_pending_member(self, member: discord.Member):
+    async def _handle_pending_member(self, member: discord.Member, is_returning: bool = False):
         """Handle a member who has a PENDING application - goes to #enlistment"""
         guild = member.guild
-        log.info(f"Member with pending application joined: {member.name} - sending to #enlistment")
+        log.info(f"Member with pending application joined: {member.name} - sending to #enlistment (returning: {is_returning})")
         
         # Assign pending role
         pending_role_id = await self.config.ar_pending_role_id()
@@ -180,18 +301,14 @@ class ApplicationRolesLogic:
         # Send message to #enlistment (pending channel)
         pending_channel_id = await self.config.ar_pending_channel_id()
         if pending_channel_id and (channel := guild.get_channel(int(pending_channel_id))):
-            # Check if this is likely a returning member by looking at account age vs guild creation
-            account_age_days = (datetime.utcnow() - member.created_at).days
-            is_likely_returning = account_age_days > 30  # Assume accounts older than 30 days might be returning
-            
-            if is_likely_returning:
+            if is_returning:
                 embed = discord.Embed(
                     title="Welcome Back to Enlistment!",
                     description=(
                         f"Welcome back {member.mention}! We see you have a pending application "
-                        f"that's currently being reviewed.\n\n"
-                        f"You've been placed in the **Enlistment** area while we process your application. "
-                        f"Please wait here patiently for our team to review it."
+                        f"that's still being reviewed.\n\n"
+                        f"You've been placed back in the **Enlistment** area while we finish "
+                        f"processing your application. Thanks for your continued patience!"
                     ),
                     color=discord.Color.blurple()
                 )
@@ -218,10 +335,10 @@ class ApplicationRolesLogic:
             await channel.send(content=member.mention, embed=embed)
             log.info(f"Sent pending welcome embed to #enlistment ({channel.name}) for {member.name}.")
 
-    async def _handle_unverified_member(self, member: discord.Member, is_returning_rejected: bool = False):
+    async def _handle_unverified_member(self, member: discord.Member, is_returning_rejected: bool = False, is_returning: bool = False):
         """Handle an unverified member (new or previously rejected) - goes to #dmz"""
         guild = member.guild
-        log.info(f"Unverified member joined: {member.name} - sending to #dmz (returning rejected: {is_returning_rejected})")
+        log.info(f"Unverified member joined: {member.name} - sending to #dmz (returning rejected: {is_returning_rejected}, returning: {is_returning})")
         
         # Assign unverified role
         unverified_role_id = await self.config.ar_unverified_role_id()
@@ -248,30 +365,61 @@ class ApplicationRolesLogic:
                     value="When you're ready, submit a new application and we'll give it a fresh review.",
                     inline=False
                 )
+            elif is_returning:
+                embed = discord.Embed(
+                    title="Welcome Back to the DMZ!",
+                    description=(
+                        f"Welcome back {member.mention}! You've been placed back in the **DMZ** "
+                        f"(De-Militarized Zone).\n\n"
+                        f"To regain access to the rest of the server, you'll need to submit an application "
+                        f"on our website. Welcome back to Zero Lives Left!"
+                    ),
+                    color=discord.Color.orange()
+                )
+                embed.add_field(
+                    name="How to Get Full Access",
+                    value="1. Submit an application using the link below\n2. Wait for approval (you'll be moved to Enlistment)\n3. Once approved, you'll get full server access!",
+                    inline=False
+                )
             else:
-                # Check if this is likely a new member
-                account_age_days = (datetime.utcnow() - member.created_at).days
-                if account_age_days < 7:  # Very new Discord account
-                    embed = discord.Embed(
-                        title="Welcome to Zero Lives Left!",
-                        description=(
-                            f"Hello {member.mention}! Welcome to our Discord server! 👋\n\n"
-                            f"You've been placed in the **DMZ** (De-Militarized Zone) because you need "
-                            f"to submit an application to gain access to the rest of our community. "
-                            f"This is our way of keeping the server organized and safe for everyone."
-                        ),
-                        color=discord.Color.blue()
-                    )
-                else:
-                    embed = discord.Embed(
-                        title="Welcome to the DMZ!",
-                        description=(
-                            f"Welcome {member.mention}! You've been placed in the **DMZ** (De-Militarized Zone).\n\n"
-                            f"To gain access to the rest of the server, you'll need to submit an application "
-                            f"on our website. This helps us maintain a great community atmosphere!"
-                        ),
-                        color=discord.Color.orange()
-                    )
+                # Brand new member
+                embed = discord.Embed(
+                    title="Welcome to Zero Lives Left!",
+                    description=(
+                        f"Welcome {member.mention}! You've been placed in the **DMZ** (De-Militarized Zone).\n\n"
+                        f"To gain access to the rest of the server, you'll need to submit an application "
+                        f"on our website. This helps us maintain a great community atmosphere!"
+                    ),
+                    color=discord.Color.orange()
+                )
+                embed.add_field(
+                    name="How to Get Full Access",
+                    value="1. Submit an application using the link below\n2. Wait for approval (you'll be moved to Enlistment)\n3. Once approved, you'll get full server access!",
+                    inline=False
+                )
+            
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            embed.add_field(
+                name="Application Link",
+                value="[Click here to apply](https://zerolivesleft.net/apply/)",
+                inline=False
+            )
+            
+            if is_returning_rejected:
+                embed.set_footer(text="Learn from feedback and come back stronger!")
+            elif is_returning:
+                embed.set_footer(text="Welcome back! Once submitted, you'll be moved to Enlistment for review!")
+            else:
+                embed.set_footer(text="Once submitted, you'll be moved to Enlistment for review!")
+                
+            await channel.send(content=member.mention, embed=embed)
+            log.info(f"Sent unverified welcome embed to #dmz ({channel.name}) for {member.name}.")Militarized Zone).\n\n"
+                        f"To gain access to the rest of the server, you'll need to submit an application "
+                        f"on our website. This helps us maintain a great community atmosphere!"
+                    ),
+                    color=discord.Color.orange()
+                )
                 
                 embed.add_field(
                     name="How to Get Full Access",
@@ -868,10 +1016,14 @@ class ApplicationRolesLogic:
             "game_role_ids": []
         }
         
+        # Update the test flow to also track history
         await ctx.send(f"Testing {member.mention} with status: {test_status}")
         
+        # For testing, we need to simulate the join tracking
+        is_returning = await self._track_member_join(guild.id, member.id)
+        await ctx.send(f"Join tracked. Member is returning: {is_returning}")
+        
         # First remove any existing test roles to start clean
-        guild = member.guild
         unverified_role_id = await self.config.ar_unverified_role_id()
         pending_role_id = await self.config.ar_pending_role_id()
         member_role_id = await self.config.ar_member_role_id()
@@ -896,28 +1048,28 @@ class ApplicationRolesLogic:
             if unverified_role:
                 await member.add_roles(unverified_role, reason="Test flow - unverified")
                 await ctx.send(f"Assigned {unverified_role.name} role for testing")
-            await self._handle_unverified_member(member, is_returning_rejected=(test_status == "rejected"))
+            await self._handle_unverified_member(member, is_returning_rejected=(test_status == "rejected"), is_returning=is_returning)
             
         elif test_status == "pending":
             # Assign pending role for pending status
             if pending_role:
                 await member.add_roles(pending_role, reason="Test flow - pending")
                 await ctx.send(f"Assigned {pending_role.name} role for testing")
-            await self._handle_pending_member(member)
+            await self._handle_pending_member(member, is_returning=is_returning)
             
         elif test_status == "approved":
             # Assign member role for approved status
             if member_role:
                 await member.add_roles(member_role, reason="Test flow - approved")
                 await ctx.send(f"Assigned {member_role.name} role for testing")
-            await self._handle_approved_member(member, test_app_data)
+            await self._handle_approved_member(member, test_app_data, is_returning=is_returning)
             
         else:
             await ctx.send(f"Unknown test status: {test_status}. Use: none, pending, approved, rejected")
             return
         
-        await ctx.send(f"Test complete for {member.mention} with status: {test_status}")
-        log.info(f"Manual test performed: {member.name} with status {test_status}")
+        await ctx.send(f"Test complete for {member.mention} with status: {test_status} (returning: {is_returning})")
+        log.info(f"Manual test performed: {member.name} with status {test_status}, returning: {is_returning}")
 
     async def debug_member_status(self, ctx, member: discord.Member = None):
         """Debug command to show current member status and roles"""
@@ -958,6 +1110,19 @@ class ApplicationRolesLogic:
             inline=False
         )
         
+        # Show join history
+        if ctx.guild:
+            history = await self._get_member_history(ctx.guild.id, target.id)
+            total_joins = history.get("total_joins", 0)
+            last_join = history.get("joins", [])[-1] if history.get("joins") else "Never"
+            last_leave = history.get("leaves", [])[-1] if history.get("leaves") else "Never"
+            
+            embed.add_field(
+                name="Join History",
+                value=f"Total Joins: {total_joins}\nLast Join: {last_join}\nLast Leave: {last_leave}",
+                inline=False
+            )
+        
         await ctx.send(embed=embed)
         log.info(f"Debug info displayed for {target.name}")
 
@@ -968,6 +1133,12 @@ class ApplicationRolesLogic:
             return
             
         await ctx.send(f"Manually moving {member.mention} from {from_status} to {to_status}")
+        
+        # Get their history to determine if they're returning
+        is_returning = False
+        if ctx.guild:
+            history = await self._get_member_history(ctx.guild.id, member.id)
+            is_returning = history.get("total_joins", 0) > 0
         
         if to_status == "pending":
             await self._move_user_to_pending(member)
@@ -984,7 +1155,90 @@ class ApplicationRolesLogic:
                 "application_data": test_app_data
             })
         elif to_status == "unverified":
-            await self._handle_unverified_member(member)
+            await self._handle_unverified_member(member, is_returning=is_returning)
             
-        await ctx.send(f"Move complete: {member.mention} → {to_status}")
-        log.info(f"Manual move performed: {member.name} from {from_status} to {to_status}")
+        await ctx.send(f"Move complete: {member.mention} → {to_status} (returning: {is_returning})")
+        log.info(f"Manual move performed: {member.name} from {from_status} to {to_status}, returning: {is_returning}")
+
+    # New command to view member history
+    async def view_member_history(self, ctx, member: discord.Member = None):
+        """View detailed join/leave history for a member"""
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You need manage roles permission to use this command.")
+            return
+            
+        target = member or ctx.author
+        if not ctx.guild:
+            await ctx.send("This command can only be used in a server.")
+            return
+            
+        history = await self._get_member_history(ctx.guild.id, target.id)
+        
+        embed = discord.Embed(
+            title=f"Join History for {target.display_name}",
+            color=discord.Color.green()
+        )
+        
+        embed.add_field(
+            name="Summary",
+            value=f"Total Joins: {history.get('total_joins', 0)}\nTotal Leaves: {len(history.get('leaves', []))}",
+            inline=False
+        )
+        
+        # Show recent joins
+        recent_joins = history.get("joins", [])[-5:]  # Last 5 joins
+        if recent_joins:
+            join_list = []
+            for i, join_time in enumerate(reversed(recent_joins), 1):
+                join_list.append(f"{i}. {join_time}")
+            embed.add_field(
+                name="Recent Joins (newest first)",
+                value="\n".join(join_list),
+                inline=False
+            )
+        
+        # Show recent leaves
+        recent_leaves = history.get("leaves", [])[-5:]  # Last 5 leaves
+        if recent_leaves:
+            leave_list = []
+            for i, leave_time in enumerate(reversed(recent_leaves), 1):
+                leave_list.append(f"{i}. {leave_time}")
+            embed.add_field(
+                name="Recent Leaves (newest first)",
+                value="\n".join(leave_list),
+                inline=False
+            )
+        
+        if not recent_joins and not recent_leaves:
+            embed.add_field(
+                name="No History",
+                value="No join/leave history found for this member.",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+        log.info(f"Member history displayed for {target.name}")
+
+    # Clear history command for testing
+    async def clear_member_history(self, ctx, member: discord.Member):
+        """Clear a member's join/leave history (for testing)"""
+        if not ctx.author.guild_permissions.administrator:
+            await ctx.send("You need administrator permission to use this command.")
+            return
+            
+        if not ctx.guild:
+            await ctx.send("This command can only be used in a server.")
+            return
+            
+        async with self.config.ar_member_history() as history:
+            guild_str = str(ctx.guild.id)
+            user_str = str(member.id)
+            
+            if guild_str in history and user_str in history[guild_str]:
+                del history[guild_str][user_str]
+                await ctx.send(f"Cleared join/leave history for {member.mention}")
+                log.info(f"Cleared history for {member.name} in guild {ctx.guild.name}")
+            else:
+                await ctx.send(f"No history found for {member.mention}")
+        
+        log.info(f"History cleared for {member.name}")

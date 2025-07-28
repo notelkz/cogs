@@ -272,6 +272,16 @@ class Zerolivesleft(commands.Cog):
         """Manually move a user between statuses: unverified, pending, approved"""
         await self.application_roles_logic.manual_move_user(ctx, member, from_status, to_status)
 
+    @approles_group.command(name="history")
+    async def approles_view_history(self, ctx, member: discord.Member = None):
+        """View detailed join/leave history for a member"""
+        await self.application_roles_logic.view_member_history(ctx, member)
+
+    @approles_group.command(name="clearhistory")
+    async def approles_clear_history(self, ctx, member: discord.Member):
+        """Clear a member's join/leave history (admin only, for testing)"""
+        await self.application_roles_logic.clear_member_history(ctx, member)
+
     @approles_group.command(name="addregion")
     async def approles_add_region(self, ctx, region: str, role: discord.Role): await self.application_roles_logic.add_region_role(ctx, region, role)
     @approles_group.command(name="removeregion")
