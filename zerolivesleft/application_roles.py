@@ -382,11 +382,38 @@ class ApplicationRolesLogic:
                     inline=False
                 )
             else:
-                # Brand new member
                 embed = discord.Embed(
                     title="Welcome to Zero Lives Left!",
                     description=(
                         f"Welcome {member.mention}! You've been placed in the **DMZ** (De-Militarized Zone).\n\n"
+                        f"To gain access to the rest of the server, you'll need to submit an application "
+                        f"on our website. This helps us maintain a great community atmosphere!"
+                    ),
+                    color=discord.Color.orange()
+                )
+                embed.add_field(
+                    name="How to Get Full Access",
+                    value="1. Submit an application using the link below\n2. Wait for approval (you'll be moved to Enlistment)\n3. Once approved, you'll get full server access!",
+                    inline=False
+                )
+            
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+            embed.add_field(
+                name="Application Link",
+                value="[Click here to apply](https://zerolivesleft.net/apply/)",
+                inline=False
+            )
+            
+            if is_returning_rejected:
+                embed.set_footer(text="Learn from feedback and come back stronger!")
+            elif is_returning:
+                embed.set_footer(text="Welcome back! Once submitted, you'll be moved to Enlistment for review!")
+            else:
+                embed.set_footer(text="Once submitted, you'll be moved to Enlistment for review!")
+                
+            await channel.send(content=member.mention, embed=embed)
+            log.info(f"Sent unverified welcome embed to #dmz ({channel.name}) for {member.name}.")Militarized Zone).\n\n"
                         f"To gain access to the rest of the server, you'll need to submit an application "
                         f"on our website. This helps us maintain a great community atmosphere!"
                     ),
