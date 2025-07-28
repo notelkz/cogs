@@ -784,3 +784,91 @@ class ApplicationRolesLogic:
         await self.config.ar_invite_channel_id.set(str(channel.id))
         await ctx.send(f"Invite channel set to: {channel.mention}")
         log.info(f"Invite channel set to {channel.name} ({channel.id})")
+
+    # Additional helper methods for testing and debugging
+    async def test_member_flow(self, ctx, member: discord.Member, test_status: str):
+        """Test command to simulate different application statuses for a member"""
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You need manage roles permission to use this command.")
+            return
+            
+        test_app_data = {
+            "region": "US",
+            "platform_role_ids": [],
+            "game_role_ids": []
+        }
+        
+        await ctx.send(f"Testing {member.mention} with status: {test_status}")
+        await self._handle_member_by_status(member, test_status, test_app_data)
+        await ctx.send(f"Test complete for {member.mention}")
+        log.info(f"Manual test performed: {member.name} with status {test_status}")
+
+    async def debug_member_status(self, ctx, member: discord.Member = None):
+        """Debug command to show current member status and roles"""
+        target = member or ctx.author
+        
+        embed = discord.Embed(
+            title=f"Debug Info for {target.display_name}",
+            color=discord.Color.blue()
+        )
+        
+        # Show current roles
+        roles = [role.name for role in target.roles if role.name != "@everyone"]
+        embed.add_field(
+            name="Current Roles",
+            value=", ".join(roles) if roles else "No roles",
+            inline=False
+        )
+        
+        # Show configured role IDs
+        unverified_role_id = await self.config.ar_unverified_role_id()
+        pending_role_id = await self.config.ar_pending_role_id()
+        member_role_id = await self.config.ar_member_role_id()
+        
+        embed.add_field(
+            name="Configured Roles",
+            value=f"Unverified: <@&{unverified_role_id}>\nPending: <@&{pending_role_id}>\nMember: <@&{member_role_id}>",
+            inline=False
+        )
+        
+        # Show configured channels
+        dmz_channel_id = await self.config.ar_unverified_channel_id()
+        enlistment_channel_id = await self.config.ar_pending_channel_id()
+        welcome_channel_id = await self.config.ar_welcome_channel_id()
+        
+        embed.add_field(
+            name="Configured Channels",
+            value=f"DMZ: <#{dmz_channel_id}>\nEnlistment: <#{enlistment_channel_id}>\nWelcome: <#{welcome_channel_id}>",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+        log.info(f"Debug info displayed for {target.name}")
+
+    async def manual_move_user(self, ctx, member: discord.Member, from_status: str, to_status: str):
+        """Manually move a user between statuses for testing"""
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You need manage roles permission to use this command.")
+            return
+            
+        await ctx.send(f"Manually moving {member.mention} from {from_status} to {to_status}")
+        
+        if to_status == "pending":
+            await self._move_user_to_pending(member)
+        elif to_status == "approved":
+            # Simulate approval
+            test_app_data = {
+                "region": "US",
+                "platform_role_ids": [],
+                "game_role_ids": []
+            }
+            await self.process_role_update({
+                "discord_id": str(member.id),
+                "status": "approved", 
+                "application_data": test_app_data
+            })
+        elif to_status == "unverified":
+            await self._handle_unverified_member(member)
+            
+        await ctx.send(f"Move complete: {member.mention} → {to_status}")
+        log.info(f"Manual move performed: {member.name} from {from_status} to {to_status}")
