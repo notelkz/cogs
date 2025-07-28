@@ -799,8 +799,54 @@ class ApplicationRolesLogic:
         }
         
         await ctx.send(f"Testing {member.mention} with status: {test_status}")
-        await self._handle_member_by_status(member, test_status, test_app_data)
-        await ctx.send(f"Test complete for {member.mention}")
+        
+        # First remove any existing test roles to start clean
+        guild = member.guild
+        unverified_role_id = await self.config.ar_unverified_role_id()
+        pending_role_id = await self.config.ar_pending_role_id()
+        member_role_id = await self.config.ar_member_role_id()
+        
+        unverified_role = guild.get_role(int(unverified_role_id)) if unverified_role_id else None
+        pending_role = guild.get_role(int(pending_role_id)) if pending_role_id else None
+        member_role = guild.get_role(int(member_role_id)) if member_role_id else None
+        
+        # Remove all test roles first
+        roles_to_remove = []
+        for role in [unverified_role, pending_role, member_role]:
+            if role and role in member.roles:
+                roles_to_remove.append(role)
+        
+        if roles_to_remove:
+            await member.remove_roles(*roles_to_remove, reason="Test flow - clearing roles")
+            await ctx.send(f"Cleared existing roles: {[r.name for r in roles_to_remove]}")
+        
+        # Now simulate the correct status by actually assigning the role first
+        if test_status == "none" or test_status == "rejected":
+            # Assign unverified role for none/rejected status
+            if unverified_role:
+                await member.add_roles(unverified_role, reason="Test flow - unverified")
+                await ctx.send(f"Assigned {unverified_role.name} role for testing")
+            await self._handle_unverified_member(member, is_returning_rejected=(test_status == "rejected"))
+            
+        elif test_status == "pending":
+            # Assign pending role for pending status
+            if pending_role:
+                await member.add_roles(pending_role, reason="Test flow - pending")
+                await ctx.send(f"Assigned {pending_role.name} role for testing")
+            await self._handle_pending_member(member)
+            
+        elif test_status == "approved":
+            # Assign member role for approved status
+            if member_role:
+                await member.add_roles(member_role, reason="Test flow - approved")
+                await ctx.send(f"Assigned {member_role.name} role for testing")
+            await self._handle_approved_member(member, test_app_data)
+            
+        else:
+            await ctx.send(f"Unknown test status: {test_status}. Use: none, pending, approved, rejected")
+            return
+        
+        await ctx.send(f"Test complete for {member.mention} with status: {test_status}")
         log.info(f"Manual test performed: {member.name} with status {test_status}")
 
     async def debug_member_status(self, ctx, member: discord.Member = None):
