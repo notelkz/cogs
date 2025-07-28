@@ -38,8 +38,8 @@ class ActivityTrackingLogic:
             # Legacy voice tracking (for website compatibility)
             "at_user_activity": {},
             "at_recruit_role_id": None,
-            "at_member_role_id": None,
-            "at_promotion_threshold_hours": 10,
+            "at_member_role_id": None,  # This may be handled by another cog
+            "at_promotion_threshold_hours": 10,  # Legacy, not used in dual system
             "at_promotion_channel_id": None,
             "at_military_ranks": [],
             "at_api_url": None,
@@ -50,7 +50,7 @@ class ActivityTrackingLogic:
             # NEW: XP System configs
             "at_user_xp": {},
             "at_user_prestige": {},
-            "at_promotion_threshold_xp": 1000,
+            "at_promotion_threshold_xp": 1000,  # Legacy, not used in dual system
             "at_voice_xp_rate": 1,
             "at_message_xp": 3,
             "at_reaction_xp": 1,
@@ -58,6 +58,10 @@ class ActivityTrackingLogic:
             "at_message_cooldown": 60,
             "at_prestige_enabled": False,
             "at_prestige_multiplier": 0.5,
+            
+            # NEW: Dual progression system
+            "at_member_threshold_hours": 24,  # Hours needed for Recruit → Member
+            "at_military_start_hours": 12,   # Hours needed to start military progression
         }
         
         self.config.register_guild(**default_guild)

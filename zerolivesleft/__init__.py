@@ -170,20 +170,30 @@ class Zerolivesleft(commands.Cog):
     # === SETUP COMMANDS (Start Here!) ===
     @xp_group.command(name="quicksetup")
     async def xp_quick_setup(self, ctx):
-        """🚀 Complete setup guide for the XP system."""
+        """🚀 Complete setup guide for the dual-track XP system."""
         embed = discord.Embed(
-            title="🎯 XP System Quick Setup Guide",
-            description="Follow these steps in order:",
+            title="🎯 Dual-Track XP System Setup Guide",
+            description="Your server uses a dual progression system:",
             color=discord.Color.green()
         )
         embed.add_field(
-            name="1️⃣ Setup Military Ranks",
-            value="`!zll xp setupranks` - Configure your 29 existing ranks",
+            name="🏘️ Community Track",
+            value="Recruit → Member (24 hours activity, permanent upgrade)",
             inline=False
         )
         embed.add_field(
-            name="2️⃣ Setup Recruit System", 
-            value="`!zll xp setuprecruit` - Recruit → Private promotion",
+            name="🎖️ Military Track", 
+            value="Recruit → Private → Higher Ranks (12+ hours to start, XP-based)",
+            inline=False
+        )
+        embed.add_field(
+            name="1️⃣ Setup Dual System",
+            value="`!zll xp setupdual` - Configure both progression tracks",
+            inline=False
+        )
+        embed.add_field(
+            name="2️⃣ Setup Military Ranks",
+            value="`!zll xp setupranks` - Configure your 29 existing ranks",
             inline=False
         )
         embed.add_field(
@@ -201,7 +211,7 @@ class Zerolivesleft(commands.Cog):
             value="`!zll xp channel #promotions`\n`!zll xp api <url> <key>`",
             inline=False
         )
-        embed.set_footer(text="Use !zll xp config to view your current settings")
+        embed.set_footer(text="Users can be both Recruit + Private until they reach Member status!")
         await ctx.send(embed=embed)
 
     @xp_group.command(name="setupranks")
@@ -209,10 +219,22 @@ class Zerolivesleft(commands.Cog):
         """Set up your server's 29 military ranks with XP requirements."""
         await self.activity_tracking_logic.setup_default_ranks(ctx)
 
+    @xp_group.command(name="setupdual")
+    async def xp_setup_dual(self, ctx):
+        """🎯 Set up the dual progression system (Community + Military tracks)."""
+        await self.activity_tracking_logic.setup_dual_system(ctx)
+
     @xp_group.command(name="setuprecruit")  
     async def xp_setup_recruit(self, ctx):
-        """Set up Recruit → Private promotion system."""
-        await self.activity_tracking_logic.setup_recruit_system(ctx)
+        """⚠️ DEPRECATED: Use setupdual instead for the new dual-track system."""
+        await ctx.send(
+            "⚠️ **This command is deprecated!**\n"
+            f"Use `{ctx.prefix}zll xp setupdual` instead to set up the new dual progression system.\n\n"
+            "**Dual System Benefits:**\n"
+            "• Community track: Recruit → Member (24 hours)\n" 
+            "• Military track: Recruit → Private → Higher ranks (12+ hours, XP-based)\n"
+            "• Users can have both Recruit + Military rank simultaneously"
+        )
 
     # === XP CONFIGURATION ===
     @xp_group.command(name="rates")
