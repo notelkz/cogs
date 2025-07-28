@@ -787,11 +787,41 @@ class ActivityTrackingLogic:
         if not private_role:
             return await ctx.send(f"❌ Private role not found (ID: {private_role_id})")
         
-        # Set up community membership track (Recruit → Member at 24 hours)
-        await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit_role_id)
-        await self.config.guild(ctx.guild).at_member_threshold_hours.set(24)
+        # Ask user what the Member role ID is
+        await ctx.send(
+            "🤔 **What is your Member role?**\n"
+            "Please mention the role that users get when they complete their 24-hour community membership requirement.\n"
+            "Example: `@Member` or provide the role ID"
+        )
         
-        # Set up military ranking track (starts at 12 hours)
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            response = await ctx.bot.wait_for('message', check=check, timeout=60.0)
+            
+            # Try to extract role from mention or ID
+            member_role = None
+            if response.role_mentions:
+                member_role = response.role_mentions[0]
+            else:
+                # Try to parse as role ID
+                try:
+                    role_id = int(response.content.strip())
+                    member_role = ctx.guild.get_role(role_id)
+                except ValueError:
+                    return await ctx.send("❌ Invalid role. Please mention a role or provide a valid role ID.")
+            
+            if not member_role:
+                return await ctx.send("❌ Could not find that role. Please try again.")
+            
+        except asyncio.TimeoutError:
+            return await ctx.send("⏰ Timed out waiting for Member role. Please try the command again.")
+        
+        # Set up both tracks
+        await self.config.guild(ctx.guild).at_recruit_role_id.set(recruit_role_id)
+        await self.config.guild(ctx.guild).at_member_role_id.set(member_role.id)
+        await self.config.guild(ctx.guild).at_member_threshold_hours.set(24)
         await self.config.guild(ctx.guild).at_military_start_hours.set(12)
         
         embed = discord.Embed(
@@ -801,10 +831,10 @@ class ActivityTrackingLogic:
         embed.add_field(
             name="🏘️ Community Track",
             value=(
-                f"Recruit → Member\n"
+                f"{recruit_role.mention} → {member_role.mention}\n"
                 f"• **24 hours** total activity\n"
                 f"• Removes {recruit_role.mention}\n"
-                f"• Adds Member role (managed by other cog)\n"
+                f"• Adds {member_role.mention}\n"
                 f"• **Permanent membership upgrade**"
             ),
             inline=False
@@ -812,11 +842,11 @@ class ActivityTrackingLogic:
         embed.add_field(
             name="🎖️ Military Track", 
             value=(
-                f"Recruit → {private_role.mention} → Higher Ranks\n"
+                f"{recruit_role.mention} → {private_role.mention} → Higher Ranks\n"
                 f"• **12 hours** to start military progression\n"
                 f"• XP-based rank progression\n"
-                f"• Keeps Recruit role until 24 hours\n"
-                f"• Can be both Recruit + Private simultaneously"
+                f"• Keeps {recruit_role.mention} until 24 hours\n"
+                f"• Can have both community + military roles"
             ),
             inline=False
         )
@@ -825,11 +855,11 @@ class ActivityTrackingLogic:
             value=(
                 f"• **0-12 hrs**: Just {recruit_role.mention}\n"
                 f"• **12-24 hrs**: {recruit_role.mention} + {private_role.mention} (dual roles!)\n"
-                f"• **24+ hrs**: Member + {private_role.mention}+ (community upgrade)"
+                f"• **24+ hrs**: {member_role.mention} + {private_role.mention}+ (community upgrade)"
             ),
             inline=False
         )
-        embed.set_footer(text="Next: Use !zll xp setupranks to configure your 29 military ranks")
+        embed.set_footer(text="Both promotion tracks are now managed by this cog!")
         
         await ctx.send(embed=embed)
 
