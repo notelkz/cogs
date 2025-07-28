@@ -32,6 +32,35 @@ class ActivityTrackingLogic:
         self.message_cooldowns = {}  # user_id: last_message_time
         self.role_check_task = None
         self.activity_update_task = None
+        
+        # Register XP system config
+        default_guild = {
+            # Legacy voice tracking (for website compatibility)
+            "at_user_activity": {},
+            "at_recruit_role_id": None,
+            "at_member_role_id": None,
+            "at_promotion_threshold_hours": 10,
+            "at_promotion_channel_id": None,
+            "at_military_ranks": [],
+            "at_api_url": None,
+            "at_api_key": None,
+            "at_promotion_update_url": None,
+            "at_military_rank_update_url": None,
+            
+            # NEW: XP System configs
+            "at_user_xp": {},
+            "at_user_prestige": {},
+            "at_promotion_threshold_xp": 1000,
+            "at_voice_xp_rate": 1,
+            "at_message_xp": 3,
+            "at_reaction_xp": 1,
+            "at_voice_join_xp": 5,
+            "at_message_cooldown": 60,
+            "at_prestige_enabled": False,
+            "at_prestige_multiplier": 0.5,
+        }
+        
+        self.config.register_guild(**default_guild)
 
     def start_tasks(self):
         """Starts periodic tasks for role checking and activity updates."""

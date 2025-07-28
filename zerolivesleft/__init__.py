@@ -264,8 +264,37 @@ class Zerolivesleft(commands.Cog):
         """Set recruit/member roles and XP threshold."""
         await self.activity_tracking_logic.set_recruit_member_xp(ctx, recruit_role, member_role, required_xp)
 
-    # Prestige System
-    @activityset_group.group(name="prestige")
+    # API Configuration
+    @activityset_group.command(name="api")
+    async def activity_set_api(self, ctx, url: str, key: str): 
+        await self.activity_tracking_logic.set_api(ctx, url, key)
+
+    @activityset_group.command(name="promotionurl")
+    async def activity_set_promotion_url(self, ctx, url: str): 
+        await self.activity_tracking_logic.set_promotion_url(ctx, url)
+
+    @activityset_group.command(name="militaryrankurl")
+    async def activity_set_military_rank_url(self, ctx, url: str): 
+        await self.activity_tracking_logic.set_military_rank_url(ctx, url)
+
+    @activityset_group.command(name="promotionchannel")
+    async def activity_set_promotion_channel(self, ctx, channel: discord.TextChannel): 
+        await self.activity_tracking_logic.set_promotion_channel(ctx, channel)
+
+    # Debug Commands
+    @activityset_group.command(name="debug")
+    async def activity_debug_info(self, ctx): 
+        await self.activity_tracking_logic.debug_info(ctx)
+
+    @activityset_group.command(name="forcesync")
+    async def activity_force_sync(self, ctx): 
+        await self.activity_tracking_logic.force_sync(ctx)
+
+    # =============================================================================
+    # PRESTIGE SYSTEM COMMANDS (Top level to avoid nesting issues)
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="prestige")
     async def prestige_group(self, ctx):
         """Prestige system commands."""
         if ctx.invoked_subcommand is None:
