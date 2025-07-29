@@ -558,6 +558,39 @@ class Zerolivesleft(commands.Cog):
         
         await ctx.send(embed=embed)
 
+    @django_group.command(name="testwebhook")
+    async def django_test_webhook(self, ctx):
+        """Test the Django webhook with a simple payload."""
+        webhook_url = await self.config.guild(ctx.guild).django_webhook_url()
+        if not webhook_url:
+            return await ctx.send("❌ Django webhook URL not configured.")
+        
+        webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
+        
+        # Create a test payload
+        test_payload = {
+            'action': 'sync_games',
+            'guild_id': str(ctx.guild.id),
+            'guild_name': ctx.guild.name,
+            'game_roles': [
+                {
+                    'id': '12345',
+                    'name': 'Test Role',
+                    'game_name': 'Test Game',
+                    'description': 'Test webhook payload',
+                    'color': '#ff0000',
+                    'member_count': 1
+                }
+            ]
+        }
+        
+        try:
+            await ctx.send("🔄 Testing webhook...")
+            await self.web_manager._send_webhook_to_django(test_payload, webhook_url, webhook_secret)
+            await ctx.send("✅ Test webhook sent! Check your Django admin for a 'Test Game' entry.")
+        except Exception as e:
+            await ctx.send(f"❌ Error testing webhook: {e}")
+
     @django_group.command(name="syncgames")
     async def django_sync_game_roles(self, ctx):
         """Manually sync only game roles to Django based on role mappings."""
