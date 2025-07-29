@@ -36,21 +36,27 @@ class Zerolivesleft(commands.Cog):
         default_global = {
             "webserver_host": "0.0.0.0",
             "webserver_port": 8080,
-            "webserver_api_key": None,
-            
-            # Add these missing role counting configuration keys:
-            "gc_api_base_url": None,
-            "gc_api_key": None,
-            "gc_interval": 15,  # Default 15 minutes
-            "gc_counting_guild_id": None,
-            "gc_game_role_mappings": {}  # This is the key that was missing!
+            "webserver_api_key": None
         }
         self.config.register_global(**default_global)
 
         # Register default guild config including new Django webhook settings
         default_guild = {
             "django_webhook_url": None,
-            "django_webhook_secret": None
+            "django_webhook_secret": None,
+            # Role Counter settings
+            "rc_role_mappings": {},
+            "rc_api_url": None,
+            "rc_api_key": None,
+            "rc_interval_minutes": 5,
+            "rc_target_guild_id": None,
+            # Activity Tracker settings (add commonly used ones)
+            "at_api_key": None,
+            "at_api_url": None,
+            "at_recruit_role_id": None,
+            "at_member_role_id": None,
+            "at_military_ranks": [],
+            "at_user_activity": {},
         }
         self.config.register_guild(**default_guild)
 
@@ -152,17 +158,17 @@ class Zerolivesleft(commands.Cog):
             return
         await self.activity_tracking_logic.handle_reaction_add(reaction, user)
 
-    # =============================================================================
-    # ROLESYNC LISTENERS (Role Counting and Django Integration)
-    # =============================================================================
-
     @commands.Cog.listener()
     async def on_guild_role_create(self, role):
         """Auto-sync when a new role is created."""
         webhook_url = await self.config.guild(role.guild).django_webhook_url()
         if webhook_url:
             webhook_secret = await self.config.guild(role.guild).django_webhook_secret()
-            await self.web_manager._sync_all_roles_to_django(role.guild, webhook_url, webhook_secret)
+            try:
+                await self.web_manager._sync_all_roles_to_django(role.guild, webhook_url, webhook_secret)
+                log.info(f"Auto-synced new role '{role.name}' to Django for guild {role.guild.name}")
+            except Exception as e:
+                log.error(f"Failed to auto-sync new role '{role.name}' to Django: {e}")
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role):
@@ -170,7 +176,25 @@ class Zerolivesleft(commands.Cog):
         webhook_url = await self.config.guild(role.guild).django_webhook_url()
         if webhook_url:
             webhook_secret = await self.config.guild(role.guild).django_webhook_secret()
-            await self.web_manager._sync_all_roles_to_django(role.guild, webhook_url, webhook_secret)
+            try:
+                await self.web_manager._sync_all_roles_to_django(role.guild, webhook_url, webhook_secret)
+                log.info(f"Auto-synced after role '{role.name}' deletion to Django for guild {role.guild.name}")
+            except Exception as e:
+                log.error(f"Failed to auto-sync after role '{role.name}' deletion to Django: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before, after):
+        """Auto-sync when a role is updated (name change, color change, etc)."""
+        # Only sync if the role name changed (to avoid excessive syncing)
+        if before.name != after.name:
+            webhook_url = await self.config.guild(after.guild).django_webhook_url()
+            if webhook_url:
+                webhook_secret = await self.config.guild(after.guild).django_webhook_secret()
+                try:
+                    await self.web_manager._sync_all_roles_to_django(after.guild, webhook_url, webhook_secret)
+                    log.info(f"Auto-synced role update '{before.name}' -> '{after.name}' to Django for guild {after.guild.name}")
+                except Exception as e:
+                    log.error(f"Failed to auto-sync role update '{before.name}' -> '{after.name}' to Django: {e}")
 
     # =============================================================================
     # MAIN COMMAND GROUPS
@@ -481,11 +505,21 @@ class Zerolivesleft(commands.Cog):
         if not webhook_url:
             return await ctx.send("❌ Django webhook URL not configured. Use `!zll django setwebhook <url>` first.")
         
+        # Check if there are any role mappings configured
+        role_mappings = await self.config.guild(ctx.guild).rc_role_mappings()
+        if not role_mappings:
+            return await ctx.send(
+                "❌ No game role mappings found. Use `!zll rolecounter addmapping @Role GameName` to add game roles first.\n"
+                f"Example: `!zll rolecounter addmapping @Minecraft Minecraft`\n"
+                f"Then use `!zll rolecounter listmappings` to see all mapped roles."
+            )
+        
         webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
         
         try:
             await self.web_manager._sync_game_roles_to_django(ctx.guild, webhook_url, webhook_secret)
-            await ctx.send("✅ Successfully synced game roles to Django!")
+            mapped_roles = len(role_mappings)
+            await ctx.send(f"✅ Successfully synced {mapped_roles} game role mappings to Django!")
         except Exception as e:
             await ctx.send(f"❌ Error syncing game roles: {e}")
 

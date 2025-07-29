@@ -370,7 +370,23 @@ class WebApiManager:
     async def _sync_game_roles_to_django(self, guild, webhook_url, webhook_secret=None):
         """Sync only game-related roles to Django based on role mappings."""
         # Get role mappings from your existing role counting logic
-        role_mappings = await self.cog.config.guild(guild).rc_role_mappings()
+        try:
+            role_mappings = await self.cog.config.guild(guild).rc_role_mappings()
+        except Exception as e:
+            log.error(f"Error getting role mappings: {e}")
+            role_mappings = {}
+        
+        if not role_mappings:
+            log.warning(f"No role mappings found for guild {guild.id}. Use '!zll rolecounter addmapping' to add game role mappings first.")
+            # Send empty payload to Django
+            payload = {
+                'action': 'sync_games',
+                'guild_id': str(guild.id),
+                'guild_name': guild.name,
+                'game_roles': []
+            }
+            await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
+            return
         
         game_roles_data = []
         for role_id_str, game_name in role_mappings.items():
