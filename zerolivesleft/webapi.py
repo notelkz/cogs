@@ -371,7 +371,23 @@ class WebApiManager:
         """Sync only game-related roles to Django based on role mappings."""
         # Get role mappings from your existing role counting logic
         try:
+            # Try to get role mappings - check if it's nested under a different config structure
             role_mappings = await self.cog.config.guild(guild).rc_role_mappings()
+            log.info(f"DEBUG: Retrieved role mappings for guild {guild.id}: {role_mappings}")
+            
+            # If empty, try alternative config paths that might be used by your role counter
+            if not role_mappings:
+                # Check if role mappings are stored differently
+                all_guild_config = await self.cog.config.guild(guild).all()
+                log.info(f"DEBUG: Full guild config keys: {list(all_guild_config.keys())}")
+                
+                # Look for any config key that might contain role mappings
+                for key, value in all_guild_config.items():
+                    if 'role' in key.lower() and isinstance(value, dict) and value:
+                        log.info(f"DEBUG: Found potential role mapping config '{key}': {value}")
+                        role_mappings = value
+                        break
+                        
         except Exception as e:
             log.error(f"Error getting role mappings: {e}")
             role_mappings = {}
@@ -388,19 +404,29 @@ class WebApiManager:
             await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
             return
         
+        log.info(f"DEBUG: Processing {len(role_mappings)} role mappings")
         game_roles_data = []
-        for role_id_str, game_name in role_mappings.items():
-            role = guild.get_role(int(role_id_str))
-            if role:
-                game_roles_data.append({
-                    'id': str(role.id),
-                    'name': role.name,
-                    'game_name': game_name,
-                    'description': f"Game role for {game_name}",
-                    'color': f"#{role.color.value:06x}",
-                    'member_count': len(role.members)
-                })
         
+        for role_id_str, game_name in role_mappings.items():
+            log.info(f"DEBUG: Processing role ID {role_id_str} -> {game_name}")
+            try:
+                role = guild.get_role(int(role_id_str))
+                if role:
+                    game_roles_data.append({
+                        'id': str(role.id),
+                        'name': role.name,
+                        'game_name': game_name,
+                        'description': f"Game role for {game_name}",
+                        'color': f"#{role.color.value:06x}",
+                        'member_count': len(role.members)
+                    })
+                    log.info(f"DEBUG: Added role '{role.name}' for game '{game_name}'")
+                else:
+                    log.warning(f"DEBUG: Role with ID {role_id_str} not found in guild")
+            except ValueError as e:
+                log.error(f"DEBUG: Invalid role ID {role_id_str}: {e}")
+        
+        log.info(f"DEBUG: Sending {len(game_roles_data)} game roles to Django")
         payload = {
             'action': 'sync_games',
             'guild_id': str(guild.id),

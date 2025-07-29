@@ -498,6 +498,59 @@ class Zerolivesleft(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Error syncing roles: {e}")
 
+    @django_group.command(name="debug")
+    async def django_debug_config(self, ctx):
+        """Debug Django sync configuration and role mappings."""
+        embed = discord.Embed(title="Django Sync Debug Information", color=discord.Color.blue())
+        
+        # Check webhook config
+        webhook_url = await self.config.guild(ctx.guild).django_webhook_url()
+        webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
+        
+        embed.add_field(
+            name="Webhook Configuration",
+            value=f"URL: {'✅ Set' if webhook_url else '❌ Not set'}\nSecret: {'✅ Set' if webhook_secret else '❌ Not set'}",
+            inline=False
+        )
+        
+        # Check role mappings
+        try:
+            role_mappings = await self.config.guild(ctx.guild).rc_role_mappings()
+            embed.add_field(
+                name="Role Mappings (rc_role_mappings)",
+                value=f"Found {len(role_mappings)} mappings" if role_mappings else "❌ No mappings found",
+                inline=False
+            )
+            
+            if role_mappings:
+                mapping_text = ""
+                for role_id, game_name in list(role_mappings.items())[:5]:  # Show first 5
+                    role = ctx.guild.get_role(int(role_id))
+                    role_name = role.name if role else "Role Not Found"
+                    mapping_text += f"• {role_name} ({role_id}) → {game_name}\n"
+                
+                if len(role_mappings) > 5:
+                    mapping_text += f"... and {len(role_mappings) - 5} more"
+                
+                embed.add_field(name="Sample Mappings", value=mapping_text, inline=False)
+                
+        except Exception as e:
+            embed.add_field(name="Role Mappings Error", value=f"❌ Error: {e}", inline=False)
+        
+        # Check all config keys
+        try:
+            all_config = await self.config.guild(ctx.guild).all()
+            config_keys = [k for k in all_config.keys() if 'role' in k.lower() or 'rc_' in k.lower()]
+            embed.add_field(
+                name="Relevant Config Keys Found",
+                value=f"`{'`, `'.join(config_keys)}`" if config_keys else "None found",
+                inline=False
+            )
+        except Exception as e:
+            embed.add_field(name="Config Keys Error", value=f"❌ Error: {e}", inline=False)
+        
+        await ctx.send(embed=embed)
+
     @django_group.command(name="syncgames")
     async def django_sync_game_roles(self, ctx):
         """Manually sync only game roles to Django based on role mappings."""
@@ -511,15 +564,16 @@ class Zerolivesleft(commands.Cog):
             return await ctx.send(
                 "❌ No game role mappings found. Use `!zll rolecounter addmapping @Role GameName` to add game roles first.\n"
                 f"Example: `!zll rolecounter addmapping @Minecraft Minecraft`\n"
-                f"Then use `!zll rolecounter listmappings` to see all mapped roles."
+                f"Then use `!zll rolecounter listmappings` to see all mapped roles.\n"
+                f"Use `!zll django debug` to see detailed debug information."
             )
         
         webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
         
         try:
+            await ctx.send(f"🔄 Syncing {len(role_mappings)} game role mappings to Django...")
             await self.web_manager._sync_game_roles_to_django(ctx.guild, webhook_url, webhook_secret)
-            mapped_roles = len(role_mappings)
-            await ctx.send(f"✅ Successfully synced {mapped_roles} game role mappings to Django!")
+            await ctx.send(f"✅ Successfully synced {len(role_mappings)} game role mappings to Django!")
         except Exception as e:
             await ctx.send(f"❌ Error syncing game roles: {e}")
 
