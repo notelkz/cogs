@@ -442,65 +442,67 @@ class ActivityTrackingLogic:
         except Exception as e:
             log.error(f"ActivityTracking: Exception updating prestige: {str(e)}")
 
+    # Find this in your activity_tracking.py around line 445 and replace the entire function:
+
     async def _update_website_activity(self, guild, member, total_minutes_to_send):
         """Send voice activity and message count updates to the Django website."""
-    guild_settings = await self.config.guild(guild).all()
-    api_url = guild_settings.get("at_api_url")
-    api_key = guild_settings.get("at_api_key")
-    
-    if not api_url or not api_key: 
-        return
-    
-    # Get message count for this user from XP system
-    message_count = await self._get_user_message_count(guild, member.id)
-    
-    endpoint = f"{api_url}update-activity/"
-    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
-    payload = {
-        "discord_id": str(member.id), 
-        "voice_minutes": total_minutes_to_send,
-        "message_count": message_count
-    }
-    
-    try:
-        async with self.session.post(endpoint, headers=headers, json=payload, timeout=10) as resp:
-            if resp.status == 200:
-                log.info(f"ActivityTracking: Successfully synced activity for user {member.id}: {total_minutes_to_send} voice minutes, {message_count} messages")
-            else:
-                error_text = await resp.text()
-                log.error(f"ActivityTracking: Failed to update activity: {resp.status} - {error_text}")
-    except Exception as e:
-        log.error(f"ActivityTracking: Exception updating website activity: {str(e)}")
+        guild_settings = await self.config.guild(guild).all()
+        api_url = guild_settings.get("at_api_url")
+        api_key = guild_settings.get("at_api_key")
+        
+        if not api_url or not api_key: 
+            return
+        
+        # Get message count for this user from XP system
+        message_count = await self._get_user_message_count(guild, member.id)
+        
+        endpoint = f"{api_url}update-activity/"
+        headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+        payload = {
+            "discord_id": str(member.id), 
+            "voice_minutes": total_minutes_to_send,
+            "message_count": message_count
+        }
+        
+        try:
+            async with self.session.post(endpoint, headers=headers, json=payload, timeout=10) as resp:
+                if resp.status == 200:
+                    log.info(f"ActivityTracking: Successfully synced activity for user {member.id}: {total_minutes_to_send} voice minutes, {message_count} messages")
+                else:
+                    error_text = await resp.text()
+                    log.error(f"ActivityTracking: Failed to update activity: {resp.status} - {error_text}")
+        except Exception as e:
+            log.error(f"ActivityTracking: Exception updating website activity: {str(e)}")
 
-async def _get_user_message_count(self, guild, user_id):
-    """Get total message count for a user from XP system data."""
-    try:
-        # Get message count from your XP tracking - you'll need to track this
-        # For now, we can estimate based on XP if you don't have direct message tracking
-        user_xp = await self.config.guild(guild).at_user_xp()
-        total_xp = user_xp.get(str(user_id), 0)
-        
-        # Get XP rates
-        message_xp = await self.config.guild(guild).at_message_xp()
-        voice_xp_rate = await self.config.guild(guild).at_voice_xp_rate()
-        reaction_xp = await self.config.guild(guild).at_reaction_xp()
-        voice_join_xp = await self.config.guild(guild).at_voice_join_xp()
-        
-        # Get voice minutes for this user
-        voice_minutes = await self._get_user_voice_minutes(guild, user_id)
-        voice_xp_earned = voice_minutes * voice_xp_rate
-        
-        # Estimate message count (this is rough - ideally you'd track messages directly)
-        if message_xp > 0:
-            # Assume most remaining XP comes from messages (rough estimate)
-            remaining_xp = max(0, total_xp - voice_xp_earned)
-            estimated_message_count = remaining_xp // message_xp
-            return max(0, estimated_message_count)
-        
-        return 0
-    except Exception as e:
-        log.error(f"ActivityTracking: Error getting message count for user {user_id}: {e}")
-        return 0
+    async def _get_user_message_count(self, guild, user_id):
+        """Get total message count for a user from XP system data."""
+        try:
+            # Get message count from your XP tracking - you'll need to track this
+            # For now, we can estimate based on XP if you don't have direct message tracking
+            user_xp = await self.config.guild(guild).at_user_xp()
+            total_xp = user_xp.get(str(user_id), 0)
+            
+            # Get XP rates
+            message_xp = await self.config.guild(guild).at_message_xp()
+            voice_xp_rate = await self.config.guild(guild).at_voice_xp_rate()
+            reaction_xp = await self.config.guild(guild).at_reaction_xp()
+            voice_join_xp = await self.config.guild(guild).at_voice_join_xp()
+            
+            # Get voice minutes for this user
+            voice_minutes = await self._get_user_voice_minutes(guild, user_id)
+            voice_xp_earned = voice_minutes * voice_xp_rate
+            
+            # Estimate message count (this is rough - ideally you'd track messages directly)
+            if message_xp > 0:
+                # Assume most remaining XP comes from messages (rough estimate)
+                remaining_xp = max(0, total_xp - voice_xp_earned)
+                estimated_message_count = remaining_xp // message_xp
+                return max(0, estimated_message_count)
+            
+            return 0
+        except Exception as e:
+            log.error(f"ActivityTracking: Error getting message count for user {user_id}: {e}")
+            return 0
 
     async def _notify_website_of_promotion(self, guild, discord_id, new_role_name):
         """Notify the website of a community role promotion."""
