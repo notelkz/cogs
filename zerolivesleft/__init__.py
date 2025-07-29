@@ -36,15 +36,15 @@ class Zerolivesleft(commands.Cog):
         default_global = {
             "webserver_host": "0.0.0.0",
             "webserver_port": 8080,
-            "webserver_api_key": None
-
-        # Add these missing role counting configuration keys:
-        "gc_api_base_url": None,
-        "gc_api_key": None,
-        "gc_interval": 15,  # Default 15 minutes
-        "gc_counting_guild_id": None,
-        "gc_game_role_mappings": {}  # This is the key that was missing!
-    }
+            "webserver_api_key": None,
+            
+            # Add these missing role counting configuration keys:
+            "gc_api_base_url": None,
+            "gc_api_key": None,
+            "gc_interval": 15,  # Default 15 minutes
+            "gc_counting_guild_id": None,
+            "gc_game_role_mappings": {}  # This is the key that was missing!
+        }
         self.config.register_global(**default_global)
 
         # Register default guild config including new Django webhook settings
