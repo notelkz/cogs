@@ -370,27 +370,45 @@ class WebApiManager:
     async def _sync_game_roles_to_django(self, guild, webhook_url, webhook_secret=None):
         """Sync only game-related roles to Django based on role mappings."""
         # Get role mappings from your existing role counting logic
+        role_mappings = {}
+        
         try:
-            # Try to get role mappings - check if it's nested under a different config structure
+            # First try the standard config path
             role_mappings = await self.cog.config.guild(guild).rc_role_mappings()
-            log.info(f"DEBUG: Retrieved role mappings for guild {guild.id}: {role_mappings}")
+            log.info(f"DEBUG: Retrieved role mappings from rc_role_mappings: {role_mappings}")
             
-            # If empty, try alternative config paths that might be used by your role counter
-            if not role_mappings:
-                # Check if role mappings are stored differently
-                all_guild_config = await self.cog.config.guild(guild).all()
-                log.info(f"DEBUG: Full guild config keys: {list(all_guild_config.keys())}")
-                
-                # Look for any config key that might contain role mappings
-                for key, value in all_guild_config.items():
-                    if 'role' in key.lower() and isinstance(value, dict) and value:
-                        log.info(f"DEBUG: Found potential role mapping config '{key}': {value}")
-                        role_mappings = value
-                        break
+            # If empty, check if the role counting logic has its own way of storing mappings
+            if not role_mappings and hasattr(self.cog, 'role_counting_logic'):
+                try:
+                    # Try to get mappings directly from the role counting logic
+                    rc_config = await self.cog.role_counting_logic.config.guild(guild).all()
+                    log.info(f"DEBUG: Role counting config keys: {list(rc_config.keys())}")
+                    
+                    # Look for role mappings in the role counting logic config
+                    if 'role_mappings' in rc_config:
+                        role_mappings = rc_config['role_mappings']
+                        log.info(f"DEBUG: Found role_mappings in role counting config: {role_mappings}")
+                    elif 'rc_role_mappings' in rc_config:
+                        role_mappings = rc_config['rc_role_mappings']
+                        log.info(f"DEBUG: Found rc_role_mappings in role counting config: {role_mappings}")
                         
+                except Exception as e:
+                    log.error(f"DEBUG: Error accessing role counting logic config: {e}")
+            
+            # If still empty, try to access the role counting logic's config directly
+            if not role_mappings and hasattr(self.cog, 'role_counting_logic'):
+                try:
+                    # Check if role counting logic has a method to get mappings
+                    if hasattr(self.cog.role_counting_logic, 'config'):
+                        rc_mappings = await self.cog.role_counting_logic.config.guild(guild).role_mappings()
+                        if rc_mappings:
+                            role_mappings = rc_mappings
+                            log.info(f"DEBUG: Found mappings via role_counting_logic.config: {role_mappings}")
+                except Exception as e:
+                    log.error(f"DEBUG: Error accessing role counting mappings: {e}")
+                    
         except Exception as e:
             log.error(f"Error getting role mappings: {e}")
-            role_mappings = {}
         
         if not role_mappings:
             log.warning(f"No role mappings found for guild {guild.id}. Use '!zll rolecounter addmapping' to add game role mappings first.")
