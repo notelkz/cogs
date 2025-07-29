@@ -36,7 +36,13 @@ class Zerolivesleft(commands.Cog):
         default_global = {
             "webserver_host": "0.0.0.0",
             "webserver_port": 8080,
-            "webserver_api_key": None
+            "webserver_api_key": None,
+            # Role counting global config (from rolecount.py)
+            "gc_api_base_url": None,
+            "gc_api_key": None,
+            "gc_interval": 15,
+            "gc_counting_guild_id": None,
+            "gc_game_role_mappings": {}
         }
         self.config.register_global(**default_global)
 
@@ -513,20 +519,33 @@ class Zerolivesleft(commands.Cog):
             inline=False
         )
         
-        # Check role mappings
+        # Check role mappings from the CORRECT location (global config)
         try:
-            role_mappings = await self.config.guild(ctx.guild).rc_role_mappings()
+            role_mappings = await self.config.gc_game_role_mappings()
+            counting_guild_id = await self.config.gc_counting_guild_id()
+            
             embed.add_field(
-                name="Role Mappings (rc_role_mappings)",
+                name="Role Mappings (gc_game_role_mappings)",
                 value=f"Found {len(role_mappings)} mappings" if role_mappings else "❌ No mappings found",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Counting Guild",
+                value=f"Set to: {counting_guild_id}" if counting_guild_id else "❌ Not set",
                 inline=False
             )
             
             if role_mappings:
                 mapping_text = ""
+                counting_guild = self.bot.get_guild(counting_guild_id) if counting_guild_id else None
+                
                 for role_id, game_name in list(role_mappings.items())[:5]:  # Show first 5
-                    role = ctx.guild.get_role(int(role_id))
-                    role_name = role.name if role else "Role Not Found"
+                    if counting_guild:
+                        role = counting_guild.get_role(int(role_id))
+                        role_name = role.name if role else "Role Not Found"
+                    else:
+                        role_name = "Guild Not Found"
                     mapping_text += f"• {role_name} ({role_id}) → {game_name}\n"
                 
                 if len(role_mappings) > 5:
@@ -537,18 +556,6 @@ class Zerolivesleft(commands.Cog):
         except Exception as e:
             embed.add_field(name="Role Mappings Error", value=f"❌ Error: {e}", inline=False)
         
-        # Check all config keys
-        try:
-            all_config = await self.config.guild(ctx.guild).all()
-            config_keys = [k for k in all_config.keys() if 'role' in k.lower() or 'rc_' in k.lower()]
-            embed.add_field(
-                name="Relevant Config Keys Found",
-                value=f"`{'`, `'.join(config_keys)}`" if config_keys else "None found",
-                inline=False
-            )
-        except Exception as e:
-            embed.add_field(name="Config Keys Error", value=f"❌ Error: {e}", inline=False)
-        
         await ctx.send(embed=embed)
 
     @django_group.command(name="syncgames")
@@ -558,8 +565,8 @@ class Zerolivesleft(commands.Cog):
         if not webhook_url:
             return await ctx.send("❌ Django webhook URL not configured. Use `!zll django setwebhook <url>` first.")
         
-        # Check if there are any role mappings configured
-        role_mappings = await self.config.guild(ctx.guild).rc_role_mappings()
+        # Check if there are any role mappings configured (in GLOBAL config)
+        role_mappings = await self.config.gc_game_role_mappings()
         if not role_mappings:
             return await ctx.send(
                 "❌ No game role mappings found. Use `!zll rolecounter addmapping @Role GameName` to add game roles first.\n"
