@@ -443,7 +443,7 @@ class ActivityTrackingLogic:
             log.error(f"ActivityTracking: Exception updating prestige: {str(e)}")
 
     async def _update_website_activity(self, guild, member, total_minutes_to_send):
-    """Send voice activity and message count updates to the Django website."""
+        """Send voice activity and message count updates to the Django website."""
     guild_settings = await self.config.guild(guild).all()
     api_url = guild_settings.get("at_api_url")
     api_key = guild_settings.get("at_api_key")
