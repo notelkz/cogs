@@ -40,6 +40,13 @@ class Zerolivesleft(commands.Cog):
         }
         self.config.register_global(**default_global)
 
+        # Register default guild config including new Django webhook settings
+        default_guild = {
+            "django_webhook_url": None,
+            "django_webhook_secret": None
+        }
+        self.config.register_guild(**default_guild)
+
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
         self.web_runner = None
@@ -398,6 +405,62 @@ class Zerolivesleft(commands.Cog):
     @webserver_group.command(name="showconfig")
     async def webserver_show_config(self, ctx): 
         await self.web_manager.show_config_command(ctx)
+
+    # =============================================================================
+    # DJANGO INTEGRATION COMMANDS
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="django")
+    async def django_group(self, ctx: commands.Context):
+        """Django website integration commands."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @django_group.command(name="setwebhook")
+    async def django_set_webhook(self, ctx, url: str):
+        """Set Django webhook URL for role sync."""
+        await self.config.guild(ctx.guild).django_webhook_url.set(url)
+        await ctx.send(f"Django webhook URL set to: {url}")
+
+    @django_group.command(name="setwebhooksecret")
+    async def django_set_webhook_secret(self, ctx, *, secret: str):
+        """Set Django webhook secret for secure communication."""
+        await self.config.guild(ctx.guild).django_webhook_secret.set(secret)
+        await ctx.send("Django webhook secret has been set.")
+        try:
+            await ctx.message.delete()
+        except discord.HTTPException:
+            pass
+
+    @django_group.command(name="syncall")
+    async def django_sync_all_roles(self, ctx):
+        """Manually sync all Discord roles to Django."""
+        webhook_url = await self.config.guild(ctx.guild).django_webhook_url()
+        if not webhook_url:
+            return await ctx.send("❌ Django webhook URL not configured. Use `!zll django setwebhook <url>` first.")
+        
+        webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
+        
+        try:
+            await self.web_manager._sync_all_roles_to_django(ctx.guild, webhook_url, webhook_secret)
+            await ctx.send("✅ Successfully synced all roles to Django!")
+        except Exception as e:
+            await ctx.send(f"❌ Error syncing roles: {e}")
+
+    @django_group.command(name="syncgames")
+    async def django_sync_game_roles(self, ctx):
+        """Manually sync only game roles to Django based on role mappings."""
+        webhook_url = await self.config.guild(ctx.guild).django_webhook_url()
+        if not webhook_url:
+            return await ctx.send("❌ Django webhook URL not configured. Use `!zll django setwebhook <url>` first.")
+        
+        webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
+        
+        try:
+            await self.web_manager._sync_game_roles_to_django(ctx.guild, webhook_url, webhook_secret)
+            await ctx.send("✅ Successfully synced game roles to Django!")
+        except Exception as e:
+            await ctx.send(f"❌ Error syncing game roles: {e}")
 
     # =============================================================================
     # ROLE COUNTER COMMANDS
