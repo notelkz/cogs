@@ -153,6 +153,26 @@ class Zerolivesleft(commands.Cog):
         await self.activity_tracking_logic.handle_reaction_add(reaction, user)
 
     # =============================================================================
+    # ROLESYNC LISTENERS (Role Counting and Django Integration)
+    # =============================================================================
+
+    @commands.Cog.listener()
+    async def on_guild_role_create(self, role):
+        """Auto-sync when a new role is created."""
+        webhook_url = await self.config.guild(role.guild).django_webhook_url()
+        if webhook_url:
+            webhook_secret = await self.config.guild(role.guild).django_webhook_secret()
+            await self.web_manager._sync_all_roles_to_django(role.guild, webhook_url, webhook_secret)
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role):
+        """Auto-sync when a role is deleted."""
+        webhook_url = await self.config.guild(role.guild).django_webhook_url()
+        if webhook_url:
+            webhook_secret = await self.config.guild(role.guild).django_webhook_secret()
+            await self.web_manager._sync_all_roles_to_django(role.guild, webhook_url, webhook_secret)
+
+    # =============================================================================
     # MAIN COMMAND GROUPS
     # =============================================================================
 
