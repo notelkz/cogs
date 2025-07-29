@@ -287,6 +287,219 @@ class WebApiManager:
         except discord.Forbidden:
             await ctx.send(f"**Web Server Configuration**\n- Host: `{host}`\n- Port: `{port}`\n- API Key: `{'Set' if api_key else 'Not set'}`")
 
+# Add this to your webapi.py file in the WebApiManager class
+
+def register_all_routes(self):
+    """Register all web API routes from various functionalities."""
+    log.info("Registering all web API routes for Zerolivesleft cog.")
+    try:
+        # --- Your existing routes ---
+        self.web_app.router.add_get("/health", self.health_check_handler)
+        self.web_app.router.add_get("/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler)
+        
+        # --- Application Routes (from application_roles.py) ---
+        self.web_app.router.add_post("/api/applications/update-status", self.cog.application_roles_logic.handle_application_update)
+        self.web_app.router.add_post("/api/applications/submitted", self.cog.application_roles_logic.handle_application_submitted)
+
+        # --- ActivityTracker Routes (handled within this manager) ---
+        self.web_app.router.add_post("/api/assign-initial-role", self.assign_initial_role_handler)
+        self.web_app.router.add_get("/api/get-military-ranks", self.get_military_ranks_handler)
+        self.web_app.router.add_get("/api/get-all-activity", self.get_all_activity_handler)
+
+        # --- User Profile Routes (from user_profile.py) ---
+        self.web_app.router.add_get("/api/user/{user_id}/details", self.get_user_details_handler)
+
+        # --- NEW: Django Role Sync Webhook ---
+        self.web_app.router.add_post("/api/django/roles/sync", self.sync_roles_to_django_handler)
+
+        log.info(f"Successfully registered routes for web_app.")
+    except RuntimeError as e:
+        log.critical(f"Failed to register web routes: {e}. Router might be frozen prematurely. This is a critical error.", exc_info=True)
+    except Exception as e:
+        log.critical(f"An unexpected error occurred during web route registration: {e}", exc_info=True)
+
+async def sync_roles_to_django_handler(self, request: web.Request):
+    """Webhook endpoint to send role updates to Django when roles are created/deleted/modified."""
+    try:
+        await self._authenticate_request_webserver_key(request)
+    except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+        return e
+
+    try:
+        data = await request.json()
+        action = data.get('action')  # 'sync_all' or 'sync_game_roles'
+        guild_id = data.get('guild_id')
+        
+        if not guild_id:
+            raise web.HTTPBadRequest(reason="guild_id is required")
+            
+        guild = self.cog.bot.get_guild(int(guild_id))
+        if not guild:
+            raise web.HTTPNotFound(reason=f"Guild {guild_id} not found")
+
+        # Get Django webhook URL from config
+        django_webhook_url = await self.cog.config.guild(guild).django_webhook_url()
+        django_webhook_secret = await self.cog.config.guild(guild).django_webhook_secret()
+        
+        if not django_webhook_url:
+            raise web.HTTPInternalServerError(reason="Django webhook URL not configured")
+
+        if action == 'sync_all':
+            await self._sync_all_roles_to_django(guild, django_webhook_url, django_webhook_secret)
+        elif action == 'sync_game_roles':
+            await self._sync_game_roles_to_django(guild, django_webhook_url, django_webhook_secret)
+        else:
+            raise web.HTTPBadRequest(reason="Invalid action. Use 'sync_all' or 'sync_game_roles'")
+
+        return web.json_response({"status": "success", "message": f"Roles synced to Django"})
+        
+    except Exception as e:
+        log.error(f"Error in sync_roles_to_django_handler: {e}")
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+async def _sync_all_roles_to_django(self, guild, webhook_url, webhook_secret=None):
+    """Sync all Discord roles to Django."""
+    import aiohttp
+    import hmac
+    import hashlib
+    import json
+    
+    roles_data = []
+    for role in guild.roles:
+        if role.name != '@everyone':  # Skip @everyone role
+            roles_data.append({
+                'id': str(role.id),
+                'name': role.name,
+                'description': f"Discord role from {guild.name}",
+                'color': f"#{role.color.value:06x}",
+                'position': role.position,
+                'permissions': role.permissions.value
+            })
+    
+    payload = {
+        'action': 'sync_all',
+        'guild_id': str(guild.id),
+        'guild_name': guild.name,
+        'roles': roles_data
+    }
+    
+    await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
+
+async def _sync_game_roles_to_django(self, guild, webhook_url, webhook_secret=None):
+    """Sync only game-related roles to Django based on role mappings."""
+    import aiohttp
+    import hmac
+    import hashlib
+    import json
+    
+    # Get role mappings from your existing role counting logic
+    role_mappings = await self.cog.config.guild(guild).rc_role_mappings()
+    
+    game_roles_data = []
+    for role_id_str, game_name in role_mappings.items():
+        role = guild.get_role(int(role_id_str))
+        if role:
+            game_roles_data.append({
+                'id': str(role.id),
+                'name': role.name,
+                'game_name': game_name,
+                'description': f"Game role for {game_name}",
+                'color': f"#{role.color.value:06x}",
+                'member_count': len(role.members)
+            })
+    
+    payload = {
+        'action': 'sync_games',
+        'guild_id': str(guild.id),
+        'guild_name': guild.name,
+        'game_roles': game_roles_data
+    }
+    
+    await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
+
+async def _send_webhook_to_django(self, payload, webhook_url, webhook_secret=None):
+    """Send webhook payload to Django."""
+    import aiohttp
+    import hmac
+    import hashlib
+    import json
+    
+    headers = {'Content-Type': 'application/json'}
+    
+    # Add signature if secret is provided
+    if webhook_secret:
+        payload_json = json.dumps(payload)
+        signature = hmac.new(
+            webhook_secret.encode(),
+            payload_json.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        headers['X-Discord-Signature'] = signature
+    
+    try:
+        async with self.cog.session.post(webhook_url, json=payload, headers=headers) as resp:
+            if resp.status == 200:
+                log.info(f"Successfully sent webhook to Django: {payload['action']}")
+            else:
+                log.error(f"Django webhook failed with status {resp.status}")
+                response_text = await resp.text()
+                log.error(f"Django response: {response_text}")
+    except Exception as e:
+        log.error(f"Error sending webhook to Django: {e}")
+
+# Add these new commands to your main cog file (__init__.py)
+@zerolivesleft_group.group(name="django")
+async def django_group(self, ctx: commands.Context):
+    """Django website integration commands."""
+    if ctx.invoked_subcommand is None:
+        await ctx.send_help(ctx.command)
+
+@django_group.command(name="setwebhook")
+async def django_set_webhook(self, ctx, url: str):
+    """Set Django webhook URL for role sync."""
+    await self.config.guild(ctx.guild).django_webhook_url.set(url)
+    await ctx.send(f"Django webhook URL set to: {url}")
+
+@django_group.command(name="setwebhooksecret")
+async def django_set_webhook_secret(self, ctx, *, secret: str):
+    """Set Django webhook secret for secure communication."""
+    await self.config.guild(ctx.guild).django_webhook_secret.set(secret)
+    await ctx.send("Django webhook secret has been set.")
+    try:
+        await ctx.message.delete()
+    except discord.HTTPException:
+        pass
+
+@django_group.command(name="syncall")
+async def django_sync_all_roles(self, ctx):
+    """Manually sync all Discord roles to Django."""
+    webhook_url = await self.config.guild(ctx.guild).django_webhook_url()
+    if not webhook_url:
+        return await ctx.send("❌ Django webhook URL not configured. Use `!zll django setwebhook <url>` first.")
+    
+    webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
+    
+    try:
+        await self.web_manager._sync_all_roles_to_django(ctx.guild, webhook_url, webhook_secret)
+        await ctx.send("✅ Successfully synced all roles to Django!")
+    except Exception as e:
+        await ctx.send(f"❌ Error syncing roles: {e}")
+
+@django_group.command(name="syncgames")
+async def django_sync_game_roles(self, ctx):
+    """Manually sync only game roles to Django based on role mappings."""
+    webhook_url = await self.config.guild(ctx.guild).django_webhook_url()
+    if not webhook_url:
+        return await ctx.send("❌ Django webhook URL not configured. Use `!zll django setwebhook <url>` first.")
+    
+    webhook_secret = await self.config.guild(ctx.guild).django_webhook_secret()
+    
+    try:
+        await self.web_manager._sync_game_roles_to_django(ctx.guild, webhook_url, webhook_secret)
+        await ctx.send("✅ Successfully synced game roles to Django!")
+    except Exception as e:
+        await ctx.send(f"❌ Error syncing game roles: {e}")
+        
 # Replace the existing function with this one
 async def get_user_details_handler(self, request: web.Request):
     log.info("--- BOT DEBUG: /api/user/.../details endpoint hit ---")
