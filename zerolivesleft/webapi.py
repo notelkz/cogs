@@ -38,6 +38,9 @@ class WebApiManager:
 
             # --- User Profile Routes (from user_profile.py) ---
             self.web_app.router.add_get("/api/user/{user_id}/details", self.get_user_details_handler)
+            
+            # *** NEW: Django Profile Route ***
+            self.web_app.router.add_get("/api/user/{user_id}/", self.get_user_profile_handler)
 
             # --- NEW: Django Role Sync Webhook ---
             self.web_app.router.add_post("/api/django/roles/sync", self.sync_roles_to_django_handler)
@@ -301,6 +304,88 @@ class WebApiManager:
             "roles": role_data
         }
         log.info(f"BOT DEBUG: Successfully built user_data. Returning 200 OK.")
+        return web.json_response(user_data)
+
+    async def get_user_profile_handler(self, request: web.Request):
+        """Get user profile data including roles - the endpoint Django expects."""
+        log.info("--- BOT DEBUG: /api/user/.../ endpoint hit ---")
+        
+        try:
+            await self._authenticate_request_webserver_key(request)
+        except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
+            log.error("BOT DEBUG: FAILED. Authentication failed.")
+            return e
+
+        user_id_str = request.match_info.get("user_id")
+        log.info(f"BOT DEBUG: Received request for user ID: {user_id_str}")
+        
+        try:
+            user_id = int(user_id_str)
+        except (ValueError, TypeError):
+            log.error("BOT DEBUG: FAILED. Invalid user_id format.")
+            raise web.HTTPBadRequest(reason="Invalid user_id format.")
+
+        # Get the main guild
+        guild_id_str = os.environ.get("DISCORD_GUILD_ID")
+        if not guild_id_str:
+            log.error("BOT DEBUG: FAILED. DISCORD_GUILD_ID not set.")
+            raise web.HTTPInternalServerError(reason="DISCORD_GUILD_ID not configured.")
+        
+        guild = self.cog.bot.get_guild(int(guild_id_str))
+        if not guild:
+            log.error(f"BOT DEBUG: FAILED. Guild {guild_id_str} not found.")
+            raise web.HTTPNotFound(reason=f"Guild not found.")
+
+        log.info(f"BOT DEBUG: Found guild: '{guild.name}' ({guild.id})")
+
+        member = guild.get_member(user_id)
+        if not member:
+            log.warning(f"BOT DEBUG: Member {user_id} not found in guild.")
+            raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
+
+        log.info(f"BOT DEBUG: Found member: '{member.name}' ({member.id})")
+
+        # Get activity data from the activity tracking system
+        voice_minutes = 0
+        message_count = 0
+        
+        try:
+            if hasattr(self.cog, 'activity_tracking_logic') and self.cog.activity_tracking_logic:
+                voice_minutes = await self.cog.activity_tracking_logic._get_user_voice_minutes(guild, user_id)
+                message_count = await self.cog.activity_tracking_logic._get_user_message_count(guild, user_id)
+                log.info(f"BOT DEBUG: Got activity data from tracking logic - Voice: {voice_minutes}, Messages: {message_count}")
+            else:
+                # Fallback to config data
+                user_activity = await self.cog.config.guild(guild).at_user_activity()
+                voice_minutes = user_activity.get(str(user_id), 0)
+                log.info(f"BOT DEBUG: Got activity data from config fallback - Voice: {voice_minutes}")
+        except Exception as e:
+            log.error(f"BOT DEBUG: Error getting activity data: {e}")
+
+        # Build role data
+        role_data = [
+            {
+                "id": str(role.id), 
+                "name": role.name, 
+                "color": f"#{role.color.value:06x}"
+            }
+            for role in member.roles if role.name != "@everyone"
+        ]
+        
+        user_data = {
+            "id": str(member.id),
+            "username": member.name,
+            "email": None,  # Not available from Discord
+            "discord_id": str(member.id),
+            "current_role": "recruit",  # You can get this from your activity tracking
+            "voice_time_minutes": voice_minutes,
+            "message_count": message_count,  # This should now work!
+            "display_name": member.display_name,
+            "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
+            "roles": role_data
+        }
+        
+        log.info(f"BOT DEBUG: Successfully built user_data with {len(role_data)} roles, {voice_minutes} voice minutes, {message_count} messages. Returning 200 OK.")
         return web.json_response(user_data)
 
     # --- NEW DJANGO SYNC HANDLERS ---
