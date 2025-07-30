@@ -210,25 +210,27 @@ class ActivityTrackingLogic:
         self.config.register_guild(**default_guild)
 
     async def _migrate_existing_users(self, guild):
-    """One-time migration to estimate message counts for existing users"""
-    migration_key = f"at_message_count_migrated_{guild.id}"
-    
-    if await self.config.custom("migrations", migration_key)():
-        return  # Already migrated
-    
-    # Get all users with XP
-    user_data = await self.config.guild(guild).at_user_data()
-    message_xp = await self.config.guild(guild).at_message_xp()
-    
-    if message_xp > 0:
-        async with self.config.guild(guild).at_user_message_count() as user_message_count:
-            for user_id, data in user_data.items():
-                if user_id not in user_message_count:
-                    # Rough estimate: total_xp / message_xp
-                    estimated_messages = data.get("xp", 0) // message_xp
-                    user_message_count[user_id] = estimated_messages
-    
-    await self.config.custom("migrations", migration_key).set(True)
+        """One-time migration to estimate message counts for existing users"""
+        migration_key = f"at_message_count_migrated_{guild.id}"
+        
+        if await self.config.custom("migrations", migration_key)():
+            return  # Already migrated
+        
+        # Get all users with XP
+        user_data = await self.config.guild(guild).at_user_data()
+        message_xp = await self.config.guild(guild).at_message_xp()
+        
+        if message_xp > 0:
+            async with self.config.guild(guild).at_user_message_count() as user_message_count:
+                for user_id, data in user_data.items():
+                    if user_id not in user_message_count:
+                        # Rough estimate: total_xp / message_xp
+                        estimated_messages = data.get("xp", 0) // message_xp
+                        user_message_count[user_id] = estimated_messages
+                        log.info(f"ActivityTracking: Migrated {estimated_messages} estimated messages for user {user_id}")
+        
+        await self.config.custom("migrations", migration_key).set(True)
+        log.info(f"ActivityTracking: Message count migration completed for guild {guild.id}")
 
     def start_tasks(self):
         """Starts periodic tasks for role checking and activity updates."""
