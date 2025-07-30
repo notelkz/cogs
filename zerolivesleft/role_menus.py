@@ -1,5 +1,5 @@
 # zerolivesleft-alpha/role_menus.py
-# Complete, corrected file
+# Complete, corrected file with update_all_menus method
 
 import discord
 from redbot.core import commands, Config
@@ -237,7 +237,7 @@ class RoleMenuLogic:
             return
 
         if not menu_data.get("channel_id") or not menu_data.get("message_id"):
-            if not silent: await ctx.send(f"This menu hasn't been posted yet. Use `!zll roles post {menu_name}` first.")
+            if not silent: await ctx.send(f"This menu hasn't been posted yet. Use `!zll rolemenu post {menu_name}` first.")
             return
 
         components = await self._build_menu_components(ctx.guild, menu_name)
@@ -260,6 +260,90 @@ class RoleMenuLogic:
             if not silent: await ctx.send(f"I don't have permission to edit messages in the destination channel.")
         except Exception as e:
             if not silent: await ctx.send(f"An unexpected error occurred while updating the menu: {e}")
+
+    async def update_all_menus(self, ctx: commands.Context):
+        """Updates all existing role menu messages in the guild."""
+        menus = await self.config.guild(ctx.guild).role_menus()
+        if not menus:
+            return await ctx.send("No role menus have been created yet.")
+        
+        # Filter to only menus that have been posted (have message_id and channel_id)
+        posted_menus = {name: data for name, data in menus.items() 
+                       if data.get("message_id") and data.get("channel_id")}
+        
+        if not posted_menus:
+            return await ctx.send("No role menus have been posted yet. Use `!zll rolemenu post <menu_name>` to post them first.")
+        
+        await ctx.send(f"🔄 Updating {len(posted_menus)} posted role menu(s)...")
+        
+        success_count = 0
+        failure_count = 0
+        results = []
+        
+        for menu_name, menu_data in posted_menus.items():
+            try:
+                components = await self._build_menu_components(ctx.guild, menu_name)
+                if not components:
+                    results.append(f"❌ `{menu_name}`: Could not build components")
+                    failure_count += 1
+                    continue
+                
+                embed, view = components
+                channel = self.bot.get_channel(menu_data["channel_id"])
+                if not channel:
+                    results.append(f"❌ `{menu_name}`: Channel no longer exists")
+                    failure_count += 1
+                    continue
+                
+                message = await channel.fetch_message(menu_data["message_id"])
+                await message.edit(embed=embed, view=view)
+                results.append(f"✅ `{menu_name}`: Updated in {channel.mention}")
+                success_count += 1
+                
+            except discord.NotFound:
+                results.append(f"❌ `{menu_name}`: Message not found (may have been deleted)")
+                failure_count += 1
+            except discord.Forbidden:
+                results.append(f"❌ `{menu_name}`: No permission to edit message")
+                failure_count += 1
+            except Exception as e:
+                results.append(f"❌ `{menu_name}`: Unexpected error - {str(e)[:50]}...")
+                failure_count += 1
+        
+        # Create summary embed
+        embed = discord.Embed(
+            title="Role Menu Update Results",
+            color=discord.Color.green() if failure_count == 0 else discord.Color.orange(),
+        )
+        
+        embed.add_field(
+            name="Summary",
+            value=f"✅ Success: {success_count}\n❌ Failed: {failure_count}",
+            inline=False
+        )
+        
+        if results:
+            # Split results into chunks if too long
+            results_text = "\n".join(results)
+            if len(results_text) > 1024:
+                # Show first few results and indicate there are more
+                truncated_results = []
+                current_length = 0
+                for result in results:
+                    if current_length + len(result) + 1 > 900:  # Leave some room
+                        truncated_results.append(f"... and {len(results) - len(truncated_results)} more")
+                        break
+                    truncated_results.append(result)
+                    current_length += len(result) + 1
+                results_text = "\n".join(truncated_results)
+            
+            embed.add_field(
+                name="Details",
+                value=results_text,
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
     
     # This static command is preserved
     async def send_autoroles_menu(self, ctx, channel: discord.TextChannel = None):

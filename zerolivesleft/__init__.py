@@ -63,6 +63,8 @@ class Zerolivesleft(commands.Cog):
             "at_member_role_id": None,
             "at_military_ranks": [],
             "at_user_activity": {},
+            # Role Menus settings - THIS WAS MISSING!
+            "role_menus": {},
         }
         self.config.register_guild(**default_guild)
 
@@ -869,6 +871,10 @@ class Zerolivesleft(commands.Cog):
     @rolemenu_group.command(name="update")
     async def rolemenu_update(self, ctx, menu_name: str): 
         await self.role_menu_logic.update_menu_message(ctx, menu_name)
+
+    @rolemenu_group.command(name="updateall")
+    async def rolemenu_update_all(self, ctx): 
+        await self.role_menu_logic.update_all_menus(ctx)
 
     @rolemenu_group.command(name="autoroles")
     async def rolemenu_autoroles(self, ctx, channel: discord.TextChannel = None): 
