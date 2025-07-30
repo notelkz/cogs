@@ -507,12 +507,12 @@ class ActivityTrackingLogic:
 
     async def _get_user_message_count(self, guild, user_id):
         """Get actual message count for a user."""
-    try:
-        user_message_count = await self.config.guild(guild).at_user_message_count()
-        return user_message_count.get(str(user_id), 0)
-    except Exception as e:
-        log.error(f"ActivityTracking: Error getting message count for user {user_id}: {e}")
-        return 0
+        try:
+            user_message_count = await self.config.guild(guild).at_user_message_count()
+            return user_message_count.get(str(user_id), 0)
+        except Exception as e:
+            log.error(f"ActivityTracking: Error getting message count for user {user_id}: {e}")
+            return 0
 
     async def _notify_website_of_promotion(self, guild, discord_id, new_role_name):
         """Notify the website of a community role promotion."""
