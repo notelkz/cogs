@@ -372,34 +372,32 @@ class ActivityTrackingLogic:
     # --- MESSAGE XP TRACKING ---
 
     async def handle_message(self, message):
-        """Handle message for XP awards AND direct message counting."""
-        if message.author.bot or not message.guild:
-            return
-        
-        guild = message.guild
-        member = message.author
-        user_id = member.id
-        current_time = time.time()
-        
-        # NEW: Always count the message (no cooldown for counting)
+    """Handle message for XP awards AND direct message counting."""
+    log.info(f"ActivityTracking: handle_message called for {message.author.name} in {message.guild.name if message.guild else 'DM'}")
+    
+    if message.author.bot or not message.guild:
+        log.info(f"ActivityTracking: Skipping message - bot: {message.author.bot}, guild: {message.guild is not None}")
+        return
+    
+    guild = message.guild
+    member = message.author
+    user_id = member.id
+    current_time = time.time()
+    
+    log.info(f"ActivityTracking: Processing message from {member.name} ({user_id}) in {guild.name}")
+    
+    # NEW: Always count the message (no cooldown for counting)
+    try:
         async with self.config.guild(guild).at_user_message_count() as user_message_count:
             uid = str(user_id)
-            user_message_count[uid] = user_message_count.get(uid, 0) + 1
+            old_count = user_message_count.get(uid, 0)
+            user_message_count[uid] = old_count + 1
             new_count = user_message_count[uid]
-            log.debug(f"ActivityTracking: Message count for {member.name}: {new_count}")
-        
-        # XP award (with cooldown)
-        message_cooldown = await self.config.guild(guild).at_message_cooldown()
-        if user_id in self.message_cooldowns:
-            if current_time - self.message_cooldowns[user_id] < message_cooldown:
-                return  # Still on cooldown for XP, but message was still counted
-        
-        self.message_cooldowns[user_id] = current_time
-        
-        # Award XP for message
-        message_xp = await self.config.guild(guild).at_message_xp()
-        if message_xp > 0:
-            await self._add_xp(guild, member, message_xp, "message")
+            log.info(f"ActivityTracking: Message count for {member.name}: {old_count} -> {new_count}")
+    except Exception as e:
+        log.error(f"ActivityTracking: ERROR updating message count for {member.name}: {e}")
+    
+    # Rest of your XP logic...
 
     async def handle_reaction_add(self, reaction, user):
         """Handle reaction add for XP awards."""
