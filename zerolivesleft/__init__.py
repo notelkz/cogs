@@ -85,6 +85,19 @@ class Zerolivesleft(commands.Cog):
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
         self.activity_tracking_logic.start_tasks()
+        self.bot.loop.create_task(self._run_migrations())
+
+    async def _run_migrations(self):
+        """Run any necessary data migrations"""
+        await self.bot.wait_until_ready()
+        
+        # Run message count migration for all guilds
+        for guild in self.bot.guilds:
+            try:
+                if hasattr(self, 'activity_tracking_logic') and self.activity_tracking_logic:
+                    await self.activity_tracking_logic._migrate_existing_users(guild)
+            except Exception as e:
+                log.error(f"Migration failed for guild {guild.id}: {e}")
 
     async def initialize_persistent_views(self):
         await self.bot.wait_until_ready()
