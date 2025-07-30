@@ -181,6 +181,7 @@ class ActivityTrackingLogic:
             "at_promotion_threshold_hours": 10,  # Legacy, not used in dual system
             "at_promotion_channel_id": None,
             "at_military_ranks": [],
+            "at_user_message_count": {},
             "at_api_url": None,
             "at_api_key": None,
             "at_promotion_update_url": None,
@@ -207,6 +208,27 @@ class ActivityTrackingLogic:
         }
         
         self.config.register_guild(**default_guild)
+
+    async def _migrate_existing_users(self, guild):
+    """One-time migration to estimate message counts for existing users"""
+    migration_key = f"at_message_count_migrated_{guild.id}"
+    
+    if await self.config.custom("migrations", migration_key)():
+        return  # Already migrated
+    
+    # Get all users with XP
+    user_data = await self.config.guild(guild).at_user_data()
+    message_xp = await self.config.guild(guild).at_message_xp()
+    
+    if message_xp > 0:
+        async with self.config.guild(guild).at_user_message_count() as user_message_count:
+            for user_id, data in user_data.items():
+                if user_id not in user_message_count:
+                    # Rough estimate: total_xp / message_xp
+                    estimated_messages = data.get("xp", 0) // message_xp
+                    user_message_count[user_id] = estimated_messages
+    
+    await self.config.custom("migrations", migration_key).set(True)
 
     def start_tasks(self):
         """Starts periodic tasks for role checking and activity updates."""
@@ -348,27 +370,33 @@ class ActivityTrackingLogic:
     # --- MESSAGE XP TRACKING ---
 
     async def handle_message(self, message):
-        """Handle message for XP awards."""
-        if message.author.bot or not message.guild:
-            return
-        
-        guild = message.guild
-        member = message.author
-        user_id = member.id
-        current_time = time.time()
-        
-        # Check cooldown
-        message_cooldown = await self.config.guild(guild).at_message_cooldown()
-        if user_id in self.message_cooldowns:
-            if current_time - self.message_cooldowns[user_id] < message_cooldown:
-                return  # Still on cooldown
-        
-        self.message_cooldowns[user_id] = current_time
-        
-        # Award XP for message
-        message_xp = await self.config.guild(guild).at_message_xp()
-        if message_xp > 0:
-            await self._add_xp(guild, member, message_xp, "message")
+    if message.author.bot or not message.guild:
+        return
+    
+    guild = message.guild
+    member = message.author
+    user_id = member.id
+    current_time = time.time()
+    
+    # NEW: Always count the message (no cooldown for counting)
+    async with self.config.guild(guild).at_user_message_count() as user_message_count:
+        uid = str(user_id)
+        user_message_count[uid] = user_message_count.get(uid, 0) + 1
+        new_count = user_message_count[uid]
+        log.debug(f"ActivityTracking: Message count for {member.name}: {new_count}")
+    
+    # XP award (with cooldown)
+    message_cooldown = await self.config.guild(guild).at_message_cooldown()
+    if user_id in self.message_cooldowns:
+        if current_time - self.message_cooldowns[user_id] < message_cooldown:
+            return  # Still on cooldown for XP, but message was still counted
+    
+    self.message_cooldowns[user_id] = current_time
+    
+    # Award XP for message
+    message_xp = await self.config.guild(guild).at_message_xp()
+    if message_xp > 0:
+        await self._add_xp(guild, member, message_xp, "message")
 
     async def handle_reaction_add(self, reaction, user):
         """Handle reaction add for XP awards."""
