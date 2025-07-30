@@ -372,32 +372,34 @@ class ActivityTrackingLogic:
     # --- MESSAGE XP TRACKING ---
 
     async def handle_message(self, message):
-    """Handle message for XP awards AND direct message counting."""
-    log.info(f"ActivityTracking: handle_message called for {message.author.name} in {message.guild.name if message.guild else 'DM'}")
-    
-    if message.author.bot or not message.guild:
-        log.info(f"ActivityTracking: Skipping message - bot: {message.author.bot}, guild: {message.guild is not None}")
-        return
-    
-    guild = message.guild
-    member = message.author
-    user_id = member.id
-    current_time = time.time()
-    
-    log.info(f"ActivityTracking: Processing message from {member.name} ({user_id}) in {guild.name}")
-    
-    # NEW: Always count the message (no cooldown for counting)
-    try:
+        """Handle message for XP awards AND direct message counting."""
+        if message.author.bot or not message.guild:
+            return
+        
+        guild = message.guild
+        member = message.author
+        user_id = member.id
+        current_time = time.time()
+        
+        # NEW: Always count the message (no cooldown for counting)
         async with self.config.guild(guild).at_user_message_count() as user_message_count:
             uid = str(user_id)
-            old_count = user_message_count.get(uid, 0)
-            user_message_count[uid] = old_count + 1
+            user_message_count[uid] = user_message_count.get(uid, 0) + 1
             new_count = user_message_count[uid]
-            log.info(f"ActivityTracking: Message count for {member.name}: {old_count} -> {new_count}")
-    except Exception as e:
-        log.error(f"ActivityTracking: ERROR updating message count for {member.name}: {e}")
-    
-    # Rest of your XP logic...
+            log.debug(f"ActivityTracking: Message count for {member.name}: {new_count}")
+        
+        # XP award (with cooldown)
+        message_cooldown = await self.config.guild(guild).at_message_cooldown()
+        if user_id in self.message_cooldowns:
+            if current_time - self.message_cooldowns[user_id] < message_cooldown:
+                return  # Still on cooldown for XP, but message was still counted
+        
+        self.message_cooldowns[user_id] = current_time
+        
+        # Award XP for message
+        message_xp = await self.config.guild(guild).at_message_xp()
+        if message_xp > 0:
+            await self._add_xp(guild, member, message_xp, "message")
 
     async def handle_reaction_add(self, reaction, user):
         """Handle reaction add for XP awards."""
@@ -504,34 +506,13 @@ class ActivityTrackingLogic:
             log.error(f"ActivityTracking: Exception updating website activity: {str(e)}")
 
     async def _get_user_message_count(self, guild, user_id):
-        """Get total message count for a user from XP system data."""
-        try:
-            # Get message count from your XP tracking - you'll need to track this
-            # For now, we can estimate based on XP if you don't have direct message tracking
-            user_xp = await self.config.guild(guild).at_user_xp()
-            total_xp = user_xp.get(str(user_id), 0)
-            
-            # Get XP rates
-            message_xp = await self.config.guild(guild).at_message_xp()
-            voice_xp_rate = await self.config.guild(guild).at_voice_xp_rate()
-            reaction_xp = await self.config.guild(guild).at_reaction_xp()
-            voice_join_xp = await self.config.guild(guild).at_voice_join_xp()
-            
-            # Get voice minutes for this user
-            voice_minutes = await self._get_user_voice_minutes(guild, user_id)
-            voice_xp_earned = voice_minutes * voice_xp_rate
-            
-            # Estimate message count (this is rough - ideally you'd track messages directly)
-            if message_xp > 0:
-                # Assume most remaining XP comes from messages (rough estimate)
-                remaining_xp = max(0, total_xp - voice_xp_earned)
-                estimated_message_count = remaining_xp // message_xp
-                return max(0, estimated_message_count)
-            
-            return 0
-        except Exception as e:
-            log.error(f"ActivityTracking: Error getting message count for user {user_id}: {e}")
-            return 0
+        """Get actual message count for a user."""
+    try:
+        user_message_count = await self.config.guild(guild).at_user_message_count()
+        return user_message_count.get(str(user_id), 0)
+    except Exception as e:
+        log.error(f"ActivityTracking: Error getting message count for user {user_id}: {e}")
+        return 0
 
     async def _notify_website_of_promotion(self, guild, discord_id, new_role_name):
         """Notify the website of a community role promotion."""
