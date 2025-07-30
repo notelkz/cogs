@@ -201,8 +201,15 @@ class RoleMenuLogic:
         
         embed = discord.Embed(description="", color=menu_data.get("color", 0x2F3136))
         embed.set_footer(text=menu_data.get("footer", "Select your roles"))
-        if menu_data.get("image_url"):
-            embed.set_image(url=menu_data["image_url"])
+        
+        # More robust image URL handling
+        image_url = menu_data.get("image_url")
+        if image_url and image_url.strip():  # Check for non-empty string
+            try:
+                embed.set_image(url=image_url)
+            except Exception as e:
+                # Log the error but don't fail the entire menu
+                print(f"Warning: Failed to set image for menu {name}: {e}")
         
         view = ZeroRolesView(self, guild.id, name, menu_data)
         return embed, view
@@ -282,6 +289,11 @@ class RoleMenuLogic:
         
         for menu_name, menu_data in posted_menus.items():
             try:
+                # Debug: Check if image_url exists in the data
+                image_url = menu_data.get("image_url")
+                if image_url:
+                    print(f"DEBUG: Menu '{menu_name}' has image_url: {image_url}")
+                
                 components = await self._build_menu_components(ctx.guild, menu_name)
                 if not components:
                     results.append(f"❌ `{menu_name}`: Could not build components")
@@ -297,7 +309,10 @@ class RoleMenuLogic:
                 
                 message = await channel.fetch_message(menu_data["message_id"])
                 await message.edit(embed=embed, view=view)
-                results.append(f"✅ `{menu_name}`: Updated in {channel.mention}")
+                
+                # Add image info to success message
+                image_status = " (with image)" if image_url else " (no image)"
+                results.append(f"✅ `{menu_name}`: Updated in {channel.mention}{image_status}")
                 success_count += 1
                 
             except discord.NotFound:
@@ -342,6 +357,49 @@ class RoleMenuLogic:
                 value=results_text,
                 inline=False
             )
+        
+        await ctx.send(embed=embed)
+
+    async def debug_menu(self, ctx: commands.Context, menu_name: str):
+        """Debug a specific menu's configuration data."""
+        menu_name = menu_name.lower()
+        menu_data = await self._get_menu(ctx.guild, menu_name)
+        if not menu_data:
+            return await ctx.send(f"No menu named `{menu_name}` found.")
+        
+        embed = discord.Embed(
+            title=f"Debug Info: {menu_name}",
+            color=discord.Color.blue()
+        )
+        
+        # Show all configuration data
+        embed.add_field(name="Color", value=f"0x{menu_data.get('color', 0x2F3136):06X}", inline=True)
+        embed.add_field(name="Footer", value=menu_data.get('footer', 'None'), inline=True)
+        embed.add_field(name="Style", value=menu_data.get('style', 'secondary'), inline=True)
+        
+        image_url = menu_data.get('image_url')
+        embed.add_field(
+            name="Image URL", 
+            value=image_url if image_url else "None set", 
+            inline=False
+        )
+        
+        embed.add_field(name="Roles Count", value=len(menu_data.get('roles', [])), inline=True)
+        embed.add_field(name="Message ID", value=menu_data.get('message_id', 'Not posted'), inline=True)
+        embed.add_field(name="Channel ID", value=menu_data.get('channel_id', 'Not posted'), inline=True)
+        
+        # Show roles
+        roles_info = []
+        for role_info in menu_data.get('roles', []):
+            role = ctx.guild.get_role(role_info['role_id'])
+            role_name = role.name if role else "DELETED ROLE"
+            roles_info.append(f"• {role_info['label']} → @{role_name}")
+        
+        if roles_info:
+            roles_text = "\n".join(roles_info[:10])  # Show first 10
+            if len(roles_info) > 10:
+                roles_text += f"\n... and {len(roles_info) - 10} more"
+            embed.add_field(name="Roles", value=roles_text, inline=False)
         
         await ctx.send(embed=embed)
     

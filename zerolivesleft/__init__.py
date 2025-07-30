@@ -876,6 +876,10 @@ class Zerolivesleft(commands.Cog):
     async def rolemenu_update_all(self, ctx): 
         await self.role_menu_logic.update_all_menus(ctx)
 
+    @rolemenu_group.command(name="debug")
+    async def rolemenu_debug(self, ctx, menu_name: str): 
+        await self.role_menu_logic.debug_menu(ctx, menu_name)
+
     @rolemenu_group.command(name="autoroles")
     async def rolemenu_autoroles(self, ctx, channel: discord.TextChannel = None): 
         await self.role_menu_logic.send_autoroles_menu(ctx, channel)
