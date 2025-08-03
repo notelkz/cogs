@@ -899,10 +899,6 @@ class Zerolivesleft(commands.Cog):
     @approles_group.command(name="setadminpanelurl")
     async def approles_set_admin_panel_url(self, ctx: commands.Context, base_url: str):
         await self.application_roles_logic.set_admin_panel_url(ctx, base_url)
-    
-    @approles_group.command(name="move")
-    async def approles_manual_move(self, ctx, member: discord.Member, from_status: str, to_status: str):
-        await self.application_roles_logic.manual_move_user(ctx, member, from_status, to_status)
 
 async def setup(bot: Red):
     cog = Zerolivesleft(bot)
