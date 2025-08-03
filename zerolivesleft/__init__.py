@@ -884,6 +884,22 @@ class Zerolivesleft(commands.Cog):
     async def rolemenu_autoroles(self, ctx, channel: discord.TextChannel = None): 
         await self.role_menu_logic.send_autoroles_menu(ctx, channel)
 
+    @approles_group.command(name="setmoderatorschannel")
+    async def approles_set_moderators_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        await self.application_roles_logic.set_moderator_channel(ctx, channel)
+
+    @approles_group.command(name="setmoderatorrole")
+    async def approles_set_moderator_role(self, ctx: commands.Context, role: discord.Role):
+        await self.application_roles_logic.set_moderator_role(ctx, role)
+
+    @approles_group.command(name="setpingonlineonly")
+    async def approles_set_ping_online_only(self, ctx: commands.Context, online_only: bool):
+        await self.application_roles_logic.set_ping_online_only(ctx, online_only)
+
+    @approles_group.command(name="setadminpanelurl")
+    async def approles_set_admin_panel_url(self, ctx: commands.Context, base_url: str):
+        await self.application_roles_logic.set_admin_panel_url(ctx, base_url)
+
 async def setup(bot: Red):
     cog = Zerolivesleft(bot)
     await bot.add_cog(cog)
