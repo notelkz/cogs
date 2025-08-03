@@ -36,7 +36,7 @@ class ApplicationPingLogic:
             
             # Application tracking
             ap_pending_applications={},        # Track pending applications {app_id: {user_id, submitted_at, etc}}
-            ap_processed_applications=set(),   # Track processed applications to avoid duplicates
+            ap_processed_applications=[],      # Track processed applications to avoid duplicates (LIST not set)
             ap_last_startup_check=None,        # Last time we did a startup check
         )
         
@@ -241,7 +241,8 @@ class ApplicationPingLogic:
         
         # Mark as processed to avoid duplicates
         async with self.config.ap_processed_applications() as processed:
-            processed.add(application_id)
+            if application_id not in processed:
+                processed.append(application_id)
         
         # Send the notification
         try:
