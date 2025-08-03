@@ -1,4 +1,759 @@
-# Complete clean application_roles.py with join history tracking and moderator notifications
+embed.add_field(
+                name="⏱️ How long does this take?",
+                value="Applications are usually reviewed within 24-48 hours. We'll ping you here as soon as we have news!",
+                inline=False
+            )
+            embed.set_footer(text="Thanks for applying! 🎉")
+            await channel.send(content=member.mention, embed=embed)
+            log.info(f"Sent 'Application Received' embed to #enlistment ({channel.name}) for {member.name}.")
+
+        log.info(f"Successfully moved {member.name} from DMZ to Enlistment after application submission")
+        log.info(f"New roles: {[role.name for role in member.roles]}")
+
+    async def handle_application_update(self, request):
+        """Handle application approval/rejection updates from Django"""
+        log.info("Application update endpoint called")
+        try:
+            body_text = await request.text()
+            log.info(f"Request headers: {dict(request.headers)}")
+            log.info(f"Request body: {body_text}")
+            
+            api_key = request.headers.get('Authorization', '').replace('Token ', '')
+            expected_key = await self.config.ar_api_key()
+            
+            if not api_key or api_key != expected_key:
+                log.warning(f"API key validation failed for application update")
+                return web.json_response({"error": "Unauthorized"}, status=401)
+                
+            data = await request.json()
+            log.info(f"Processing application update: {data}")
+            self.cog.bot.loop.create_task(self.process_role_update(data))
+            return web.json_response({"success": True, "message": "Request received."})
+        except Exception as e:
+            log.error(f"Error processing application update request: {e}", exc_info=True)
+            return web.json_response({"error": f"Error: {str(e)}"}, status=400)
+
+    async def process_role_update(self, data: dict):
+        """Process application approval/rejection"""
+        discord_id = data.get("discord_id")
+        status = data.get("status")
+        app_data = data.get("application_data", {})
+        
+        if not all([discord_id, status]): 
+            log.error(f"Missing required data in process_role_update: discord_id={discord_id}, status={status}")
+            return
+
+        default_guild_id = await self.config.ar_default_guild_id()
+        if not default_guild_id: 
+            log.error("No default guild configured for role updates")
+            return
+        
+        guild = self.bot.get_guild(int(default_guild_id))
+        if not guild: 
+            log.error(f"Could not find guild with ID {default_guild_id}")
+            return
+        
+        member = guild.get_member(int(discord_id))
+        if not member: 
+            log.error(f"Could not find member with ID {discord_id} in guild {guild.name}")
+            return
+
+        log.info(f"Processing role update for {member.name} with status {status}")
+
+        pending_role = guild.get_role(int(await self.config.ar_pending_role_id() or 0))
+        unverified_role = guild.get_role(int(await self.config.ar_unverified_role_id() or 0))
+
+        if status == "rejected":
+            log.info(f"Application rejected for {member.name}. Moving back to DMZ and kicking.")
+            
+            # Send notification before kicking
+            await self._send_notification(guild, member, "Application Rejected", 
+                f"{member.mention}, unfortunately your application has been rejected. You will be removed from the server.", 
+                discord.Color.red())
+            
+            roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
+            if roles_to_remove: 
+                await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
+                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
+            
+            # Try to DM them before kicking
+            try:
+                await member.send(
+                    f"Your application to {guild.name} has been rejected. You have been removed from the server."
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                log.warning(f"Could not DM {member.name} about application rejection.")
+
+            await member.kick(reason="Application Rejected.")
+            log.info(f"Kicked {member.name} due to rejected application")
+            return
+
+        if status == "approved":
+            log.info(f"Application approved for {member.name}. Moving from Enlistment to full server access.")
+            
+            # Send notification first
+            await self._send_notification(guild, member, "Application Approved", 
+                f"🎉 {member.mention}, your application has been **APPROVED**! Welcome to the community!", 
+                discord.Color.green())
+            
+            roles_to_add = []
+            roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
+
+            if member_role_id := await self.config.ar_member_role_id():
+                if role := guild.get_role(int(member_role_id)): 
+                    roles_to_add.append(role)
+                    log.info(f"Adding member role: {role.name}")
+            
+            if region_code := app_data.get("region"):
+                region_roles = await self.config.ar_region_roles()
+                log.info(f"Checking region role for {region_code.upper()}. Available mappings: {region_roles}")
+                if region_role_id := region_roles.get(region_code.upper()):
+                    if role := guild.get_role(int(region_role_id)): 
+                        roles_to_add.append(role)
+                        log.info(f"Adding region role: {role.name}")
+            
+            for role_type in ["platform_role_ids", "game_role_ids"]:
+                role_ids = app_data.get(role_type, [])
+                log.info(f"Processing {role_type}: {role_ids}")
+                for role_id in role_ids:
+                    if role_id and (role := guild.get_role(int(role_id))): 
+                        roles_to_add.append(role)
+                        log.info(f"Adding {role_type.split('_')[0]} role: {role.name}")
+            
+            if roles_to_add: 
+                await member.add_roles(*roles_to_add, reason="Application Approved - full server access granted")
+                log.info(f"Added roles: {[r.name for r in roles_to_add]}")
+            if roles_to_remove: 
+                await member.remove_roles(*roles_to_remove, reason="Application Approved - removing pending/unverified roles")
+                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
+            
+            # Send success message to main welcome channel ONLY if it's configured and different from DMZ
+            welcome_channel_id = await self.config.ar_welcome_channel_id()
+            unverified_channel_id = await self.config.ar_unverified_channel_id()
+            
+            # Only send welcome message if:
+            # 1. Welcome channel is configured
+            # 2. Welcome channel is different from the unverified/DMZ channel
+            # 3. Member can actually see the welcome channel
+            if (welcome_channel_id and 
+                welcome_channel_id != unverified_channel_id and 
+                (channel := guild.get_channel(int(welcome_channel_id)))):
+                
+                # Check if member can see the channel
+                if channel.permissions_for(member).read_messages:
+                    embed = discord.Embed(
+                        title="🎉 Application approved! Welcome to the community!",
+                        description=(
+                            f"Awesome news, {member.mention}! Your application has been **approved**! 🎊\n\n"
+                            f"**You now have access to:**\n"
+                            f"🎮 All game channels and voice rooms\n"
+                            f"💬 Community discussions and events\n"
+                            f"🎯 Everything Zero Lives Left has to offer!\n\n"
+                            f"Welcome to the family!"
+                        ),
+                        color=discord.Color.green()
+                    )
+                    if guild.icon:
+                        embed.set_thumbnail(url=guild.icon.url)
+                    embed.add_field(
+                        name="Ready to get started?",
+                        value="Explore the channels, introduce yourself, and jump into some games with everyone!",
+                        inline=False
+                    )
+                    embed.set_footer(text="Welcome to Zero Lives Left! 🚀")
+                    await channel.send(content=member.mention, embed=embed)
+                    log.info(f"Sent 'Application Approved' embed to main welcome channel ({channel.name}) for {member.name}.")
+                else:
+                    log.warning(f"Member {member.name} cannot see welcome channel {channel.name} - skipping welcome message")
+            else:
+                if welcome_channel_id == unverified_channel_id:
+                    log.info(f"Welcome channel is same as DMZ channel - skipping welcome message for {member.name}")
+                else:
+                    log.info(f"No appropriate welcome channel configured for approved members - skipping welcome message for {member.name}")
+
+            log.info(f"Role update complete for {member.name} - they now have full server access")
+
+    async def _send_notification(self, guild: discord.Guild, member: discord.Member, title: str, message: str, color: discord.Color):
+        """Send a notification to the configured notifications channel"""
+        notifications_channel_id = await self.config.ar_notifications_channel_id()
+        if notifications_channel_id and (channel := guild.get_channel(int(notifications_channel_id))):
+            embed = discord.Embed(title=title, description=message, color=color)
+            embed.set_footer(text=f"User: {member.name}#{member.discriminator} ({member.id})")
+            await channel.send(embed=embed)
+            log.info(f"Sent notification to {channel.name}: {title} for {member.name}")
+
+    # Moderator notification configuration methods
+    async def set_moderator_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel where moderator notifications are sent for new applications"""
+        await self.config.ar_moderator_channel_id.set(channel.id)
+        await ctx.send(f"Moderator notifications channel set to {channel.mention}")
+        log.info(f"Moderator notifications channel set to {channel.name} ({channel.id})")
+
+    async def set_moderator_role(self, ctx, role: discord.Role):
+        """Set the role to ping when new applications are submitted"""
+        await self.config.ar_moderator_role_id.set(role.id)
+        await ctx.send(f"Moderator role set to {role.mention}")
+        log.info(f"Moderator role set to {role.name} ({role.id})")
+
+    async def set_ping_online_only(self, ctx, online_only: bool):
+        """Set whether to ping only online moderators or all moderators"""
+        await self.config.ar_ping_online_only.set(online_only)
+        status = "only online moderators" if online_only else "all moderators"
+        await ctx.send(f"Moderator pinging set to: {status}")
+        log.info(f"Moderator ping setting: online_only={online_only}")
+
+    async def set_admin_panel_url(self, ctx, base_url: str):
+        """Set the base URL for the Django admin panel"""
+        # Ensure URL ends with a slash
+        if not base_url.endswith('/'):
+            base_url += '/'
+        
+        await self.config.ar_admin_panel_base_url.set(base_url)
+        await ctx.send(f"Admin panel base URL set to: {base_url}")
+        log.info(f"Admin panel base URL set to: {base_url}")
+
+    # Self-service status check command
+    async def check_application_status(self, ctx, member: discord.Member = None):
+        """Check application status for yourself or another member"""
+        target = member or ctx.author
+        
+        # Only allow checking others if user has manage roles permission
+        if member and not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You can only check your own application status.", ephemeral=True)
+            return
+        
+        api_url = await self.config.ar_api_url()
+        api_key = await self.config.ar_api_key()
+        
+        if not api_url or not api_key:
+            await ctx.send("Application system is not configured.", ephemeral=True)
+            return
+        
+        try:
+            endpoint = f"{api_url.rstrip('/')}/api/applications/check/{target.id}/"
+            headers = {"Authorization": f"Token {api_key}"}
+            
+            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    status = data.get("status", "none")
+                    submission_date = data.get("submitted_date")
+                    
+                    embed = discord.Embed(
+                        title=f"Application Status for {target.display_name}",
+                        color=discord.Color.blue()
+                    )
+                    
+                    status_messages = {
+                        "pending": "🟡 **Pending** - Your application is under review (you're in #enlistment)",
+                        "approved": "🟢 **Approved** - Your application has been approved! (you have full access)",
+                        "rejected": "🔴 **Rejected** - Your application was not approved",
+                        "none": "⚪ **No Application** - No application found (you're in #dmz)"
+                    }
+                    
+                    embed.add_field(
+                        name="Status",
+                        value=status_messages.get(status, f"❓ **Unknown** - {status}"),
+                        inline=False
+                    )
+                    
+                    if submission_date:
+                        embed.add_field(
+                            name="Submitted",
+                            value=submission_date,
+                            inline=True
+                        )
+                    
+                    if status == "none":
+                        embed.add_field(
+                            name="Next Steps",
+                            value="[Submit an application here](https://zerolivesleft.net/apply/)",
+                            inline=False
+                        )
+                    elif status == "rejected":
+                        embed.add_field(
+                            name="Next Steps",
+                            value="You may submit a new application when ready.",
+                            inline=False
+                        )
+                    
+                    await ctx.send(embed=embed, ephemeral=True)
+                    
+                elif resp.status == 404:
+                    embed = discord.Embed(
+                        title=f"Application Status for {target.display_name}",
+                        description="⚪ **No Application Found** - You're in the DMZ\n\n[Submit an application here](https://zerolivesleft.net/apply/)",
+                        color=discord.Color.light_grey()
+                    )
+                    await ctx.send(embed=embed, ephemeral=True)
+                    
+                else:
+                    await ctx.send(f"Error checking application status: {resp.status}", ephemeral=True)
+                    
+        except Exception as e:
+            log.error(f"Error checking application status for {target.name}: {e}")
+            await ctx.send("An error occurred while checking application status.", ephemeral=True)
+
+    # Configuration methods
+    async def cache_all_invites(self):
+        await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:
+            try: 
+                self.guild_invites[guild.id] = await guild.invites()
+                log.info(f"Cached {len(self.guild_invites[guild.id])} invites for guild {guild.name}")
+            except (discord.Forbidden, discord.HTTPException) as e: 
+                log.error(f"Failed to cache invites for guild {guild.name}: {e}")
+    
+    async def on_invite_create(self, invite):
+        if invite.guild.id not in self.guild_invites: 
+            self.guild_invites[invite.guild.id] = []
+        self.guild_invites[invite.guild.id].append(invite)
+        log.info(f"New invite created and cached for {invite.guild.name}: {invite.code}")
+
+    def stop_tasks(self):
+        if hasattr(self, 'cache_invites_task') and self.cache_invites_task and not self.cache_invites_task.done():
+            self.cache_invites_task.cancel()
+            log.info("Invite cache task cancelled")
+
+    async def set_api_url(self, ctx, url):
+        await self.config.ar_api_url.set(url)
+        await ctx.send(f"API URL set to: {url}")
+        log.info(f"API URL set to: {url}")
+    
+    async def set_api_key(self, ctx, key):
+        await self.config.ar_api_key.set(key)
+        await ctx.send("API key set successfully.")
+        log.info(f"API key updated")
+
+    async def toggle_enabled(self, ctx, enabled: bool):
+        await self.config.ar_enabled.set(enabled)
+        await ctx.send(f"Application role assignment is now {'enabled' if enabled else 'disabled'}.")
+        log.info(f"Application role assignment {'enabled' if enabled else 'disabled'}")
+
+    async def set_pending_role(self, ctx, role: discord.Role):
+        await self.config.ar_pending_role_id.set(role.id)
+        await ctx.send(f"Pending role has been set to **{role.name}** (for #enlistment).")
+        log.info(f"Pending role set to {role.name} ({role.id})")
+
+    async def set_member_role(self, ctx, role: discord.Role):
+        await self.config.ar_member_role_id.set(role.id)
+        await ctx.send(f"Main member role has been set to **{role.name}**.")
+        log.info(f"Member role set to {role.name} ({role.id})")
+        
+    async def set_unverified_role(self, ctx, role: discord.Role):
+        await self.config.ar_unverified_role_id.set(role.id)
+        await ctx.send(f"Unverified role has been set to **{role.name}** (for #dmz).")
+        log.info(f"Unverified role set to {role.name} ({role.id})")
+
+    async def set_welcome_channel(self, ctx, channel: discord.TextChannel):
+        """Sets the channel for approved member welcome messages (main server access)"""
+        # Check if this is the same as the DMZ channel
+        unverified_channel_id = await self.config.ar_unverified_channel_id()
+        if unverified_channel_id and channel.id == int(unverified_channel_id):
+            await ctx.send("⚠️ **Warning:** You're setting the welcome channel to the same channel as the DMZ. "
+                          "Approved members won't be able to see welcome messages in the DMZ channel. "
+                          "Consider using a different channel that approved members can access (like #general or #welcome).")
+        
+        await self.config.ar_welcome_channel_id.set(channel.id)
+        await ctx.send(f"Welcome channel (for approved members with full access) set to {channel.mention}.")
+        log.info(f"Welcome channel set to {channel.name} ({channel.id})")
+
+    async def set_unverified_channel(self, ctx, channel: discord.TextChannel):
+        """Sets the channel where new members with the Unverified role receive their welcome (#dmz)"""
+        # Check if this is the same as the welcome channel
+        welcome_channel_id = await self.config.ar_welcome_channel_id()
+        if welcome_channel_id and channel.id == int(welcome_channel_id):
+            await ctx.send("⚠️ **Warning:** You're setting the DMZ channel to the same channel as the welcome channel. "
+                          "This means approved members will receive welcome messages in a channel they can't see. "
+                          "Consider using different channels for DMZ and welcome messages.")
+        
+        await self.config.ar_unverified_channel_id.set(channel.id)
+        await ctx.send(f"**Unverified** welcome channel set to {channel.mention} (#dmz). New unverified members will now receive messages here.")
+        log.info(f"Unverified channel (#dmz) set to {channel.name} ({channel.id})")
+
+    async def set_pending_channel(self, ctx, channel: discord.TextChannel):
+        """Sets the channel where members with a Pending application role receive their updates (#enlistment)"""
+        await self.config.ar_pending_channel_id.set(channel.id)
+        await ctx.send(f"**Pending** application channel set to {channel.mention} (#enlistment). Members with pending applications will now receive messages here.")
+        log.info(f"Pending channel (#enlistment) set to {channel.name} ({channel.id})")
+
+    async def set_notifications_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for application status notifications"""
+        await self.config.ar_notifications_channel_id.set(channel.id)
+        await ctx.send(f"Application notifications channel set to {channel.mention}")
+        log.info(f"Notifications channel set to {channel.name} ({channel.id})")
+
+    async def set_welcome_message(self, ctx: commands.Context, *, message: str):
+        """Sets the generic welcome message (legacy)"""
+        await self.config.ar_welcome_message.set(message)
+        await ctx.send(f"Generic welcome message has been set to:\n\n{message}")
+        log.info(f"Generic welcome message updated")
+    
+    async def add_region_role(self, ctx, region: str, role: discord.Role):
+        async with self.config.ar_region_roles() as region_roles:
+            region_roles[region.upper()] = str(role.id)
+        await ctx.send(f"Added region role mapping: `{region.upper()}` -> {role.name}")
+        log.info(f"Added region role mapping: {region.upper()} -> {role.name} ({role.id})")
+    
+    async def remove_region_role(self, ctx, region: str):
+        async with self.config.ar_region_roles() as region_roles:
+            if region.upper() in region_roles:
+                del region_roles[region.upper()]
+                await ctx.send(f"Removed region role mapping for `{region.upper()}`")
+                log.info(f"Removed region role mapping for {region.upper()}")
+            else:
+                await ctx.send(f"No region role mapping found for `{region.upper()}`.")
+                log.info(f"Attempted to remove non-existent region mapping: {region.upper()}")
+    
+    async def list_region_roles(self, ctx):
+        region_roles = await self.config.ar_region_roles()
+        if not region_roles: 
+            await ctx.send("No region role mappings configured.")
+            return
+            
+        embed = discord.Embed(title="Region Role Mappings", color=discord.Color.blue())
+        for region, role_id in region_roles.items():
+            role = ctx.guild.get_role(int(role_id))
+            embed.add_field(name=region, value=role.mention if role else f"Unknown Role ({role_id})", inline=False)
+        await ctx.send(embed=embed)
+        log.info(f"Listed {len(region_roles)} region role mappings")
+    
+    async def show_config(self, ctx: commands.Context):
+        all_config = await self.config.all()
+        ar_config = {k: v for k, v in all_config.items() if k.startswith("ar_")}
+        embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
+        
+        # Add helpful channel descriptions
+        channel_descriptions = {
+            "ar_unverified_channel_id": "Unverified Channel (#dmz)",
+            "ar_pending_channel_id": "Pending Channel (#enlistment)",
+            "ar_welcome_channel_id": "Welcome Channel (approved members)",
+            "ar_notifications_channel_id": "Notifications Channel",
+            "ar_moderator_channel_id": "Moderator Notifications Channel"
+        }
+        
+        for key, value in ar_config.items():
+            name = channel_descriptions.get(key, key.replace("ar_", "").replace("_", " ").title())
+            value_str = ""
+            if value is None:
+                value_str = "`Not Set`"
+            elif "role_id" in key:
+                if ctx.guild:
+                    role = ctx.guild.get_role(int(value))
+                    value_str = role.mention if role else f"<@&{value}> (Not found: `{value}`)"
+                else:
+                    value_str = f"`{value}`"
+            elif "channel_id" in key:
+                if ctx.guild:
+                    channel = ctx.guild.get_channel(int(value))
+                    value_str = channel.mention if channel else f"<#{value}> (Not found: `{value}`)"
+                else:
+                    value_str = f"`{value}`"
+            elif key == "ar_region_roles":
+                if value:
+                    mapped_roles = []
+                    for k, v in value.items():
+                        role = ctx.guild.get_role(int(v)) if ctx.guild else None
+                        mapped_roles.append(f"`{k}`: {role.mention if role else f'Unknown ({v})'}")
+                    value_str = "\n".join(mapped_roles)
+                else:
+                    value_str = "None"
+            elif "api_key" in key:
+                value_str = "`Set`" if value else "`Not Set`"
+            elif key == "ar_member_history":
+                if value:
+                    total_users = sum(len(guild_data) for guild_data in value.values())
+                    value_str = f"`{total_users} users tracked`"
+                else:
+                    value_str = "`No history tracked`"
+            elif key == "ar_ping_online_only":
+                value_str = f"`{value}`"
+            elif key == "ar_admin_panel_base_url":
+                value_str = f"`{value}`"
+            else:
+                value_str = f"`{value}`"
+            
+            embed.add_field(name=name, value=value_str, inline=False)
+        
+        # Add moderator notifications summary
+        moderator_channel_id = await self.config.ar_moderator_channel_id()
+        moderator_role_id = await self.config.ar_moderator_role_id()
+        ping_online_only = await self.config.ar_ping_online_only()
+        admin_panel_base_url = await self.config.ar_admin_panel_base_url()
+        
+        embed.add_field(
+            name="Moderator Notifications",
+            value=(
+                f"Channel: {ctx.guild.get_channel(int(moderator_channel_id)).mention if moderator_channel_id and ctx.guild and ctx.guild.get_channel(int(moderator_channel_id)) else '`Not Set`'}\n"
+                f"Role: {ctx.guild.get_role(int(moderator_role_id)).mention if moderator_role_id and ctx.guild and ctx.guild.get_role(int(moderator_role_id)) else '`Not Set`'}\n"
+                f"Online Only: `{ping_online_only}`\n"
+                f"Admin Panel: `{admin_panel_base_url}`"
+            ),
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+        log.info("Configuration displayed")
+
+    async def force_cache_invites(self, ctx):
+        await ctx.send("Refreshing invite cache...")
+        await self.cache_all_invites()
+        await ctx.send("Invite cache refreshed.")
+        log.info("Invite cache manually refreshed")
+    
+    async def set_default_guild(self, ctx, guild: discord.Guild):
+        await self.config.ar_default_guild_id.set(str(guild.id))
+        await ctx.send(f"Default guild set to: {guild.name}")
+        log.info(f"Default guild set to {guild.name} ({guild.id})")
+    
+    async def set_invite_channel(self, ctx, channel: discord.TextChannel):
+        if not channel.permissions_for(ctx.guild.me).create_instant_invite:
+            await ctx.send(f"I don't have permission to create invites in {channel.mention}")
+            log.warning(f"Missing invite creation permission in {channel.name}")
+            return
+        await self.config.ar_invite_channel_id.set(str(channel.id))
+        await ctx.send(f"Invite channel set to: {channel.mention}")
+        log.info(f"Invite channel set to {channel.name} ({channel.id})")
+
+    # Testing and debugging methods
+    async def test_member_flow(self, ctx, member: discord.Member, test_status: str):
+        """Test command to simulate different application statuses for a member"""
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You need manage roles permission to use this command.")
+            return
+            
+        test_app_data = {
+            "region": "US",
+            "platform_role_ids": [],
+            "game_role_ids": []
+        }
+        
+        guild = member.guild
+        
+        # Update the test flow to also track history
+        await ctx.send(f"Testing {member.mention} with status: {test_status}")
+        
+        # For testing, we need to simulate the join tracking
+        is_returning = await self._track_member_join(guild.id, member.id)
+        await ctx.send(f"Join tracked. Member is returning: {is_returning}")
+        
+        # First remove any existing test roles to start clean
+        unverified_role_id = await self.config.ar_unverified_role_id()
+        pending_role_id = await self.config.ar_pending_role_id()
+        member_role_id = await self.config.ar_member_role_id()
+        
+        unverified_role = guild.get_role(int(unverified_role_id)) if unverified_role_id else None
+        pending_role = guild.get_role(int(pending_role_id)) if pending_role_id else None
+        member_role = guild.get_role(int(member_role_id)) if member_role_id else None
+        
+        # Remove all test roles first
+        roles_to_remove = []
+        for role in [unverified_role, pending_role, member_role]:
+            if role and role in member.roles:
+                roles_to_remove.append(role)
+        
+        if roles_to_remove:
+            await member.remove_roles(*roles_to_remove, reason="Test flow - clearing roles")
+            await ctx.send(f"Cleared existing roles: {[r.name for r in roles_to_remove]}")
+        
+        # Now simulate the correct status by actually assigning the role first
+        if test_status == "none" or test_status == "rejected":
+            # Assign unverified role for none/rejected status
+            if unverified_role:
+                await member.add_roles(unverified_role, reason="Test flow - unverified")
+                await ctx.send(f"Assigned {unverified_role.name} role for testing")
+            await self._handle_unverified_member(member, is_returning_rejected=(test_status == "rejected"), is_returning=is_returning)
+            
+        elif test_status == "pending":
+            # Assign pending role for pending status
+            if pending_role:
+                await member.add_roles(pending_role, reason="Test flow - pending")
+                await ctx.send(f"Assigned {pending_role.name} role for testing")
+            await self._handle_pending_member(member, is_returning=is_returning)
+            
+        elif test_status == "approved":
+            # Assign member role for approved status
+            if member_role:
+                await member.add_roles(member_role, reason="Test flow - approved")
+                await ctx.send(f"Assigned {member_role.name} role for testing")
+            await self._handle_approved_member(member, test_app_data, is_returning=is_returning)
+            
+        else:
+            await ctx.send(f"Unknown test status: {test_status}. Use: none, pending, approved, rejected")
+            return
+        
+        await ctx.send(f"Test complete for {member.mention} with status: {test_status} (returning: {is_returning})")
+        log.info(f"Manual test performed: {member.name} with status {test_status}, returning: {is_returning}")
+
+    async def debug_member_status(self, ctx, member: discord.Member = None):
+        """Debug command to show current member status and roles"""
+        target = member or ctx.author
+        
+        embed = discord.Embed(
+            title=f"Debug Info for {target.display_name}",
+            color=discord.Color.blue()
+        )
+        
+        # Show current roles
+        roles = [role.name for role in target.roles if role.name != "@everyone"]
+        embed.add_field(
+            name="Current Roles",
+            value=", ".join(roles) if roles else "No roles",
+            inline=False
+        )
+        
+        # Show configured role IDs
+        unverified_role_id = await self.config.ar_unverified_role_id()
+        pending_role_id = await self.config.ar_pending_role_id()
+        member_role_id = await self.config.ar_member_role_id()
+        
+        embed.add_field(
+            name="Configured Roles",
+            value=f"Unverified: <@&{unverified_role_id}>\nPending: <@&{pending_role_id}>\nMember: <@&{member_role_id}>",
+            inline=False
+        )
+        
+        # Show configured channels
+        dmz_channel_id = await self.config.ar_unverified_channel_id()
+        enlistment_channel_id = await self.config.ar_pending_channel_id()
+        welcome_channel_id = await self.config.ar_welcome_channel_id()
+        
+        embed.add_field(
+            name="Configured Channels",
+            value=f"DMZ: <#{dmz_channel_id}>\nEnlistment: <#{enlistment_channel_id}>\nWelcome: <#{welcome_channel_id}>",
+            inline=False
+        )
+        
+        # Show join history
+        if ctx.guild:
+            history = await self._get_member_history(ctx.guild.id, target.id)
+            total_joins = history.get("total_joins", 0)
+            last_join = history.get("joins", [])[-1] if history.get("joins") else "Never"
+            last_leave = history.get("leaves", [])[-1] if history.get("leaves") else "Never"
+            
+            embed.add_field(
+                name="Join History",
+                value=f"Total Joins: {total_joins}\nLast Join: {last_join}\nLast Leave: {last_leave}",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+        log.info(f"Debug info displayed for {target.name}")
+
+    async def manual_move_user(self, ctx, member: discord.Member, from_status: str, to_status: str):
+        """Manually move a user between statuses for testing"""
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You need manage roles permission to use this command.")
+            return
+            
+        await ctx.send(f"Manually moving {member.mention} from {from_status} to {to_status}")
+        
+        # Get their history to determine if they're returning
+        is_returning = False
+        if ctx.guild:
+            history = await self._get_member_history(ctx.guild.id, member.id)
+            is_returning = history.get("total_joins", 0) > 0
+        
+        if to_status == "pending":
+            await self._move_user_to_pending(member)
+        elif to_status == "approved":
+            # Simulate approval
+            test_app_data = {
+                "region": "US",
+                "platform_role_ids": [],
+                "game_role_ids": []
+            }
+            await self.process_role_update({
+                "discord_id": str(member.id),
+                "status": "approved", 
+                "application_data": test_app_data
+            })
+        elif to_status == "unverified":
+            await self._handle_unverified_member(member, is_returning=is_returning)
+            
+        await ctx.send(f"Move complete: {member.mention} → {to_status} (returning: {is_returning})")
+        log.info(f"Manual move performed: {member.name} from {from_status} to {to_status}, returning: {is_returning}")
+
+    async def view_member_history(self, ctx, member: discord.Member = None):
+        """View detailed join/leave history for a member"""
+        if not ctx.author.guild_permissions.manage_roles:
+            await ctx.send("You need manage roles permission to use this command.")
+            return
+            
+        target = member or ctx.author
+        if not ctx.guild:
+            await ctx.send("This command can only be used in a server.")
+            return
+            
+        history = await self._get_member_history(ctx.guild.id, target.id)
+        
+        embed = discord.Embed(
+            title=f"Join History for {target.display_name}",
+            color=discord.Color.green()
+        )
+        
+        embed.add_field(
+            name="Summary",
+            value=f"Total Joins: {history.get('total_joins', 0)}\nTotal Leaves: {len(history.get('leaves', []))}",
+            inline=False
+        )
+        
+        # Show recent joins
+        recent_joins = history.get("joins", [])[-5:]  # Last 5 joins
+        if recent_joins:
+            join_list = []
+            for i, join_time in enumerate(reversed(recent_joins), 1):
+                join_list.append(f"{i}. {join_time}")
+            embed.add_field(
+                name="Recent Joins (newest first)",
+                value="\n".join(join_list),
+                inline=False
+            )
+        
+        # Show recent leaves
+        recent_leaves = history.get("leaves", [])[-5:]  # Last 5 leaves
+        if recent_leaves:
+            leave_list = []
+            for i, leave_time in enumerate(reversed(recent_leaves), 1):
+                leave_list.append(f"{i}. {leave_time}")
+            embed.add_field(
+                name="Recent Leaves (newest first)",
+                value="\n".join(leave_list),
+                inline=False
+            )
+        
+        if not recent_joins and not recent_leaves:
+            embed.add_field(
+                name="No History",
+                value="No join/leave history found for this member.",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+        log.info(f"Member history displayed for {target.name}")
+
+    async def clear_member_history(self, ctx, member: discord.Member):
+        """Clear a member's join/leave history (for testing)"""
+        if not ctx.author.guild_permissions.administrator:
+            await ctx.send("You need administrator permission to use this command.")
+            return
+            
+        if not ctx.guild:
+            await ctx.send("This command can only be used in a server.")
+            return
+            
+        async with self.config.ar_member_history() as history:
+            guild_str = str(ctx.guild.id)
+            user_str = str(member.id)
+            
+            if guild_str in history and user_str in history[guild_str]:
+                del history[guild_str][user_str]
+                await ctx.send(f"Cleared join/leave history for {member.mention}")
+                log.info(f"Cleared history for {member.name} in guild {ctx.guild.name}")
+            else:
+                await ctx.send(f"No history found for {member.mention}")
+        
+        log.info(f"History cleared for {member.name}")# Complete clean application_roles.py with join history tracking and moderator notifications
 
 import discord
 import logging
@@ -644,568 +1399,3 @@ class ApplicationRolesLogic:
             )
             if guild.icon:
                 embed.set_thumbnail(url=guild.icon.url)
-            embed.add_field(
-                name="⏱️ How long does this take?",
-                value="Applications are usually reviewed within 24-48 hours. We'll ping you here as soon as we have news!",
-                inline=False
-            )
-            embed.set_footer(text="Thanks for applying! 🎉")
-            await channel.send(content=member.mention, embed=embed)
-            log.info(f"Sent 'Application Received' embed to #enlistment ({channel.name}) for {member.name}.")
-
-        log.info(f"Successfully moved {member.name} from DMZ to Enlistment after application submission")
-        log.info(f"New roles: {[role.name for role in member.roles]}")
-
-    async def handle_application_update(self, request):
-        """Handle application approval/rejection updates from Django"""
-        log.info("Application update endpoint called")
-        try:
-            body_text = await request.text()
-            log.info(f"Request headers: {dict(request.headers)}")
-            log.info(f"Request body: {body_text}")
-            
-            api_key = request.headers.get('Authorization', '').replace('Token ', '')
-            expected_key = await self.config.ar_api_key()
-            
-            if not api_key or api_key != expected_key:
-                log.warning(f"API key validation failed for application update")
-                return web.json_response({"error": "Unauthorized"}, status=401)
-                
-            data = await request.json()
-            log.info(f"Processing application update: {data}")
-            self.cog.bot.loop.create_task(self.process_role_update(data))
-            return web.json_response({"success": True, "message": "Request received."})
-        except Exception as e:
-            log.error(f"Error processing application update request: {e}", exc_info=True)
-            return web.json_response({"error": f"Error: {str(e)}"}, status=400)
-
-    async def process_role_update(self, data: dict):
-        """Process application approval/rejection"""
-        discord_id = data.get("discord_id")
-        status = data.get("status")
-        app_data = data.get("application_data", {})
-        
-        if not all([discord_id, status]): 
-            log.error(f"Missing required data in process_role_update: discord_id={discord_id}, status={status}")
-            return
-
-        default_guild_id = await self.config.ar_default_guild_id()
-        if not default_guild_id: 
-            log.error("No default guild configured for role updates")
-            return
-        
-        guild = self.bot.get_guild(int(default_guild_id))
-        if not guild: 
-            log.error(f"Could not find guild with ID {default_guild_id}")
-            return
-        
-        member = guild.get_member(int(discord_id))
-        if not member: 
-            log.error(f"Could not find member with ID {discord_id} in guild {guild.name}")
-            return
-
-        log.info(f"Processing role update for {member.name} with status {status}")
-
-        pending_role = guild.get_role(int(await self.config.ar_pending_role_id() or 0))
-        unverified_role = guild.get_role(int(await self.config.ar_unverified_role_id() or 0))
-
-        if status == "rejected":
-            log.info(f"Application rejected for {member.name}. Moving back to DMZ and kicking.")
-            
-            # Send notification before kicking
-            await self._send_notification(guild, member, "Application Rejected", 
-                f"{member.mention}, unfortunately your application has been rejected. You will be removed from the server.", 
-                discord.Color.red())
-            
-            roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
-            if roles_to_remove: 
-                await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
-                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
-            
-            # Try to DM them before kicking
-            try:
-                await member.send(
-                    f"Your application to {guild.name} has been rejected. You have been removed from the server."
-                )
-            except (discord.Forbidden, discord.HTTPException):
-                log.warning(f"Could not DM {member.name} about application rejection.")
-
-            await member.kick(reason="Application Rejected.")
-            log.info(f"Kicked {member.name} due to rejected application")
-            return
-
-        if status == "approved":
-            log.info(f"Application approved for {member.name}. Moving from Enlistment to full server access.")
-            
-            # Send notification first
-            await self._send_notification(guild, member, "Application Approved", 
-                f"🎉 {member.mention}, your application has been **APPROVED**! Welcome to the community!", 
-                discord.Color.green())
-            
-            roles_to_add = []
-            roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
-
-            if member_role_id := await self.config.ar_member_role_id():
-                if role := guild.get_role(int(member_role_id)): 
-                    roles_to_add.append(role)
-                    log.info(f"Adding member role: {role.name}")
-            
-            if region_code := app_data.get("region"):
-                region_roles = await self.config.ar_region_roles()
-                log.info(f"Checking region role for {region_code.upper()}. Available mappings: {region_roles}")
-                if region_role_id := region_roles.get(region_code.upper()):
-                    if role := guild.get_role(int(region_role_id)): 
-                        roles_to_add.append(role)
-                        log.info(f"Adding region role: {role.name}")
-            
-            for role_type in ["platform_role_ids", "game_role_ids"]:
-                role_ids = app_data.get(role_type, [])
-                log.info(f"Processing {role_type}: {role_ids}")
-                for role_id in role_ids:
-                    if role_id and (role := guild.get_role(int(role_id))): 
-                        roles_to_add.append(role)
-                        log.info(f"Adding {role_type.split('_')[0]} role: {role.name}")
-            
-            if roles_to_add: 
-                await member.add_roles(*roles_to_add, reason="Application Approved - full server access granted")
-                log.info(f"Added roles: {[r.name for r in roles_to_add]}")
-            if roles_to_remove: 
-                await member.remove_roles(*roles_to_remove, reason="Application Approved - removing pending/unverified roles")
-                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
-            
-            # Send success message to main welcome channel ONLY if it's configured and different from DMZ
-            welcome_channel_id = await self.config.ar_welcome_channel_id()
-            unverified_channel_id = await self.config.ar_unverified_channel_id()
-            
-            # Only send welcome message if:
-            # 1. Welcome channel is configured
-            # 2. Welcome channel is different from the unverified/DMZ channel
-            # 3. Member can actually see the welcome channel
-            if (welcome_channel_id and 
-                welcome_channel_id != unverified_channel_id and 
-                (channel := guild.get_channel(int(welcome_channel_id)))):
-                
-                # Check if member can see the channel
-                if channel.permissions_for(member).read_messages:
-                    embed = discord.Embed(
-                        title="🎉 Application approved! Welcome to the community!",
-                        description=(
-                            f"Awesome news, {member.mention}! Your application has been **approved**! 🎊\n\n"
-                            f"**You now have access to:**\n"
-                            f"🎮 All game channels and voice rooms\n"
-                            f"💬 Community discussions and events\n"
-                            f"🎯 Everything Zero Lives Left has to offer!\n\n"
-                            f"Welcome to the family!"
-                        ),
-                        color=discord.Color.green()
-                    )
-                    if guild.icon:
-                        embed.set_thumbnail(url=guild.icon.url)
-                    embed.add_field(
-                        name="Ready to get started?",
-                        value="Explore the channels, introduce yourself, and jump into some games with everyone!",
-                        inline=False
-                    )
-                    embed.set_footer(text="Welcome to Zero Lives Left! 🚀")
-                    await channel.send(content=member.mention, embed=embed)
-                    log.info(f"Sent 'Application Approved' embed to main welcome channel ({channel.name}) for {member.name}.")
-                else:
-                    log.warning(f"Member {member.name} cannot see welcome channel {channel.name} - skipping welcome message")
-            else:
-                if welcome_channel_id == unverified_channel_id:
-                    log.info(f"Welcome channel is same as DMZ channel - skipping welcome message for {member.name}")
-                else:
-                    log.info(f"No appropriate welcome channel configured for approved members - skipping welcome message for {member.name}")
-
-            log.info(f"Role update complete for {member.name} - they now have full server access")
-
-    async def _send_notification(self, guild: discord.Guild, member: discord.Member, title: str, message: str, color: discord.Color):
-        """Send a notification to the configured notifications channel"""
-        notifications_channel_id = await self.config.ar_notifications_channel_id()
-        if notifications_channel_id and (channel := guild.get_channel(int(notifications_channel_id))):
-            embed = discord.Embed(title=title, description=message, color=color)
-            embed.set_footer(text=f"User: {member.name}#{member.discriminator} ({member.id})")
-            await channel.send(embed=embed)
-            log.info(f"Sent notification to {channel.name}: {title} for {member.name}")
-
-    # Moderator notification configuration methods
-    async def set_moderator_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel where moderator notifications are sent for new applications"""
-        await self.config.ar_moderator_channel_id.set(channel.id)
-        await ctx.send(f"Moderator notifications channel set to {channel.mention}")
-        log.info(f"Moderator notifications channel set to {channel.name} ({channel.id})")
-
-    async def set_moderator_role(self, ctx, role: discord.Role):
-        """Set the role to ping when new applications are submitted"""
-        await self.config.ar_moderator_role_id.set(role.id)
-        await ctx.send(f"Moderator role set to {role.mention}")
-        log.info(f"Moderator role set to {role.name} ({role.id})")
-
-    async def set_ping_online_only(self, ctx, online_only: bool):
-        """Set whether to ping only online moderators or all moderators"""
-        await self.config.ar_ping_online_only.set(online_only)
-        status = "only online moderators" if online_only else "all moderators"
-        await ctx.send(f"Moderator pinging set to: {status}")
-        log.info(f"Moderator ping setting: online_only={online_only}")
-
-    async def set_admin_panel_url(self, ctx, base_url: str):
-        """Set the base URL for the Django admin panel"""
-        # Ensure URL ends with a slash
-        if not base_url.endswith('/'):
-            base_url += '/'
-        
-        await self.config.ar_admin_panel_base_url.set(base_url)
-        await ctx.send(f"Admin panel base URL set to: {base_url}")
-        log.info(f"Admin panel base URL set to: {base_url}")
-
-    # Self-service status check command
-    async def check_application_status(self, ctx, member: discord.Member = None):
-        """Check application status for yourself or another member"""
-        target = member or ctx.author
-        
-        # Only allow checking others if user has manage roles permission
-        if member and not ctx.author.guild_permissions.manage_roles:
-            await ctx.send("You can only check your own application status.", ephemeral=True)
-            return
-        
-        api_url = await self.config.ar_api_url()
-        api_key = await self.config.ar_api_key()
-        
-        if not api_url or not api_key:
-            await ctx.send("Application system is not configured.", ephemeral=True)
-            return
-        
-        try:
-            endpoint = f"{api_url.rstrip('/')}/api/applications/check/{target.id}/"
-            headers = {"Authorization": f"Token {api_key}"}
-            
-            async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    status = data.get("status", "none")
-                    submission_date = data.get("submitted_date")
-                    
-                    embed = discord.Embed(
-                        title=f"Application Status for {target.display_name}",
-                        color=discord.Color.blue()
-                    )
-                    
-                    status_messages = {
-                        "pending": "🟡 **Pending** - Your application is under review (you're in #enlistment)",
-                        "approved": "🟢 **Approved** - Your application has been approved! (you have full access)",
-                        "rejected": "🔴 **Rejected** - Your application was not approved",
-                        "none": "⚪ **No Application** - No application found (you're in #dmz)"
-                    }
-                    
-                    embed.add_field(
-                        name="Status",
-                        value=status_messages.get(status, f"❓ **Unknown** - {status}"),
-                        inline=False
-                    )
-                    
-                    if submission_date:
-                        embed.add_field(
-                            name="Submitted",
-                            value=submission_date,
-                            inline=True
-                        )
-                    
-                    if status == "none":
-                        embed.add_field(
-                            name="Next Steps",
-                            value="[Submit an application here](https://zerolivesleft.net/apply/)",
-                            inline=False
-                        )
-                    elif status == "rejected":
-                        embed.add_field(
-                            name="Next Steps",
-                            value="You may submit a new application when ready.",
-                            inline=False
-                        )
-                    
-                    await ctx.send(embed=embed, ephemeral=True)
-                    
-                elif resp.status == 404:
-                    embed = discord.Embed(
-                        title=f"Application Status for {target.display_name}",
-                        description="⚪ **No Application Found** - You're in the DMZ\n\n[Submit an application here](https://zerolivesleft.net/apply/)",
-                        color=discord.Color.light_grey()
-                    )
-                    await ctx.send(embed=embed, ephemeral=True)
-                    
-                else:
-                    await ctx.send(f"Error checking application status: {resp.status}", ephemeral=True)
-                    
-        except Exception as e:
-            log.error(f"Error checking application status for {target.name}: {e}")
-            await ctx.send("An error occurred while checking application status.", ephemeral=True)
-
-    # Configuration methods
-    async def cache_all_invites(self):
-        await self.bot.wait_until_ready()
-        for guild in self.bot.guilds:
-            try: 
-                self.guild_invites[guild.id] = await guild.invites()
-                log.info(f"Cached {len(self.guild_invites[guild.id])} invites for guild {guild.name}")
-            except (discord.Forbidden, discord.HTTPException) as e: 
-                log.error(f"Failed to cache invites for guild {guild.name}: {e}")
-    
-    async def on_invite_create(self, invite):
-        if invite.guild.id not in self.guild_invites: 
-            self.guild_invites[invite.guild.id] = []
-        self.guild_invites[invite.guild.id].append(invite)
-        log.info(f"New invite created and cached for {invite.guild.name}: {invite.code}")
-
-    def stop_tasks(self):
-        if hasattr(self, 'cache_invites_task') and self.cache_invites_task and not self.cache_invites_task.done():
-            self.cache_invites_task.cancel()
-            log.info("Invite cache task cancelled")
-
-    async def set_api_url(self, ctx, url):
-        await self.config.ar_api_url.set(url)
-        await ctx.send(f"API URL set to: {url}")
-        log.info(f"API URL set to: {url}")
-    
-    async def set_api_key(self, ctx, key):
-        await self.config.ar_api_key.set(key)
-        await ctx.send("API key set successfully.")
-        log.info(f"API key updated")
-
-    async def toggle_enabled(self, ctx, enabled: bool):
-        await self.config.ar_enabled.set(enabled)
-        await ctx.send(f"Application role assignment is now {'enabled' if enabled else 'disabled'}.")
-        log.info(f"Application role assignment {'enabled' if enabled else 'disabled'}")
-
-    async def set_pending_role(self, ctx, role: discord.Role):
-        await self.config.ar_pending_role_id.set(role.id)
-        await ctx.send(f"Pending role has been set to **{role.name}** (for #enlistment).")
-        log.info(f"Pending role set to {role.name} ({role.id})")
-
-    async def set_member_role(self, ctx, role: discord.Role):
-        await self.config.ar_member_role_id.set(role.id)
-        await ctx.send(f"Main member role has been set to **{role.name}**.")
-        log.info(f"Member role set to {role.name} ({role.id})")
-        
-    async def set_unverified_role(self, ctx, role: discord.Role):
-        await self.config.ar_unverified_role_id.set(role.id)
-        await ctx.send(f"Unverified role has been set to **{role.name}** (for #dmz).")
-        log.info(f"Unverified role set to {role.name} ({role.id})")
-
-    async def set_welcome_channel(self, ctx, channel: discord.TextChannel):
-        """Sets the channel for approved member welcome messages (main server access)"""
-        # Check if this is the same as the DMZ channel
-        unverified_channel_id = await self.config.ar_unverified_channel_id()
-        if unverified_channel_id and channel.id == int(unverified_channel_id):
-            await ctx.send("⚠️ **Warning:** You're setting the welcome channel to the same channel as the DMZ. "
-                          "Approved members won't be able to see welcome messages in the DMZ channel. "
-                          "Consider using a different channel that approved members can access (like #general or #welcome).")
-        
-        await self.config.ar_welcome_channel_id.set(channel.id)
-        await ctx.send(f"Welcome channel (for approved members with full access) set to {channel.mention}.")
-        log.info(f"Welcome channel set to {channel.name} ({channel.id})")
-
-    async def set_unverified_channel(self, ctx, channel: discord.TextChannel):
-        """Sets the channel where new members with the Unverified role receive their welcome (#dmz)"""
-        # Check if this is the same as the welcome channel
-        welcome_channel_id = await self.config.ar_welcome_channel_id()
-        if welcome_channel_id and channel.id == int(welcome_channel_id):
-            await ctx.send("⚠️ **Warning:** You're setting the DMZ channel to the same channel as the welcome channel. "
-                          "This means approved members will receive welcome messages in a channel they can't see. "
-                          "Consider using different channels for DMZ and welcome messages.")
-        
-        await self.config.ar_unverified_channel_id.set(channel.id)
-        await ctx.send(f"**Unverified** welcome channel set to {channel.mention} (#dmz). New unverified members will now receive messages here.")
-        log.info(f"Unverified channel (#dmz) set to {channel.name} ({channel.id})")
-
-    async def set_pending_channel(self, ctx, channel: discord.TextChannel):
-        """Sets the channel where members with a Pending application role receive their updates (#enlistment)"""
-        await self.config.ar_pending_channel_id.set(channel.id)
-        await ctx.send(f"**Pending** application channel set to {channel.mention} (#enlistment). Members with pending applications will now receive messages here.")
-        log.info(f"Pending channel (#enlistment) set to {channel.name} ({channel.id})")
-
-    async def set_notifications_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel for application status notifications"""
-        await self.config.ar_notifications_channel_id.set(channel.id)
-        await ctx.send(f"Application notifications channel set to {channel.mention}")
-        log.info(f"Notifications channel set to {channel.name} ({channel.id})")
-
-    async def set_welcome_message(self, ctx: commands.Context, *, message: str):
-        """Sets the generic welcome message (legacy)"""
-        await self.config.ar_welcome_message.set(message)
-        await ctx.send(f"Generic welcome message has been set to:\n\n{message}")
-        log.info(f"Generic welcome message updated")
-    
-    async def add_region_role(self, ctx, region: str, role: discord.Role):
-        async with self.config.ar_region_roles() as region_roles:
-            region_roles[region.upper()] = str(role.id)
-        await ctx.send(f"Added region role mapping: `{region.upper()}` -> {role.name}")
-        log.info(f"Added region role mapping: {region.upper()} -> {role.name} ({role.id})")
-    
-    async def remove_region_role(self, ctx, region: str):
-        async with self.config.ar_region_roles() as region_roles:
-            if region.upper() in region_roles:
-                del region_roles[region.upper()]
-                await ctx.send(f"Removed region role mapping for `{region.upper()}`")
-                log.info(f"Removed region role mapping for {region.upper()}")
-            else:
-                await ctx.send(f"No region role mapping found for `{region.upper()}`.")
-                log.info(f"Attempted to remove non-existent region mapping: {region.upper()}")
-    
-    async def list_region_roles(self, ctx):
-        region_roles = await self.config.ar_region_roles()
-        if not region_roles: 
-            await ctx.send("No region role mappings configured.")
-            return
-            
-        embed = discord.Embed(title="Region Role Mappings", color=discord.Color.blue())
-        for region, role_id in region_roles.items():
-            role = ctx.guild.get_role(int(role_id))
-            embed.add_field(name=region, value=role.mention if role else f"Unknown Role ({role_id})", inline=False)
-        await ctx.send(embed=embed)
-        log.info(f"Listed {len(region_roles)} region role mappings")
-    
-    async def show_config(self, ctx: commands.Context):
-        all_config = await self.config.all()
-        ar_config = {k: v for k, v in all_config.items() if k.startswith("ar_")}
-        embed = discord.Embed(title="Application Roles Configuration", color=await ctx.embed_color())
-        
-        # Add helpful channel descriptions
-        channel_descriptions = {
-            "ar_unverified_channel_id": "Unverified Channel (#dmz)",
-            "ar_pending_channel_id": "Pending Channel (#enlistment)",
-            "ar_welcome_channel_id": "Welcome Channel (approved members)",
-            "ar_notifications_channel_id": "Notifications Channel",
-            "ar_moderator_channel_id": "Moderator Notifications Channel"
-        }
-        
-        for key, value in ar_config.items():
-            name = channel_descriptions.get(key, key.replace("ar_", "").replace("_", " ").title())
-            value_str = ""
-            if value is None:
-                value_str = "`Not Set`"
-            elif "role_id" in key:
-                if ctx.guild:
-                    role = ctx.guild.get_role(int(value))
-                    value_str = role.mention if role else f"<@&{value}> (Not found: `{value}`)"
-                else:
-                    value_str = f"`{value}`"
-            elif "channel_id" in key:
-                if ctx.guild:
-                    channel = ctx.guild.get_channel(int(value))
-                    value_str = channel.mention if channel else f"<#{value}> (Not found: `{value}`)"
-                else:
-                    value_str = f"`{value}`"
-            elif key == "ar_region_roles":
-                if value:
-                    mapped_roles = []
-                    for k, v in value.items():
-                        role = ctx.guild.get_role(int(v)) if ctx.guild else None
-                        mapped_roles.append(f"`{k}`: {role.mention if role else f'Unknown ({v})'}")
-                    value_str = "\n".join(mapped_roles)
-                else:
-                    value_str = "None"
-            elif "api_key" in key:
-                value_str = "`Set`" if value else "`Not Set`"
-            elif key == "ar_member_history":
-                if value:
-                    total_users = sum(len(guild_data) for guild_data in value.values())
-                    value_str = f"`{total_users} users tracked`"
-                else:
-                    value_str = "`No history tracked`"
-            elif key == "ar_ping_online_only":
-                value_str = f"`{value}`"
-            elif key == "ar_admin_panel_base_url":
-                value_str = f"`{value}`"
-            else:
-                value_str = f"`{value}`"
-            
-            embed.add_field(name=name, value=value_str, inline=False)
-        
-        # Add moderator notifications summary
-        moderator_channel_id = await self.config.ar_moderator_channel_id()
-        moderator_role_id = await self.config.ar_moderator_role_id()
-        ping_online_only = await self.config.ar_ping_online_only()
-        admin_panel_base_url = await self.config.ar_admin_panel_base_url()
-        
-        embed.add_field(
-            name="Moderator Notifications",
-            value=(
-                f"Channel: {ctx.guild.get_channel(int(moderator_channel_id)).mention if moderator_channel_id and ctx.guild and ctx.guild.get_channel(int(moderator_channel_id)) else '`Not Set`'}\n"
-                f"Role: {ctx.guild.get_role(int(moderator_role_id)).mention if moderator_role_id and ctx.guild and ctx.guild.get_role(int(moderator_role_id)) else '`Not Set`'}\n"
-                f"Online Only: `{ping_online_only}`\n"
-                f"Admin Panel: `{admin_panel_base_url}`"
-            ),
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
-        log.info("Configuration displayed")
-
-    async def force_cache_invites(self, ctx):
-        await ctx.send("Refreshing invite cache...")
-        await self.cache_all_invites()
-        await ctx.send("Invite cache refreshed.")
-        log.info("Invite cache manually refreshed")
-    
-    async def set_default_guild(self, ctx, guild: discord.Guild):
-        await self.config.ar_default_guild_id.set(str(guild.id))
-        await ctx.send(f"Default guild set to: {guild.name}")
-        log.info(f"Default guild set to {guild.name} ({guild.id})")
-    
-    async def set_invite_channel(self, ctx, channel: discord.TextChannel):
-        if not channel.permissions_for(ctx.guild.me).create_instant_invite:
-            await ctx.send(f"I don't have permission to create invites in {channel.mention}")
-            log.warning(f"Missing invite creation permission in {channel.name}")
-            return
-        await self.config.ar_invite_channel_id.set(str(channel.id))
-        await ctx.send(f"Invite channel set to: {channel.mention}")
-        log.info(f"Invite channel set to {channel.name} ({channel.id})")
-
-    # Testing and debugging methods
-    async def test_member_flow(self, ctx, member: discord.Member, test_status: str):
-        """Test command to simulate different application statuses for a member"""
-        if not ctx.author.guild_permissions.manage_roles:
-            await ctx.send("You need manage roles permission to use this command.")
-            return
-            
-        test_app_data = {
-            "region": "US",
-            "platform_role_ids": [],
-            "game_role_ids": []
-        }
-        
-        guild = member.guild
-        
-        # Update the test flow to also track history
-        await ctx.send(f"Testing {member.mention} with status: {test_status}")
-        
-        # For testing, we need to simulate the join tracking
-        is_returning = await self._track_member_join(guild.id, member.id)
-        await ctx.send(f"Join tracked. Member is returning: {is_returning}")
-        
-        # First remove any existing test roles to start clean
-        unverified_role_id = await self.config.ar_unverified_role_id()
-        pending_role_id = await self.config.ar_pending_role_id()
-        member_role_id = await self.config.ar_member_role_id()
-        
-        unverified_role = guild.get_role(int(unverified_role_id)) if unverified_role_id else None
-        pending_role = guild.get_role(int(pending_role_id)) if pending_role_id else None
-        member_role = guild.get_role(int(member_role_id)) if member_role_id else None
-        
-        # Remove all test roles first
-        roles_to_remove = []
-        for role in [unverified_role, pending_role, member_role]:
-            if role and role in member.roles:
-                roles_to_remove.append(role)
-        
-        if roles_to_remove:
-            await member.remove_roles(*roles_to_remove, reason="Test flow - clearing roles")
-            await ctx.send(f"Cleared existing roles: {[r.name for r in roles_to_remove]}")
-        
-        # Now simulate the correct status by actually assigning the role first
-        if test_status == "none" or test_status == "rejected":
-            # Assign unverified role for none/rejected status
-            if unverified_role:
-                await member.add_roles(unverified_role, reason="Test flow - unverified")
-                await ctx.send(f"Assigned {unverified_role.name} role for testing")
-            await self._handle_
