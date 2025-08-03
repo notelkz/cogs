@@ -568,106 +568,104 @@ class ApplicationRolesLogic:
             log.error(f"Error processing application update request: {e}", exc_info=True)
             return web.json_response({"error": f"Error: {str(e)}"}, status=400)
 
-    # In your application_roles.py, update the process_role_update function:
-
-async def process_role_update(self, data: dict):
-    """Process application approval/rejection"""
-    discord_id = data.get("discord_id")
-    status = data.get("status")
-    app_data = data.get("application_data", {})
-    
-    if not all([discord_id, status]): 
-        log.error(f"Missing required data in process_role_update: discord_id={discord_id}, status={status}")
-        return
-
-    default_guild_id = await self.config.ar_default_guild_id()
-    if not default_guild_id: 
-        log.error("No default guild configured for role updates")
-        return
-    
-    guild = self.bot.get_guild(int(default_guild_id))
-    if not guild: 
-        log.error(f"Could not find guild with ID {default_guild_id}")
-        return
-    
-    member = guild.get_member(int(discord_id))
-    if not member: 
-        log.error(f"Could not find member with ID {discord_id} in guild {guild.name}")
-        return
-
-    log.info(f"Processing role update for {member.name} with status {status}")
-
-    pending_role = guild.get_role(int(await self.config.ar_pending_role_id() or 0))
-    unverified_role = guild.get_role(int(await self.config.ar_unverified_role_id() or 0))
-
-    if status == "rejected":
-        log.info(f"Application rejected for {member.name}. Moving back to DMZ and kicking.")
+    async def process_role_update(self, data: dict):
+        """Process application approval/rejection"""
+        discord_id = data.get("discord_id")
+        status = data.get("status")
+        app_data = data.get("application_data", {})
         
-        # Send notification to notifications channel ONLY
-        await self._send_notification(guild, member, "Application Rejected", 
-            f"{member.mention}, unfortunately your application has been rejected. You will be removed from the server.", 
-            discord.Color.red())
-        
-        roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
-        if roles_to_remove: 
-            await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
-            log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
-        
-        # Try to DM them before kicking
-        try:
-            await member.send(
-                f"Your application to {guild.name} has been rejected. You have been removed from the server."
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            log.warning(f"Could not DM {member.name} about application rejection.")
+        if not all([discord_id, status]): 
+            log.error(f"Missing required data in process_role_update: discord_id={discord_id}, status={status}")
+            return
 
-        await member.kick(reason="Application Rejected.")
-        log.info(f"Kicked {member.name} due to rejected application")
-        return
+        default_guild_id = await self.config.ar_default_guild_id()
+        if not default_guild_id: 
+            log.error("No default guild configured for role updates")
+            return
+        
+        guild = self.bot.get_guild(int(default_guild_id))
+        if not guild: 
+            log.error(f"Could not find guild with ID {default_guild_id}")
+            return
+        
+        member = guild.get_member(int(discord_id))
+        if not member: 
+            log.error(f"Could not find member with ID {discord_id} in guild {guild.name}")
+            return
 
-    if status == "approved":
-        log.info(f"Application approved for {member.name}. Moving from Enlistment to full server access.")
-        
-        # Send notification to notifications channel ONLY (remove welcome channel message)
-        await self._send_notification(guild, member, "Application Approved", 
-            f"🎉 {member.mention}, your application has been **APPROVED**! Welcome to the community!", 
-            discord.Color.green())
-        
-        roles_to_add = []
-        roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
+        log.info(f"Processing role update for {member.name} with status {status}")
 
-        if member_role_id := await self.config.ar_member_role_id():
-            if role := guild.get_role(int(member_role_id)): 
-                roles_to_add.append(role)
-                log.info(f"Adding member role: {role.name}")
-        
-        if region_code := app_data.get("region"):
-            region_roles = await self.config.ar_region_roles()
-            log.info(f"Checking region role for {region_code.upper()}. Available mappings: {region_roles}")
-            if region_role_id := region_roles.get(region_code.upper()):
-                if role := guild.get_role(int(region_role_id)): 
+        pending_role = guild.get_role(int(await self.config.ar_pending_role_id() or 0))
+        unverified_role = guild.get_role(int(await self.config.ar_unverified_role_id() or 0))
+
+        if status == "rejected":
+            log.info(f"Application rejected for {member.name}. Moving back to DMZ and kicking.")
+            
+            # Send notification to notifications channel ONLY
+            await self._send_notification(guild, member, "Application Rejected", 
+                f"{member.mention}, unfortunately your application has been rejected. You will be removed from the server.", 
+                discord.Color.red())
+            
+            roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
+            if roles_to_remove: 
+                await member.remove_roles(*roles_to_remove, reason="Application Rejected.")
+                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
+            
+            # Try to DM them before kicking
+            try:
+                await member.send(
+                    f"Your application to {guild.name} has been rejected. You have been removed from the server."
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                log.warning(f"Could not DM {member.name} about application rejection.")
+
+            await member.kick(reason="Application Rejected.")
+            log.info(f"Kicked {member.name} due to rejected application")
+            return
+
+        if status == "approved":
+            log.info(f"Application approved for {member.name}. Moving from Enlistment to full server access.")
+            
+            # Send notification to notifications channel ONLY (remove welcome channel message)
+            await self._send_notification(guild, member, "Application Approved", 
+                f"🎉 {member.mention}, your application has been **APPROVED**! Welcome to the community!", 
+                discord.Color.green())
+            
+            roles_to_add = []
+            roles_to_remove = [r for r in [pending_role, unverified_role] if r and r in member.roles]
+
+            if member_role_id := await self.config.ar_member_role_id():
+                if role := guild.get_role(int(member_role_id)): 
                     roles_to_add.append(role)
-                    log.info(f"Adding region role: {role.name}")
-        
-        for role_type in ["platform_role_ids", "game_role_ids"]:
-            role_ids = app_data.get(role_type, [])
-            log.info(f"Processing {role_type}: {role_ids}")
-            for role_id in role_ids:
-                if role_id and (role := guild.get_role(int(role_id))): 
-                    roles_to_add.append(role)
-                    log.info(f"Adding {role_type.split('_')[0]} role: {role.name}")
-        
-        if roles_to_add: 
-            await member.add_roles(*roles_to_add, reason="Application Approved - full server access granted")
-            log.info(f"Added roles: {[r.name for r in roles_to_add]}")
-        if roles_to_remove: 
-            await member.remove_roles(*roles_to_remove, reason="Application Approved - removing pending/unverified roles")
-            log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
-        
-        # ❌ REMOVED: No longer sending to welcome channel - only notifications channel
-        # This prevents the duplicate "approved" message
-        
-        log.info(f"Role update complete for {member.name} - they now have full server access")
+                    log.info(f"Adding member role: {role.name}")
+            
+            if region_code := app_data.get("region"):
+                region_roles = await self.config.ar_region_roles()
+                log.info(f"Checking region role for {region_code.upper()}. Available mappings: {region_roles}")
+                if region_role_id := region_roles.get(region_code.upper()):
+                    if role := guild.get_role(int(region_role_id)): 
+                        roles_to_add.append(role)
+                        log.info(f"Adding region role: {role.name}")
+            
+            for role_type in ["platform_role_ids", "game_role_ids"]:
+                role_ids = app_data.get(role_type, [])
+                log.info(f"Processing {role_type}: {role_ids}")
+                for role_id in role_ids:
+                    if role_id and (role := guild.get_role(int(role_id))): 
+                        roles_to_add.append(role)
+                        log.info(f"Adding {role_type.split('_')[0]} role: {role.name}")
+            
+            if roles_to_add: 
+                await member.add_roles(*roles_to_add, reason="Application Approved - full server access granted")
+                log.info(f"Added roles: {[r.name for r in roles_to_add]}")
+            if roles_to_remove: 
+                await member.remove_roles(*roles_to_remove, reason="Application Approved - removing pending/unverified roles")
+                log.info(f"Removed roles: {[r.name for r in roles_to_remove]}")
+            
+            # ❌ REMOVED: No longer sending to welcome channel - only notifications channel
+            # This prevents the duplicate "approved" message
+            
+            log.info(f"Role update complete for {member.name} - they now have full server access")
 
     async def _send_notification(self, guild: discord.Guild, member: discord.Member, title: str, message: str, color: discord.Color):
         """Send a notification to the configured notifications channel"""
@@ -1183,3 +1181,15 @@ async def process_role_update(self, data: dict):
                 await ctx.send(f"No history found for {member.mention}")
         
         log.info(f"History cleared for {member.name}")
+
+    async def set_moderator_channel(self, ctx, channel: discord.TextChannel):
+        await self.application_roles_logic.set_moderator_channel(ctx, channel)
+
+    async def set_moderator_role(self, ctx, role: discord.Role):
+        await self.application_roles_logic.set_moderator_role(ctx, role)
+
+    async def set_ping_online_only(self, ctx, online_only: bool):
+        await self.application_roles_logic.set_ping_online_only(ctx, online_only)
+
+    async def set_admin_panel_url(self, ctx, base_url: str):
+        await self.application_roles_logic.set_admin_panel_url(ctx, base_url)
