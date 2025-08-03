@@ -1,5 +1,5 @@
 # zerolivesleft-alpha/__init__.py
-# Clean version with organized XP-based activity tracking commands
+# Clean version with organized XP-based activity tracking commands and Application Ping system
 
 import asyncio
 import logging
@@ -18,6 +18,7 @@ from .rolecount import RoleCountingLogic
 from .activity_tracking import ActivityTrackingLogic
 from .calendar_sync import CalendarSyncLogic
 from .application_roles import ApplicationRolesLogic
+from .application_ping import ApplicationPingLogic  # NEW
 from .role_menus import RoleMenuLogic
 from . import role_menus
 
@@ -78,11 +79,13 @@ class Zerolivesleft(commands.Cog):
         self.activity_tracking_logic = ActivityTrackingLogic(self)
         self.calendar_sync_logic = CalendarSyncLogic(self)
         self.application_roles_logic = ApplicationRolesLogic(self)
+        self.application_ping_logic = ApplicationPingLogic(self)  # NEW
         self.role_menu_logic = RoleMenuLogic(self)
 
         self.bot.add_view(role_menus.AutoRoleView())
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
         self.web_manager.register_all_routes()
+        self.application_ping_logic.register_routes(self.web_app)  # NEW - Register ping routes
         asyncio.create_task(self.initialize_webserver())
         self.role_counting_logic.start_tasks()
         self.calendar_sync_logic.start_tasks()
@@ -235,6 +238,7 @@ class Zerolivesleft(commands.Cog):
         await self.activity_tracking_logic.show_config_command(ctx)
         await self.calendar_sync_logic.show_config(ctx)
         await self.application_roles_logic.show_config(ctx)
+        await self.application_ping_logic.show_config(ctx)  # NEW
 
     # =============================================================================
     # XP ACTIVITY TRACKING COMMANDS (CLEANED UP)
@@ -477,6 +481,56 @@ class Zerolivesleft(commands.Cog):
     @webserver_group.command(name="showconfig")
     async def webserver_show_config(self, ctx): 
         await self.web_manager.show_config_command(ctx)
+
+    # =============================================================================
+    # APPLICATION PING COMMANDS (NEW)
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="appping", aliases=["ap"])
+    async def appping_group(self, ctx: commands.Context):
+        """📢 Manage moderator notifications for application submissions."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @appping_group.command(name="setchannel")
+    async def appping_set_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel where moderator notifications are sent"""
+        await self.application_ping_logic.set_moderator_channel(ctx, channel)
+
+    @appping_group.command(name="setrole")
+    async def appping_set_role(self, ctx, role: discord.Role):
+        """Set the role to ping when applications are submitted"""
+        await self.application_ping_logic.set_moderator_role(ctx, role)
+
+    @appping_group.command(name="setadminurl")
+    async def appping_set_admin_url(self, ctx, base_url: str):
+        """Set the base URL for the admin panel (e.g., https://zerolivesleft.net/admin)"""
+        await self.application_ping_logic.set_admin_panel_url(ctx, base_url)
+
+    @appping_group.command(name="onlineonly")
+    async def appping_online_only(self, ctx, online_only: bool):
+        """Set whether to only ping online moderators (true/false)"""
+        await self.application_ping_logic.set_ping_online_only(ctx, online_only)
+
+    @appping_group.command(name="test")
+    async def appping_test(self, ctx, test_user: discord.Member = None):
+        """Send a test notification to verify the setup"""
+        await self.application_ping_logic.test_notification(ctx, test_user)
+
+    @appping_group.command(name="config")
+    async def appping_show_config(self, ctx):
+        """Show current application ping configuration"""
+        await self.application_ping_logic.show_config(ctx)
+
+    @appping_group.command(name="pending")
+    async def appping_list_pending(self, ctx):
+        """List currently pending applications"""
+        await self.application_ping_logic.list_pending_applications(ctx)
+
+    @appping_group.command(name="clear")
+    async def appping_clear_processed(self, ctx):
+        """Clear processed applications from tracking (admin only)"""
+        await self.application_ping_logic.clear_processed_applications(ctx)
 
     # =============================================================================
     # DJANGO INTEGRATION COMMANDS
