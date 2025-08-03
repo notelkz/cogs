@@ -532,6 +532,21 @@ class Zerolivesleft(commands.Cog):
         """Clear processed applications from tracking (admin only)"""
         await self.application_ping_logic.clear_processed_applications(ctx)
 
+    @appping_group.command(name="startup")
+    async def appping_force_startup_check(self, ctx):
+        """Manually run the startup application check"""
+        await self.application_ping_logic.force_startup_check(ctx)
+
+    @appping_group.command(name="stats")
+    async def appping_show_stats(self, ctx):
+        """Show application tracking statistics"""
+        await self.application_ping_logic.get_processed_count(ctx)
+
+    @appping_group.command(name="info")
+    async def appping_show_info(self, ctx):
+        """Show information about the startup check system"""
+        await self.application_ping_logic.show_startup_check_info(ctx)
+
     # =============================================================================
     # DJANGO INTEGRATION COMMANDS
     # =============================================================================

@@ -36,7 +36,12 @@ class ApplicationPingLogic:
             
             # Application tracking
             ap_pending_applications={},        # Track pending applications {app_id: {user_id, submitted_at, etc}}
+            ap_processed_applications=set(),   # Track processed applications to avoid duplicates
+            ap_last_startup_check=None,        # Last time we did a startup check
         )
+        
+        # Schedule startup check
+        self.bot.loop.create_task(self._startup_application_check())
         
         log.info("ApplicationPingLogic initialized")
 
@@ -187,7 +192,7 @@ class ApplicationPingLogic:
         
         # Add review link if admin panel URL is configured
         if admin_panel_url:
-            review_url = f"{admin_panel_url.rstrip('/')}/applications/application/{application_id}/change/"
+            review_url = f"{admin_panel_url.rstrip('/')}/community/enhancedapplication/{application_id}/change/"
             embed.add_field(
                 name="🔗 Review Application",
                 value=f"[**Click here to review and approve/reject**]({review_url})",
@@ -234,6 +239,10 @@ class ApplicationPingLogic:
                 "guild_id": guild.id
             }
         
+        # Mark as processed to avoid duplicates
+        async with self.config.ap_processed_applications() as processed:
+            processed.add(application_id)
+        
         # Send the notification
         try:
             message = await channel.send(content=mention_text, embed=embed)
@@ -248,6 +257,156 @@ class ApplicationPingLogic:
                 
         except discord.HTTPException as e:
             log.error(f"Failed to send moderator notification: {e}")
+
+    async def _startup_application_check(self):
+        """Check for pending applications that may have been missed during bot downtime"""
+        await self.bot.wait_until_ready()
+        
+        # Wait a bit for the bot to fully initialize
+        await asyncio.sleep(10)
+        
+        log.info("🔍 Starting startup application check...")
+        
+        try:
+            # Get configuration
+            moderator_channel_id = await self.config.ap_moderator_channel_id()
+            admin_panel_url = await self.config.ap_admin_panel_base_url()
+            processed_applications = await self.config.ap_processed_applications()
+            
+            if not moderator_channel_id:
+                log.info("📭 Startup check skipped: No moderator channel configured")
+                return
+                
+            # Get the guild and channel
+            default_guild_id = await self.cog.config.ar_default_guild_id()
+            if not default_guild_id:
+                log.warning("⚠️ Startup check failed: Default guild not configured")
+                return
+                
+            guild = self.bot.get_guild(int(default_guild_id))
+            if not guild:
+                log.warning(f"⚠️ Startup check failed: Guild {default_guild_id} not found")
+                return
+                
+            channel = guild.get_channel(int(moderator_channel_id))
+            if not channel:
+                log.warning(f"⚠️ Startup check failed: Channel {moderator_channel_id} not found")
+                return
+            
+            # Make API call to Django to get pending applications
+            api_url = await self.cog.config.ar_api_url()
+            api_key = await self.cog.config.ar_api_key()
+            
+            if not api_url or not api_key:
+                log.info("📭 Startup check skipped: Django API not configured")
+                return
+            
+            # Call Django API to get pending applications
+            try:
+                endpoint = f"{api_url.rstrip('/')}/api/applications/pending/"
+                headers = {"Authorization": f"Token {api_key}"}
+                
+                async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        pending_apps = await resp.json()
+                        log.info(f"📋 Found {len(pending_apps)} pending applications from Django")
+                        
+                        notifications_sent = 0
+                        for app in pending_apps:
+                            app_id = str(app.get('id'))
+                            
+                            # Skip if we've already processed this application
+                            if app_id in processed_applications:
+                                log.debug(f"⏭️ Skipping application {app_id} - already processed")
+                                continue
+                            
+                            # Send notification for this missed application
+                            try:
+                                await self._send_moderator_notification(
+                                    discord_id=int(app.get('discord_id')),
+                                    application_id=app_id,
+                                    application_data=app.get('application_data', {}),
+                                    submitted_at=app.get('submitted_at')
+                                )
+                                notifications_sent += 1
+                                log.info(f"📨 Sent startup notification for missed application {app_id}")
+                                
+                                # Small delay to avoid rate limits
+                                await asyncio.sleep(1)
+                                
+                            except Exception as e:
+                                log.error(f"❌ Failed to send startup notification for application {app_id}: {e}")
+                        
+                        if notifications_sent > 0:
+                            # Send a summary message to moderators
+                            summary_embed = discord.Embed(
+                                title="🔄 Startup Application Check Complete",
+                                description=f"Found and notified about **{notifications_sent}** pending applications that were submitted while the bot was offline.",
+                                color=discord.Color.orange(),
+                                timestamp=datetime.now()
+                            )
+                            summary_embed.set_footer(text="All pending applications have been processed")
+                            
+                            try:
+                                await channel.send(embed=summary_embed)
+                                log.info(f"✅ Startup check complete: {notifications_sent} notifications sent")
+                            except discord.HTTPException:
+                                pass
+                        else:
+                            log.info("✅ Startup check complete: No missed applications found")
+                    
+                    elif resp.status == 404:
+                        log.info("📭 Startup check: No pending applications endpoint available")
+                    else:
+                        log.warning(f"⚠️ Startup check API returned {resp.status}")
+                        
+            except asyncio.TimeoutError:
+                log.warning("⏰ Startup check timed out - Django API may be slow")
+            except Exception as e:
+                log.error(f"❌ Error during startup application check: {e}")
+            
+            # Update last check time
+            await self.config.ap_last_startup_check.set(datetime.now().isoformat())
+            
+        except Exception as e:
+            log.error(f"❌ Fatal error in startup application check: {e}")
+
+    async def force_startup_check(self, ctx: commands.Context):
+        """Manually trigger startup application check"""
+        await ctx.send("🔍 Running startup application check...")
+        await self._startup_application_check()
+        await ctx.send("✅ Startup application check completed!")
+
+    async def get_processed_count(self, ctx: commands.Context):
+        """Show how many applications have been processed"""
+        processed_applications = await self.config.ap_processed_applications()
+        pending_applications = await self.config.ap_pending_applications()
+        last_check = await self.config.ap_last_startup_check()
+        
+        embed = discord.Embed(
+            title="📊 Application Tracking Statistics",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="Processed Applications",
+            value=f"`{len(processed_applications)}` applications",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Currently Pending",
+            value=f"`{len(pending_applications)}` applications",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Last Startup Check",
+            value=f"`{last_check[:19] if last_check else 'Never'}`",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
 
     # Configuration commands
     async def set_moderator_channel(self, ctx: commands.Context, channel: discord.TextChannel):
@@ -404,11 +563,56 @@ class ApplicationPingLogic:
             return
             
         async with self.config.ap_pending_applications() as pending:
-            count = len(pending)
+            pending_count = len(pending)
             pending.clear()
             
-        await ctx.send(f"✅ Cleared {count} tracked applications from the system.")
-        log.info(f"Cleared {count} pending applications from tracking")
+        async with self.config.ap_processed_applications() as processed:
+            processed_count = len(processed)
+            processed.clear()
+            
+        await ctx.send(f"✅ Cleared {pending_count} pending and {processed_count} processed applications from tracking.")
+        log.info(f"Cleared {pending_count} pending and {processed_count} processed applications from tracking")
+
+    async def show_startup_check_info(self, ctx: commands.Context):
+        """Show information about the startup check system"""
+        embed = discord.Embed(
+            title="🔍 Startup Application Check System",
+            description="Automatically checks for missed applications when the bot starts up.",
+            color=discord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="How it works",
+            value=(
+                "• Bot checks Django API for pending applications on startup\n"
+                "• Compares with internal tracking to avoid duplicates\n"
+                "• Sends notifications for any missed applications\n"
+                "• Runs automatically 10 seconds after bot startup"
+            ),
+            inline=False
+        )
+        
+        last_check = await self.config.ap_last_startup_check()
+        embed.add_field(
+            name="Last Check",
+            value=f"`{last_check[:19] if last_check else 'Never'}`",
+            inline=True
+        )
+        
+        processed_apps = await self.config.ap_processed_applications()
+        embed.add_field(
+            name="Applications Tracked",
+            value=f"`{len(processed_apps)}` processed",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Manual Commands",
+            value="`!zll appping startup` - Force run startup check\n`!zll appping stats` - Show tracking statistics",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
 
     def register_routes(self, web_app):
         """Register web routes for this logic"""
