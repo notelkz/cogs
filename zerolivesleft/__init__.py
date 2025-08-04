@@ -472,7 +472,7 @@ class Zerolivesleft(commands.Cog):
     # GAMERTAGS COMMANDS (NEW)
     # =============================================================================
 
-    @commands.hybrid_group(name="gamertag", aliases=["gtag"])
+    @commands.hybrid_group(name="gamertag", aliases=["gtag"], invoke_without_command=True)
     async def gamertag_group(self, ctx: commands.Context, *, member: discord.Member = None):
         """🎮 View your own or another user's gamertags. Use `!gtag setup` to begin."""
         if ctx.invoked_subcommand is None:
