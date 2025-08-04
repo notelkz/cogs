@@ -1,6 +1,5 @@
 # zerolivesleft/webapi.py
 # Complete, updated file
-
 import logging
 import os
 import json
@@ -26,7 +25,7 @@ class WebApiManager:
             # --- General Routes ---
             self.web_app.router.add_get("/health", self.health_check_handler)
             self.web_app.router.add_get("/guilds/{guild_id}/roles/{role_id}/members", self.get_role_members_handler)
-            
+
             # --- Application Routes (from application_roles.py) ---
             self.web_app.router.add_post("/api/applications/update-status", self.cog.application_roles_logic.handle_application_update)
             self.web_app.router.add_post("/api/applications/submitted", self.cog.application_roles_logic.handle_application_submitted)
@@ -38,14 +37,13 @@ class WebApiManager:
 
             # --- User Profile Routes (from user_profile.py) ---
             self.web_app.router.add_get("/api/user/{user_id}/details", self.get_user_details_handler)
-            
+
             # *** NEW: Django Profile Route ***
             self.web_app.router.add_get("/api/user/{user_id}/", self.get_user_profile_handler)
 
             # --- NEW: Django Role Sync Webhook ---
             self.web_app.router.add_post("/api/django/roles/sync", self.sync_roles_to_django_handler)
-
-            log.info(f"Successfully registered routes for web_app.")
+            log.info("Successfully registered routes for web_app.")
         except RuntimeError as e:
             log.critical(f"Failed to register web routes: {e}. Router might be frozen prematurely. This is a critical error.", exc_info=True)
         except Exception as e:
@@ -57,32 +55,31 @@ class WebApiManager:
         if not expected_key:
             log.warning("Web API Key not configured in Zerolivesleft cog for incoming requests.")
             raise web.HTTPUnauthorized(reason="Web API Key not configured on RedBot.")
-        
+
         provided_key = request.headers.get("X-API-Key")
         if not provided_key or provided_key != expected_key:
             log.warning(f"Invalid API Key provided for incoming request: {provided_key}. Expected: {expected_key}")
             raise web.HTTPForbidden(reason="Invalid API Key.")
-        
+
         return True
 
     async def _authenticate_request_guild_key(self, request: web.Request, guild_id: int):
         """Authenticates incoming web API requests using the guild-specific API key (for ActivityTracker)."""
         guild_settings = await self.cog.config.guild(self.cog.bot.get_guild(guild_id)).all()
         expected_key = guild_settings.get("at_api_key")
-        
+
         if not expected_key:
             log.warning(f"ActivityTracker API Key not configured for guild {guild_id} for incoming requests.")
             raise web.HTTPUnauthorized(reason="ActivityTracker API Key not configured on RedBot for this guild.")
-        
+
         provided_key = request.headers.get("X-API-Key")
         if not provided_key or provided_key != expected_key:
             log.warning(f"Invalid ActivityTracker API Key provided for incoming request: {provided_key}. Expected: {expected_key}")
             raise web.HTTPForbidden(reason="Invalid API Key.")
-        
+
         return True
 
     # --- API HANDLERS ---
-
     async def health_check_handler(self, request: web.Request):
         """Handles /health endpoint."""
         return web.Response(text="OK", status=200)
@@ -120,15 +117,20 @@ class WebApiManager:
         members_data = []
         for member in role.members:
             streaming_activity = next((a for a in member.activities if isinstance(a, discord.Streaming)), None)
+            # Retrieve the Twitch username from the gamertags
+            gamertags = await self.cog.config.user(member).gamertags()
+            twitch_username = gamertags.get('twitch', '')
+
             members_data.append({
                 "id": str(member.id),
                 "name": member.name,
                 "display_name": member.display_name,
                 "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
                 "is_live": streaming_activity is not None,
-                "twitch_url": streaming_activity.url if streaming_activity else f"https://www.twitch.tv/{member.name}"
+                "twitch_url": streaming_activity.url if streaming_activity else f"https://www.twitch.tv/{twitch_username}",
+                "twitch_username": twitch_username
             })
-        
+
         log.info(f"Successfully returned {len(members_data)} members for role {role_id} in guild {guild_id}.")
         return web.json_response(members_data)
 
@@ -142,27 +144,23 @@ class WebApiManager:
         if not main_guild:
             log.critical(f"Main guild with ID {guild_id_str} not found. Cannot assign initial role.")
             raise web.HTTPInternalServerError(reason="Main Discord guild not found.")
-
         try:
             await self._authenticate_request_guild_key(request, main_guild.id)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
-
         try:
             data = await request.json()
             discord_id = int(data.get("discord_id"))
         except (ValueError, TypeError, json.JSONDecodeError):
             log.warning("BadRequest: Invalid request data for assign_initial_role_handler.")
             raise web.HTTPBadRequest(reason="Invalid request data.")
-
         recruit_role_id = await self.cog.config.guild(main_guild).at_recruit_role_id()
         if not recruit_role_id:
             log.error("Recruit role not configured in Zerolivesleft cog. Cannot assign initial role.")
             raise web.HTTPInternalServerError(reason="Recruit role not configured.")
-        
+
         member = main_guild.get_member(discord_id)
         recruit_role = main_guild.get_role(recruit_role_id)
-
         if member and recruit_role:
             try:
                 if recruit_role not in member.roles:
@@ -191,12 +189,11 @@ class WebApiManager:
         if not main_guild:
             log.critical(f"Main guild with ID {guild_id_str} not found. Cannot get military ranks.")
             raise web.HTTPInternalServerError(reason="Main Discord guild not found.")
-
         try:
             await self._authenticate_request_guild_key(request, main_guild.id)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
-            
+
         military_ranks = await self.cog.config.guild(main_guild).at_military_ranks()
         if not military_ranks:
             return web.json_response([], status=200)
@@ -221,35 +218,34 @@ class WebApiManager:
         if not main_guild:
             log.critical(f"Main guild with ID {guild_id_str} not found for get_all_activity_handler.")
             raise web.HTTPInternalServerError(reason="Main Discord guild not found")
-        
+
         try:
             await self._authenticate_request_guild_key(request, main_guild.id)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
-        
+
         user_activity_config = await self.cog.config.guild(main_guild).at_user_activity()
-        
+
         activity_data = []
         if self.cog.activity_tracking_logic and hasattr(self.cog.activity_tracking_logic, 'voice_tracking'):
             voice_tracking_data = self.cog.activity_tracking_logic.voice_tracking
         else:
             voice_tracking_data = {}
-
         for user_id_str, minutes in user_activity_config.items():
             user_id = int(user_id_str)
             total_minutes = minutes
-            
+
             if main_guild.id in voice_tracking_data and user_id in voice_tracking_data[main_guild.id]:
                 join_time = voice_tracking_data[main_guild.id][user_id]
                 current_session_minutes = int((datetime.utcnow() - join_time).total_seconds() / 60)
                 if current_session_minutes >= 1:
                     total_minutes += current_session_minutes
-            
+
             activity_data.append({
                 "discord_id": user_id_str,
                 "minutes": total_minutes
             })
-        
+
         log.info(f"Successfully returned {len(activity_data)} activity records for guild {main_guild.id}.")
         return web.json_response(activity_data)
 
@@ -261,39 +257,31 @@ class WebApiManager:
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             log.error("BOT DEBUG: FAILED. Authentication failed.")
             return e
-
         user_id_str = request.match_info.get("user_id")
         log.info(f"BOT DEBUG: Received request for user ID: {user_id_str}")
-        
+
         try:
             user_id = int(user_id_str)
         except (ValueError, TypeError):
             log.error("BOT DEBUG: FAILED. Invalid user_id format.")
             raise web.HTTPBadRequest(reason="Invalid user_id format.")
-
         guild_id_from_config = await self.cog.config.ar_default_guild_id()
         log.info(f"BOT DEBUG: Default guild ID from config is: {guild_id_from_config}")
-
         if not guild_id_from_config:
             log.error("BOT DEBUG: FAILED. ar_default_guild_id is not set.")
             raise web.HTTPInternalServerError(reason="Default Guild ID not configured on bot.")
-
         guild = self.cog.bot.get_guild(int(guild_id_from_config))
         if not guild:
             log.error(f"BOT DEBUG: FAILED. Bot could not find guild with ID {guild_id_from_config}. Is the bot in this server?")
             raise web.HTTPNotFound(reason=f"Bot is not in the configured default guild.")
-
         log.info(f"BOT DEBUG: Found guild: '{guild.name}' ({guild.id})")
-
         # --- This is the most important check ---
         member = guild.get_member(user_id)
         if not member:
             log.warning(f"BOT DEBUG: guild.get_member({user_id}) returned None. User may not be in server or cache is incomplete.")
             log.warning("BOT DEBUG: Returning 404 Not Found.")
             raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
-
         log.info(f"BOT DEBUG: Found member: '{member.name}' ({member.id})")
-
         role_data = [
             {"id": str(role.id), "name": role.name, "color": f"#{role.color.value:06x}"}
             for role in member.roles if role.name != "@everyone"
@@ -309,46 +297,40 @@ class WebApiManager:
     async def get_user_profile_handler(self, request: web.Request):
         """Get user profile data including roles - the endpoint Django expects."""
         log.info("--- BOT DEBUG: /api/user/.../ endpoint hit ---")
-        
+
         try:
             await self._authenticate_request_webserver_key(request)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             log.error("BOT DEBUG: FAILED. Authentication failed.")
             return e
-
         user_id_str = request.match_info.get("user_id")
         log.info(f"BOT DEBUG: Received request for user ID: {user_id_str}")
-        
+
         try:
             user_id = int(user_id_str)
         except (ValueError, TypeError):
             log.error("BOT DEBUG: FAILED. Invalid user_id format.")
             raise web.HTTPBadRequest(reason="Invalid user_id format.")
-
         # Get the main guild
         guild_id_str = os.environ.get("DISCORD_GUILD_ID")
         if not guild_id_str:
             log.error("BOT DEBUG: FAILED. DISCORD_GUILD_ID not set.")
             raise web.HTTPInternalServerError(reason="DISCORD_GUILD_ID not configured.")
-        
+
         guild = self.cog.bot.get_guild(int(guild_id_str))
         if not guild:
             log.error(f"BOT DEBUG: FAILED. Guild {guild_id_str} not found.")
             raise web.HTTPNotFound(reason=f"Guild not found.")
-
         log.info(f"BOT DEBUG: Found guild: '{guild.name}' ({guild.id})")
-
         member = guild.get_member(user_id)
         if not member:
             log.warning(f"BOT DEBUG: Member {user_id} not found in guild.")
             raise web.HTTPNotFound(reason=f"Member with ID {user_id} not found in the guild.")
-
         log.info(f"BOT DEBUG: Found member: '{member.name}' ({member.id})")
-
         # Get activity data from the activity tracking system
         voice_minutes = 0
         message_count = 0
-        
+
         try:
             if hasattr(self.cog, 'activity_tracking_logic') and self.cog.activity_tracking_logic:
                 voice_minutes = await self.cog.activity_tracking_logic._get_user_voice_minutes(guild, user_id)
@@ -361,17 +343,16 @@ class WebApiManager:
                 log.info(f"BOT DEBUG: Got activity data from config fallback - Voice: {voice_minutes}")
         except Exception as e:
             log.error(f"BOT DEBUG: Error getting activity data: {e}")
-
         # Build role data
         role_data = [
             {
-                "id": str(role.id), 
-                "name": role.name, 
+                "id": str(role.id),
+                "name": role.name,
                 "color": f"#{role.color.value:06x}"
             }
             for role in member.roles if role.name != "@everyone"
         ]
-        
+
         user_data = {
             "id": str(member.id),
             "username": member.name,
@@ -384,47 +365,42 @@ class WebApiManager:
             "avatar_url": str(member.display_avatar.url) if member.display_avatar else None,
             "roles": role_data
         }
-        
+
         log.info(f"BOT DEBUG: Successfully built user_data with {len(role_data)} roles, {voice_minutes} voice minutes, {message_count} messages. Returning 200 OK.")
         return web.json_response(user_data)
 
     # --- NEW DJANGO SYNC HANDLERS ---
-
     async def sync_roles_to_django_handler(self, request: web.Request):
         """Webhook endpoint to send role updates to Django when roles are created/deleted/modified."""
         try:
             await self._authenticate_request_webserver_key(request)
         except (web.HTTPUnauthorized, web.HTTPForbidden) as e:
             return e
-
         try:
             data = await request.json()
             action = data.get('action')  # 'sync_all' or 'sync_game_roles'
             guild_id = data.get('guild_id')
-            
+
             if not guild_id:
                 raise web.HTTPBadRequest(reason="guild_id is required")
-                
+
             guild = self.cog.bot.get_guild(int(guild_id))
             if not guild:
                 raise web.HTTPNotFound(reason=f"Guild {guild_id} not found")
-
             # Get Django webhook URL from config
             django_webhook_url = await self.cog.config.guild(guild).django_webhook_url()
             django_webhook_secret = await self.cog.config.guild(guild).django_webhook_secret()
-            
+
             if not django_webhook_url:
                 raise web.HTTPInternalServerError(reason="Django webhook URL not configured")
-
             if action == 'sync_all':
                 await self._sync_all_roles_to_django(guild, django_webhook_url, django_webhook_secret)
             elif action == 'sync_game_roles':
                 await self._sync_game_roles_to_django(guild, django_webhook_url, django_webhook_secret)
             else:
                 raise web.HTTPBadRequest(reason="Invalid action. Use 'sync_all' or 'sync_game_roles'")
-
             return web.json_response({"status": "success", "message": f"Roles synced to Django"})
-            
+
         except Exception as e:
             log.error(f"Error in sync_roles_to_django_handler: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -442,30 +418,30 @@ class WebApiManager:
                     'position': role.position,
                     'permissions': role.permissions.value
                 })
-        
+
         payload = {
             'action': 'sync_all',
             'guild_id': str(guild.id),
             'guild_name': guild.name,
             'roles': roles_data
         }
-        
+
         await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
 
     async def _sync_game_roles_to_django(self, guild, webhook_url, webhook_secret=None):
         """Sync only game-related roles to Django based on role mappings."""
         # Get role mappings from your role counting logic - they're stored in GLOBAL config, not guild config
         role_mappings = {}
-        
+
         try:
             # Your role counting logic stores mappings in global config under 'gc_game_role_mappings'
             role_mappings = await self.cog.config.gc_game_role_mappings()
             log.info(f"DEBUG: Retrieved role mappings from gc_game_role_mappings: {role_mappings}")
-            
+
             # Also verify we're using the correct counting guild
             counting_guild_id = await self.cog.config.gc_counting_guild_id()
             log.info(f"DEBUG: Counting guild ID from config: {counting_guild_id}, Current guild ID: {guild.id}")
-            
+
             if counting_guild_id and counting_guild_id != guild.id:
                 log.warning(f"DEBUG: Guild mismatch! Counting guild is {counting_guild_id}, but syncing for guild {guild.id}")
                 # Use the counting guild instead
@@ -473,10 +449,10 @@ class WebApiManager:
                 if counting_guild:
                     guild = counting_guild
                     log.info(f"DEBUG: Switched to counting guild: {guild.name} ({guild.id})")
-                    
+
         except Exception as e:
             log.error(f"Error getting role mappings from gc_game_role_mappings: {e}")
-        
+
         if not role_mappings:
             log.warning(f"No role mappings found in gc_game_role_mappings. Use '!zll rolecounter addmapping' to add game role mappings first.")
             # Send empty payload to Django
@@ -488,10 +464,10 @@ class WebApiManager:
             }
             await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
             return
-        
+
         log.info(f"DEBUG: Processing {len(role_mappings)} role mappings for guild {guild.name}")
         game_roles_data = []
-        
+
         for role_id_str, game_name in role_mappings.items():
             log.info(f"DEBUG: Processing role ID {role_id_str} -> {game_name}")
             try:
@@ -510,7 +486,7 @@ class WebApiManager:
                     log.warning(f"DEBUG: Role with ID {role_id_str} not found in guild {guild.name}")
             except ValueError as e:
                 log.error(f"DEBUG: Invalid role ID {role_id_str}: {e}")
-        
+
         log.info(f"DEBUG: Sending {len(game_roles_data)} game roles to Django")
         payload = {
             'action': 'sync_games',
@@ -518,13 +494,13 @@ class WebApiManager:
             'guild_name': guild.name,
             'game_roles': game_roles_data
         }
-        
+
         await self._send_webhook_to_django(payload, webhook_url, webhook_secret)
 
     async def _send_webhook_to_django(self, payload, webhook_url, webhook_secret=None):
         """Send webhook payload to Django."""
         headers = {'Content-Type': 'application/json'}
-        
+
         # Add signature if secret is provided
         if webhook_secret:
             payload_json = json.dumps(payload)
@@ -534,7 +510,7 @@ class WebApiManager:
                 hashlib.sha256
             ).hexdigest()
             headers['X-Discord-Signature'] = signature
-        
+
         try:
             async with self.cog.session.post(webhook_url, json=payload, headers=headers) as resp:
                 if resp.status == 200:
