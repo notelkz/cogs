@@ -1,6 +1,3 @@
-# zerolivesleft-alpha/gamertags.py
-# Gaming platform usernames management with DM setup and private viewing
-
 import asyncio
 import discord
 import logging
@@ -18,7 +15,10 @@ class GamertagsLogic:
         'xbox': {'name': 'Xbox Live', 'emoji': '🎯', 'field': 'Xbox Gamertag'},
         'steam': {'name': 'Steam', 'emoji': '🚂', 'field': 'Steam Username'},
         'nintendo': {'name': 'Nintendo Switch', 'emoji': '🔴', 'field': 'Nintendo ID'},
-        'ea_app': {'name': 'EA App', 'emoji': '🎮', 'field': 'EA App Username'},
+        'epic': {'name': 'Epic Games', 'emoji': '⚡', 'field': 'Epic Username'},
+        'battlenet': {'name': 'Battle.net', 'emoji': '⚔️', 'field': 'Battle.net ID'},
+        'origin': {'name': 'Origin/EA', 'emoji': '🔶', 'field': 'Origin Username'},
+        'uplay': {'name': 'Ubisoft Connect', 'emoji': '🎪', 'field': 'Ubisoft Username'},
         'twitch': {'name': 'Twitch', 'emoji': '💜', 'field': 'Twitch Username'}
     }
 
@@ -37,20 +37,15 @@ class GamertagsLogic:
         """Start the DM-based gamertag setup process"""
         user = ctx.author
 
-        # Try to send initial DM
         try:
+            # Send initial DM with platform selection instructions
             setup_embed = discord.Embed(
                 title="🎮 Gamertag Setup",
-                description="I'll help you set up your gaming platform usernames!\n\n"
-                           "**How this works:**\n"
-                           "• I'll ask for each platform one by one\n"
-                           "• Type your username/ID for each platform\n"
-                           "• Type `skip` to skip a platform\n"
-                           "• Type `cancel` to stop setup anytime\n"
-                           "• Your info is stored securely and only shown when requested",
+                description="Please select the platforms you want to set up by sending a message with the platform names or numbers separated by spaces.\n\n" +
+                            "\n".join([f"{i+1}. {info['name']} ({key})" for i, (key, info) in enumerate(self.PLATFORMS.items())]),
                 color=discord.Color.blue()
             )
-            setup_embed.set_footer(text="Setup starting in 3 seconds...")
+            setup_embed.set_footer(text="For example: '1 3 5' or 'psn steam epic'")
             await user.send(embed=setup_embed)
 
             # Confirm in guild that DM was sent
@@ -61,128 +56,138 @@ class GamertagsLogic:
                 f"❌ {user.mention}, I couldn't send you a DM! Please enable DMs from server members and try again."
             )
 
-        # Wait a moment then start the setup process
-        await asyncio.sleep(3)
-        await self._run_gamertag_setup(user)
-
-    async def _run_gamertag_setup(self, user: discord.User):
-        """Run the interactive gamertag setup process in DMs"""
-        gamertags = {}
+        # Wait for user to respond with platform selections
+        def check(m):
+            return m.author == user and isinstance(m.channel, discord.DMChannel)
 
         try:
-            for platform_key, platform_info in self.PLATFORMS.items():
-                # Create platform prompt embed
-                prompt_embed = discord.Embed(
-                    title=f"{platform_info['emoji']} {platform_info['name']}",
-                    description=f"What's your **{platform_info['field']}**?\n\n"
-                               f"Type your username/ID, or:\n"
-                               f"• `skip` to skip this platform\n"
-                               f"• `cancel` to stop setup",
-                    color=discord.Color.green()
-                )
-                prompt_embed.set_footer(text=f"Platform {list(self.PLATFORMS.keys()).index(platform_key) + 1} of {len(self.PLATFORMS)}")
+            message = await self.bot.wait_for('message', check=check, timeout=300)
+            user_selections = message.content.strip().lower().split()
 
-                await user.send(embed=prompt_embed)
+            # Map user selections to platform keys
+            selected_platforms = []
+            for selection in user_selections:
+                if selection in self.PLATFORMS:
+                    selected_platforms.append(selection)
+                elif selection.isdigit() and int(selection) <= len(self.PLATFORMS):
+                    platform_keys = list(self.PLATFORMS.keys())
+                    selected_platforms.append(platform_keys[int(selection) - 1])
 
-                # Wait for user response
-                def check(m):
-                    return m.author == user and isinstance(m.channel, discord.DMChannel)
+            # Run setup for selected platforms
+            await self._run_gamertag_setup(user, selected_platforms)
 
-                try:
-                    message = await self.bot.wait_for('message', check=check, timeout=300)  # 5 minute timeout
-                    response = message.content.strip()
+        except asyncio.TimeoutError:
+            timeout_embed = discord.Embed(
+                title="⏰ Setup Timed Out",
+                description="You took too long to respond. Use the command again to restart the setup process.",
+                color=discord.Color.orange()
+            )
+            await user.send(embed=timeout_embed)
 
-                    if response.lower() == 'cancel':
-                        cancel_embed = discord.Embed(
-                            title="❌ Setup Cancelled",
-                            description="Your gamertag setup has been cancelled.\n"
-                                       "No changes were saved.",
-                            color=discord.Color.red()
-                        )
-                        await user.send(embed=cancel_embed)
-                        return
+    async def _run_gamertag_setup(self, user: discord.User, selected_platforms: List[str]):
+        """Run the interactive gamertag setup process in DMs for selected platforms"""
+        gamertags = {}
 
-                    elif response.lower() == 'skip':
-                        continue  # Skip this platform
+        for platform_key in selected_platforms:
+            platform_info = self.PLATFORMS[platform_key]
+            # Create platform prompt embed
+            prompt_embed = discord.Embed(
+                title=f"{platform_info['emoji']} {platform_info['name']}",
+                description=f"What's your **{platform_info['field']}**?\n\n"
+                            f"Type your username/ID, or:\n"
+                            f"• `skip` to skip this platform\n"
+                            f"• `cancel` to stop setup",
+                color=discord.Color.green()
+            )
+            await user.send(embed=prompt_embed)
 
-                    else:
-                        # Validate and save the gamertag
-                        if len(response) > 50:
-                            await user.send("⚠️ Username too long (max 50 characters). Please try again.")
-                            continue
+            # Wait for user response
+            def check(m):
+                return m.author == user and isinstance(m.channel, discord.DMChannel)
 
-                        gamertags[platform_key] = response
+            try:
+                message = await self.bot.wait_for('message', check=check, timeout=300)  # 5 minute timeout
+                response = message.content.strip()
 
-                        # Confirmation
-                        confirm_embed = discord.Embed(
-                            title="✅ Saved!",
-                            description=f"**{platform_info['name']}:** {response}",
-                            color=discord.Color.green()
-                        )
-                        await user.send(embed=confirm_embed)
-                        await asyncio.sleep(1)  # Brief pause between questions
-
-                except asyncio.TimeoutError:
-                    timeout_embed = discord.Embed(
-                        title="⏰ Setup Timed Out",
-                        description="Setup took too long and was cancelled.\n"
-                                   "Use `!gtag setup` to try again.",
-                        color=discord.Color.orange()
+                if response.lower() == 'cancel':
+                    cancel_embed = discord.Embed(
+                        title="❌ Setup Cancelled",
+                        description="Your gamertag setup has been cancelled.\n"
+                                    "No changes were saved.",
+                        color=discord.Color.red()
                     )
-                    await user.send(embed=timeout_embed)
+                    await user.send(embed=cancel_embed)
                     return
 
-            # Save all gamertags to config
-            if gamertags:
-                await self.config.user(user).gamertags.set(gamertags)
+                elif response.lower() == 'skip':
+                    continue  # Skip this platform
 
-                # Send completion summary
-                summary_embed = discord.Embed(
-                    title="🎉 Gamertag Setup Complete!",
-                    description=f"Successfully saved **{len(gamertags)}** gamertags!\n\n"
-                               "**What's next?**\n"
-                               "• Others can view your gamertags with `!gtag @username`\n"
-                               "• Update anytime with `!gtag setup`\n"
-                               "• Remove all with `!gtag clear`",
-                    color=discord.Color.gold()
-                )
+                else:
+                    # Validate and save the gamertag
+                    if len(response) > 50:
+                        await user.send("⚠️ Username too long (max 50 characters). Please try again.")
+                        continue
 
-                # Add saved platforms to embed
-                saved_platforms = []
-                for platform_key in gamertags.keys():
-                    platform_info = self.PLATFORMS[platform_key]
-                    saved_platforms.append(f"{platform_info['emoji']} {platform_info['name']}")
+                    gamertags[platform_key] = response
 
-                if saved_platforms:
-                    summary_embed.add_field(
-                        name="Saved Platforms",
-                        value="\n".join(saved_platforms),
-                        inline=False
+                    # Confirmation
+                    confirm_embed = discord.Embed(
+                        title="✅ Saved!",
+                        description=f"**{platform_info['name']}:** {response}",
+                        color=discord.Color.green()
                     )
+                    await user.send(embed=confirm_embed)
+                    await asyncio.sleep(1)  # Brief pause between questions
 
-                await user.send(embed=summary_embed)
-
-            else:
-                # No gamertags were saved
-                empty_embed = discord.Embed(
-                    title="📝 Setup Complete",
-                    description="No gamertags were saved (all platforms were skipped).\n"
-                               "Use `!gtag setup` anytime to add your gamertags!",
-                    color=discord.Color.blue()
+            except asyncio.TimeoutError:
+                timeout_embed = discord.Embed(
+                    title="⏰ Setup Timed Out",
+                    description="Setup took too long and was cancelled.\n"
+                                "Use `!gtag setup` to try again.",
+                    color=discord.Color.orange()
                 )
-                await user.send(embed=empty_embed)
+                await user.send(embed=timeout_embed)
+                return
 
-        except Exception as e:
-            log.error(f"Error during gamertag setup for {user}: {e}")
-            error_embed = discord.Embed(
-                title="❌ Setup Error",
-                description="An error occurred during setup. Please try again later.",
-                color=discord.Color.red()
+        # Save all gamertags to config
+        if gamertags:
+            await self.config.user(user).gamertags.set(gamertags)
+
+            # Send completion summary
+            summary_embed = discord.Embed(
+                title="🎉 Gamertag Setup Complete!",
+                description=f"Successfully saved **{len(gamertags)}** gamertags!\n\n"
+                            "**What's next?**\n"
+                            "• Others can view your gamertags with `!gtag @username`\n"
+                            "• Update anytime with `!gtag setup`\n"
+                            "• Remove all with `!gtag clear`",
+                color=discord.Color.gold()
             )
-            try:
-                await user.send(embed=error_embed)
-            except:
-                pass  # User might have DMs closed
+
+            # Add saved platforms to embed
+            saved_platforms = []
+            for platform_key in gamertags.keys():
+                platform_info = self.PLATFORMS[platform_key]
+                saved_platforms.append(f"{platform_info['emoji']} {platform_info['name']}")
+
+            if saved_platforms:
+                summary_embed.add_field(
+                    name="Saved Platforms",
+                    value="\n".join(saved_platforms),
+                    inline=False
+                )
+
+            await user.send(embed=summary_embed)
+
+        else:
+            # No gamertags were saved
+            empty_embed = discord.Embed(
+                title="📝 Setup Complete",
+                description="No gamertags were saved (all platforms were skipped).\n"
+                            "Use `!gtag setup` anytime to add your gamertags!",
+                color=discord.Color.blue()
+            )
+            await user.send(embed=empty_embed)
 
     async def view_gamertags(self, ctx: commands.Context, target_user: discord.User):
         """Display a user's gamertags privately via DM"""
@@ -196,7 +201,7 @@ class GamertagsLogic:
             no_tags_embed = discord.Embed(
                 title="❌ No Gamertags Found",
                 description=f"**{target_user.display_name}** hasn't set up any gamertags yet.\n\n"
-                           f"They can use `!gtag setup` to add their gaming usernames!",
+                            f"They can use `!gtag setup` to add their gaming usernames!",
                 color=discord.Color.red()
             )
 
@@ -220,22 +225,17 @@ class GamertagsLogic:
         if target_user.avatar:
             gamertags_embed.set_thumbnail(url=target_user.avatar.url)
 
-        # Group platforms for better display
-        gaming_platforms = []
-
+        # Add platforms to embed
+        platforms = []
         for platform_key, username in user_gamertags.items():
             if platform_key in self.PLATFORMS:
                 platform_info = self.PLATFORMS[platform_key]
-                platform_text = f"{platform_info['emoji']} **{platform_info['name']}**\n`{username}`"
+                platforms.append(f"{platform_info['emoji']} **{platform_info['name']}**\n`{username}`")
 
-                # Categorize platforms
-                gaming_platforms.append(platform_text)
-
-        # Add gaming platforms field
-        if gaming_platforms:
+        if platforms:
             gamertags_embed.add_field(
-                name="🎮 Gaming Platforms",
-                value="\n\n".join(gaming_platforms),
+                name="🎮 Platforms",
+                value="\n\n".join(platforms),
                 inline=False
             )
 
@@ -267,7 +267,7 @@ class GamertagsLogic:
         confirm_embed = discord.Embed(
             title="⚠️ Clear All Gamertags?",
             description=f"This will permanently delete **{len(user_gamertags)}** saved gamertags.\n\n"
-                       "React with ✅ to confirm or ❌ to cancel.",
+                        "React with ✅ to confirm or ❌ to cancel.",
             color=discord.Color.orange()
         )
 
@@ -277,8 +277,8 @@ class GamertagsLogic:
 
         def check(reaction, reaction_user):
             return (reaction_user == user and
-                   str(reaction.emoji) in ["✅", "❌"] and
-                   reaction.message.id == confirm_msg.id)
+                    str(reaction.emoji) in ["✅", "❌"] and
+                    reaction.message.id == confirm_msg.id)
 
         try:
             reaction, _ = await self.bot.wait_for('reaction_add', check=check, timeout=30)
@@ -325,7 +325,7 @@ class GamertagsLogic:
             no_tags_embed = discord.Embed(
                 title="❌ No Gamertags Set",
                 description="You haven't set up any gamertags yet!\n\n"
-                           "Use `!gtag setup` to add your gaming platform usernames.",
+                            "Use `!gtag setup` to add your gaming platform usernames.",
                 color=discord.Color.red()
             )
             await ctx.send(embed=no_tags_embed)
