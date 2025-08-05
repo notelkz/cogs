@@ -111,8 +111,6 @@ class Zerolivesleft(commands.Cog):
         self.report_logic = ReportLogic(self) # NEW
 
         self.bot.add_view(role_menus.AutoRoleView())
-        # Add persistent report moderation view
-        self.bot.add_view(ReportModerationView(None, None, None))
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
         self.web_manager.register_all_routes()
         self.application_ping_logic.register_routes(self.web_app)  # NEW - Register ping routes
@@ -151,6 +149,17 @@ class Zerolivesleft(commands.Cog):
                             log.info(f"Re-registered view for menu '{menu_name}' in guild {guild_id}.")
                     except Exception as e:
                         log.error(f"Failed to re-register view for menu '{menu_name}' in guild {guild_id}: {e}")
+        
+        # Add persistent report moderation view
+        log.info("Initializing persistent report moderation views...")
+        try:
+            # Create a dummy view just for registration - it will be replaced when actual reports are created
+            dummy_embed = discord.Embed(title="Dummy", description="Dummy")
+            report_view = ReportModerationView(self.report_logic, dummy_embed, 0)
+            self.bot.add_view(report_view)
+            log.info("Successfully registered persistent report moderation view")
+        except Exception as e:
+            log.error(f"Failed to register persistent report moderation view: {e}")
 
     async def initialize_webserver(self):
         await self.bot.wait_until_ready()
