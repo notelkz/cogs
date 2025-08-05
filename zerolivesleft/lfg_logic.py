@@ -497,44 +497,68 @@ class LFGLogic:
                 
                 forum_name = message.channel.parent.name
                 reminder_embed.add_field(
-                    name="📋 Instructions Thread Rules",
+                    name="📋 Instructions Thread Guidelines",
                     value=(
-                        f"The **📌 How to Use LFG System** thread is for instructions only.\n\n"
-                        "**To create an LFG post, use:**\n"
-                        "`!lfg <game> <players_needed> [description] [time]`\n\n"
-                        "This will create a **new thread** where you and others can chat freely!"
+                        f"The **📌 How to Use LFG System** thread is for:\n"
+                        "• Reading the LFG instructions\n"
+                        "• Testing LFG commands (messages starting with `!lfg`)\n\n"
+                        "**Regular chat messages are not allowed here.**"
                     ),
                     inline=False
                 )
                 
                 reminder_embed.add_field(
-                    name="💡 Tip",
+                    name="🎮 To Create Your LFG Post",
                     value=(
-                        "Don't reply to the instructions - create your own LFG post instead!\n"
-                        "Each LFG post gets its own thread for discussion."
+                        "Use: `!lfg <game> <players_needed> [description] [time]`\n\n"
+                        "**Examples:**\n"
+                        "• `!lfg \"Valorant\" 3 \"Ranked games\" \"8pm EST\"`\n"
+                        "• `!lfg Minecraft 5 \"Building project\"`\n\n"
+                        "This creates a **new thread** where you and others can chat freely!"
                     ),
+                    inline=False
+                )
+                
+                reminder_embed.add_field(
+                    name="💬 For General Discussion",
+                    value="Use other channels or create your own LFG thread for conversation!",
                     inline=False
                 )
                 
                 reminder_embed.set_footer(text=f"Server: {message.guild.name}")
                 
-                # Try to send DM, fallback to ephemeral if DMs are closed
+                # Try to send DM, with better error handling
+                dm_sent = False
                 try:
                     await message.author.send(embed=reminder_embed)
-                except discord.HTTPException:
-                    # If DM fails, try to send a brief message in the channel that deletes quickly
+                    dm_sent = True
+                except discord.Forbidden:
+                    # User has DMs disabled
+                    pass
+                except discord.HTTPException as dm_error:
+                    log.warning(f"Failed to send DM to {message.author}: {dm_error}")
+                
+                # If DM failed, try to send a brief message in the channel
+                if not dm_sent:
                     try:
                         warning_msg = await message.channel.send(
-                            f"{message.author.mention} Please create your own LFG post with `!lfg <game> <players>` instead of replying here. "
-                            f"(This message will delete in 10 seconds)",
-                            delete_after=10
+                            f"{message.author.mention} The instructions thread is for reading guidelines and testing `!lfg` commands only. "
+                            f"Create your own LFG post to chat with others! (This message will delete in 15 seconds)",
+                            delete_after=15
                         )
-                    except discord.HTTPException:
-                        pass  # If we can't send anywhere, just log it
-                        log.info(f"Deleted non-LFG message from {message.author} in instructions thread but couldn't send warning")
+                    except discord.HTTPException as channel_error:
+                        log.warning(f"Failed to send channel warning: {channel_error}")
+                        # At least log that we deleted the message
+                        log.info(f"Deleted non-LFG message from {message.author} in instructions thread")
                 
-            except discord.HTTPException as e:
-                log.error(f"Failed to delete non-LFG message: {e}")
+            except discord.NotFound:
+                # Message was already deleted
+                pass
+            except discord.Forbidden:
+                # No permission to delete
+                log.warning(f"No permission to delete message in {message.guild.name}")
+            except discord.HTTPException as delete_error:
+                log.error(f"Failed to delete non-LFG message: {delete_error}")
                 
         except Exception as e:
             log.error(f"Error in LFG message filter: {e}")
