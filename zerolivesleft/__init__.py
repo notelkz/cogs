@@ -82,6 +82,12 @@ class Zerolivesleft(commands.Cog):
         }
         self.config.register_user(**default_user)
 
+        # Register default channel config for LFG data
+        default_channel = {
+            "lfg_data": {}
+        }
+        self.config.register_channel(**default_channel)
+
         self.session = aiohttp.ClientSession()
         self.web_app = web.Application()
         self.web_runner = None

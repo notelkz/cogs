@@ -278,8 +278,8 @@ class LFGLogic:
             embed.set_thumbnail(url=ctx.author.display_avatar.url)
             embed.set_footer(text="Use the buttons below to join or leave this group! 🎮 Join will also connect you to voice if available.")
             
-            # Create thread title
-            thread_title = f"[LFG] {game} - {players_needed} players needed"
+            # Create thread title with username to avoid duplicates
+            thread_title = f"[LFG] {game} [{players_needed} players] [{ctx.author.display_name}]"
             if time:
                 thread_title += f" @ {time}"
             
@@ -307,25 +307,9 @@ class LFGLogic:
                 view=view
             )
             
-            # Copy permissions from the forum's parent category to the new thread
-            try:
-                if forum.category:
-                    # Get the category's permission overwrites
-                    category_overwrites = forum.category.overwrites
-                    
-                    # Apply the same overwrites to the thread
-                    for target, overwrite in category_overwrites.items():
-                        try:
-                            await thread.thread.set_permissions(target, overwrite=overwrite)
-                        except discord.HTTPException as perm_error:
-                            log.warning(f"Failed to set permissions for {target} on LFG thread: {perm_error}")
-                    
-                    log.info(f"Applied category permissions to LFG thread: {thread.thread.name}")
-                else:
-                    log.info(f"Forum {forum.name} has no parent category - using default permissions")
-            except Exception as perm_error:
-                log.error(f"Error copying permissions to LFG thread: {perm_error}")
-                # Don't fail the whole operation, just log the error
+            # Forum threads automatically inherit permissions from the forum channel
+            # No need to manually copy permissions - they inherit from parent forum
+            log.info(f"Created LFG thread: {thread.thread.name} (inherits forum permissions)")
             
             # Update LFG data with thread and message info
             lfg_data["thread_id"] = thread.thread.id
