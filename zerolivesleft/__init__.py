@@ -210,9 +210,18 @@ class Zerolivesleft(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Handle messages for XP awards and LFG forum filtering."""
-        if message.author.bot or not message.guild:
+        """Handle messages for XP awards, LFG forum filtering, and report DM responses."""
+        if message.author.bot:
             return
+            
+        # Handle DM responses to reports
+        if not message.guild:  # This is a DM
+            handled = await self.report_logic.handle_dm_response(message)
+            if handled:
+                return  # Don't process further if it was a report response
+            return
+            
+        # Handle guild messages
         await self.activity_tracking_logic.handle_message(message)
         
         # Handle LFG forum message filtering
