@@ -4,6 +4,15 @@ import logging
 
 log = logging.getLogger("red.Elkz.zerolivesleft.report")
 
+class ReportButtonView(discord.ui.View):
+    def __init__(self, modal):
+        super().__init__(timeout=300)
+        self.modal = modal
+
+    @discord.ui.button(label="📋 Submit Report", style=discord.ButtonStyle.primary)
+    async def submit_report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(self.modal)
+
 class ReportModal(discord.ui.Modal):
     def __init__(self, report_logic):
         super().__init__(title="Submit a Report", timeout=300)
@@ -107,14 +116,14 @@ class ReportLogic:
         """Set report configuration for a guild."""
         await self.config.guild(guild).set_raw(key, value=value)
     
-    def check_cooldown(self, user_id: int, cooldown_seconds: int) -> bool:
+    def check_user_cooldown(self, user_id: int, cooldown_seconds: int) -> bool:
         """Check if user is on cooldown."""
         if user_id in self.user_cooldowns:
             remaining = self.user_cooldowns[user_id] - datetime.utcnow().timestamp()
             return remaining > 0
         return False
     
-    def set_cooldown(self, user_id: int, cooldown_seconds: int):
+    def set_user_cooldown(self, user_id: int, cooldown_seconds: int):
         """Set cooldown for user."""
         self.user_cooldowns[user_id] = datetime.utcnow().timestamp() + cooldown_seconds
     
@@ -138,7 +147,7 @@ class ReportLogic:
                 return
         
         # Check cooldown
-        if self.check_cooldown(ctx.author.id, config['report_cooldown']):
+        if self.check_user_cooldown(ctx.author.id, config['report_cooldown']):
             remaining = self.user_cooldowns[ctx.author.id] - datetime.utcnow().timestamp()
             await ctx.send(
                 f"⏱️ You're on cooldown. Please wait {int(remaining)} seconds before submitting another report.",
@@ -155,11 +164,22 @@ class ReportLogic:
             return
         
         # Set cooldown
-        self.set_cooldown(ctx.author.id, config['report_cooldown'])
+        self.set_user_cooldown(ctx.author.id, config['report_cooldown'])
         
-        # Create and send modal
+        # Create and send modal - handle both slash and regular commands
         modal = ReportModal(self)
-        await ctx.interaction.response.send_modal(modal)
+        
+        # Check if this is a slash command with interaction
+        if hasattr(ctx, 'interaction') and ctx.interaction:
+            await ctx.interaction.response.send_modal(modal)
+        else:
+            # For regular commands, we need to send a message with a button to open the modal
+            view = ReportButtonView(modal)
+            await ctx.send(
+                "📋 Click the button below to open the report form:",
+                view=view,
+                ephemeral=True
+            )
     
     async def handle_report_submission(self, interaction, reported_user, reason, description, evidence, when_occurred):
         """Handle the actual report submission from the modal."""
