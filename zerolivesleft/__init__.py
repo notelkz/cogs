@@ -595,52 +595,42 @@ class Zerolivesleft(commands.Cog):
         """Show information about the startup check system"""
         await self.application_ping_logic.show_startup_check_info(ctx)
 
+    # =============================================================================  
+    # APPLICATION PING COMMANDS - PERIODIC CHECKING (FIXED - NO NESTING)
     # =============================================================================
-    # APPLICATION PING COMMANDS - ADD THESE NEW PERIODIC COMMANDS
-    # =============================================================================
 
-    # Add these after your existing appping commands:
-
-    @appping_group.group(name="periodic")
-    async def appping_periodic_group(self, ctx: commands.Context):
-        """🔄 Manage periodic application checking (every 5 minutes)"""
-        if ctx.invoked_subcommand is None:
-            await self.application_ping_logic.show_periodic_status(ctx)
-
-    @appping_periodic_group.command(name="status")
+    @appping_group.command(name="periodicstatus")
     async def appping_periodic_status(self, ctx):
         """Show current periodic check status and next check time"""
         await self.application_ping_logic.show_periodic_status(ctx)
 
-    @appping_periodic_group.command(name="check", aliases=["force"])
+    @appping_group.command(name="periodiccheck", aliases=["forcecheck"])
     async def appping_periodic_force_check(self, ctx):
         """Force run a periodic application check immediately"""
         await self.application_ping_logic.force_periodic_check(ctx)
 
-    @appping_periodic_group.command(name="toggle", aliases=["enable", "disable"])
+    @appping_group.command(name="periodictoggle")
     async def appping_periodic_toggle(self, ctx, enabled: bool = None):
         """Enable or disable periodic application checks
         
         Usage:
-        - `periodic toggle` - Toggle current state
-        - `periodic toggle true` - Enable periodic checks  
-        - `periodic toggle false` - Disable periodic checks
+        - `periodictoggle` - Toggle current state
+        - `periodictoggle true` - Enable periodic checks  
+        - `periodictoggle false` - Disable periodic checks
         """
         await self.application_ping_logic.toggle_periodic_checks(ctx, enabled)
 
-    @appping_periodic_group.command(name="interval")
+    @appping_group.command(name="periodicinterval")
     async def appping_periodic_set_interval(self, ctx, minutes: int):
-        """Set the interval for periodic application checks
-        
-        Parameters:
-        - minutes: How often to check (1-1440 minutes)
+        """Set the interval for periodic application checks (1-1440 minutes)
         
         Examples:
-        - `periodic interval 5` - Check every 5 minutes (default)
-        - `periodic interval 10` - Check every 10 minutes
-        - `periodic interval 60` - Check every hour
+        - `periodicinterval 5` - Check every 5 minutes (default)
+        - `periodicinterval 10` - Check every 10 minutes
+        - `periodicinterval 60` - Check every hour
         """
         await self.application_ping_logic.set_check_interval(ctx, minutes)
+    
     # =============================================================================
     # DJANGO INTEGRATION COMMANDS
     # =============================================================================
