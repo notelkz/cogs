@@ -8,9 +8,29 @@ import logging
 
 log = logging.getLogger("red.Elkz.zerolivesleft.lfg")
 
+class LFGView(discord.ui.View):
+    """View with buttons for LFG interactions"""
+    
+    def __init__(self, lfg_logic, lfg_data):
+        super().__init__(timeout=None)
+        self.lfg_logic = lfg_logic
+        self.lfg_data = lfg_data
+        
+    @discord.ui.button(label="Join Group", emoji="🎮", style=discord.ButtonStyle.green)
+    async def join_group(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.lfg_logic.handle_join(interaction, self.lfg_data)
+    
+    @discord.ui.button(label="Leave Group", emoji="❌", style=discord.ButtonStyle.red)
+    async def leave_group(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.lfg_logic.handle_leave(interaction, self.lfg_data)
+    
+    @discord.ui.button(label="Close Group", emoji="🔒", style=discord.ButtonStyle.secondary)
+    async def close_group(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.lfg_logic.handle_close(interaction, self.lfg_data)
+
 class LFGLogic:
     """
-    Looking for Group system using Discord Forums
+    Looking for Group system using Discord Forums with Buttons
     """
     
     def __init__(self, parent_cog):
@@ -18,7 +38,7 @@ class LFGLogic:
         self.bot = parent_cog.bot
         self.config = parent_cog.config
         
-        # LFG-specific config will be registered in the parent cog
+        # Start cleanup task
         self.cleanup_task.start()
     
     def stop_tasks(self):
@@ -50,17 +70,18 @@ class LFGLogic:
                 return
             
             cleanup_hours = await self.config.guild(guild).lfg_cleanup_hours()
+            if not cleanup_hours:
+                cleanup_hours = 24
             cutoff_time = datetime.utcnow() - timedelta(hours=cleanup_hours)
+            
+            for thread in forum.threads:
+                if thread.created_at < cutoff_time and thread.name.startswith("[LFG]"):
+                    try:
+                        await thread.delete()
+                    except discord.HTTPException:
+                        pass
         except Exception as e:
             log.error(f"Error accessing LFG config for guild {guild.name}: {e}")
-            return
-        
-        for thread in forum.threads:
-            if thread.created_at < cutoff_time and thread.name.startswith("[LFG]"):
-                try:
-                    await thread.delete()
-                except discord.HTTPException:
-                    pass
     
     async def setup_lfg(self, ctx, forum_channel: discord.ForumChannel):
         """Set up the LFG system with a forum channel"""
@@ -98,8 +119,8 @@ class LFGLogic:
         embed.add_field(
             name="🔗 Joining a Group",
             value=(
-                "Click the 🎮 **Join Group** button on any LFG post to be added to the group!\n"
-                "The post creator can manage who joins using the reaction buttons."
+                "Click the **Join Group** button on any LFG post to be added to the group!\n"
+                "Use **Leave Group** to leave, and hosts can use **Close Group** to end the session."
             ),
             inline=False
         )
@@ -115,7 +136,7 @@ class LFGLogic:
         # Create the pinned post
         thread = await forum_channel.create_thread(
             name="📌 How to Use LFG System",
-            content="**This is a pinned explanation post - create your LFG requests as replies or new posts!**",
+            content="**This is a pinned explanation post - create your LFG requests using the !lfg command!**",
             embed=embed
         )
         
@@ -131,11 +152,11 @@ class LFGLogic:
             config = await self.config.guild(ctx.guild).all()
             embed = discord.Embed(title="LFG Configuration", color=0x0099ff)
             
-            forum = ctx.guild.get_channel(config["lfg_forum_id"])
+            forum = ctx.guild.get_channel(config.get("lfg_forum_id"))
             embed.add_field(name="Forum Channel", value=forum.mention if forum else "Not set", inline=False)
-            embed.add_field(name="Required Role", value=config["lfg_required_role"], inline=True)
-            embed.add_field(name="Cleanup Hours", value=config["lfg_cleanup_hours"], inline=True)
-            embed.add_field(name="Max Players", value=config["lfg_max_players"], inline=True)
+            embed.add_field(name="Required Role", value=config.get("lfg_required_role", "Recruit"), inline=True)
+            embed.add_field(name="Cleanup Hours", value=config.get("lfg_cleanup_hours", 24), inline=True)
+            embed.add_field(name="Max Players", value=config.get("lfg_max_players", 10), inline=True)
             
             await ctx.send(embed=embed)
             return
@@ -179,67 +200,54 @@ class LFGLogic:
         Usage: !lfg <game> <players_needed> [description] [time]
         Example: !lfg "Valorant" 3 "Ranked games" "8pm EST"
         """
-        # Check if user has required role
-        if not await self._has_required_role(ctx.author, ctx.guild):
-            required_role = await self.config.guild(ctx.guild).lfg_required_role()
-            await ctx.send(f"❌ You need the `{required_role}` role or higher to use the LFG system.")
-            return
-        
-        # Get forum channel
-        forum_id = await self.config.guild(ctx.guild).lfg_forum_id()
-        if not forum_id:
-            await ctx.send("❌ LFG system not set up. Contact an admin.")
-            return
-        
-        forum = ctx.guild.get_channel(forum_id)
-        if not forum or not isinstance(forum, discord.ForumChannel):
-            await ctx.send("❌ LFG forum channel not found.")
-            return
-        
-        # Validate players needed
-        max_players = await self.config.guild(ctx.guild).lfg_max_players()
-        if players_needed < 1 or players_needed > max_players:
-            await ctx.send(f"❌ Players needed must be between 1 and {max_players}.")
-            return
-        
-        # Create embed for the LFG post
-        embed = discord.Embed(
-            title=f"🎮 {game}",
-            description=description or "No description provided",
-            color=0x00ff00,
-            timestamp=datetime.utcnow()
-        )
-        
-        embed.add_field(name="👤 Host", value=ctx.author.mention, inline=True)
-        embed.add_field(name="👥 Players Needed", value=f"{players_needed}/{players_needed}", inline=True)
-        embed.add_field(name="🕐 Time", value=time or "Not specified", inline=True)
-        embed.add_field(name="📋 Current Players", value=ctx.author.display_name, inline=False)
-        
-        embed.set_thumbnail(url=ctx.author.display_avatar.url)
-        embed.set_footer(text="Click 🎮 to join this group!")
-        
-        # Create thread title
-        thread_title = f"[LFG] {game} - {players_needed} players needed"
-        if time:
-            thread_title += f" @ {time}"
-        
-        # Create the forum thread
         try:
-            thread = await forum.create_thread(
-                name=thread_title[:100],  # Discord has a 100 char limit
-                content=f"**{ctx.author.mention} is looking for group!**",
-                embed=embed
+            # Check if user has required role
+            if not await self._has_required_role(ctx.author, ctx.guild):
+                required_role = await self.config.guild(ctx.guild).lfg_required_role()
+                if not required_role:
+                    required_role = "Recruit"
+                await ctx.send(f"❌ You need the `{required_role}` role or higher to use the LFG system.")
+                return
+            
+            # Get forum channel
+            forum_id = await self.config.guild(ctx.guild).lfg_forum_id()
+            if not forum_id:
+                await ctx.send("❌ LFG system not set up. Contact an admin.")
+                return
+            
+            forum = ctx.guild.get_channel(forum_id)
+            if not forum or not isinstance(forum, discord.ForumChannel):
+                await ctx.send("❌ LFG forum channel not found.")
+                return
+            
+            # Validate players needed
+            max_players = await self.config.guild(ctx.guild).lfg_max_players()
+            if not max_players:
+                max_players = 10  # Default fallback
+            if players_needed < 1 or players_needed > max_players:
+                await ctx.send(f"❌ Players needed must be between 1 and {max_players}.")
+                return
+            
+            # Create embed for the LFG post
+            embed = discord.Embed(
+                title=f"🎮 {game}",
+                description=description or "No description provided",
+                color=0x00ff00,
+                timestamp=datetime.utcnow()
             )
             
-            # Add reaction buttons
-            join_emoji = "🎮"
-            leave_emoji = "❌" 
-            close_emoji = "🔒"
+            embed.add_field(name="👤 Host", value=ctx.author.mention, inline=True)
+            embed.add_field(name="👥 Players Needed", value=f"1/{players_needed}", inline=True)
+            embed.add_field(name="🕐 Time", value=time or "Not specified", inline=True)
+            embed.add_field(name="📋 Current Players", value=ctx.author.display_name, inline=False)
             
-            message = await thread.thread.fetch_message(thread.message.id)
-            await message.add_reaction(join_emoji)
-            await message.add_reaction(leave_emoji)
-            await message.add_reaction(close_emoji)
+            embed.set_thumbnail(url=ctx.author.display_avatar.url)
+            embed.set_footer(text="Use the buttons below to join or leave this group!")
+            
+            # Create thread title
+            thread_title = f"[LFG] {game} - {players_needed} players needed"
+            if time:
+                thread_title += f" @ {time}"
             
             # Store LFG data
             lfg_data = {
@@ -249,11 +257,26 @@ class LFGLogic:
                 "current_players": [ctx.author.id],
                 "description": description,
                 "time": time,
-                "thread_id": thread.thread.id,
-                "message_id": thread.message.id,
-                "closed": False
+                "closed": False,
+                "guild_id": ctx.guild.id
             }
             
+            # Create view with buttons
+            view = LFGView(self, lfg_data)
+            
+            # Create the forum thread
+            thread = await forum.create_thread(
+                name=thread_title[:100],  # Discord has a 100 char limit
+                content=f"**{ctx.author.mention} is looking for group!**",
+                embed=embed,
+                view=view
+            )
+            
+            # Update LFG data with thread and message info
+            lfg_data["thread_id"] = thread.thread.id
+            lfg_data["message_id"] = thread.message.id
+            
+            # Store LFG data in channel config
             await self.config.channel(thread.thread).lfg_data.set(lfg_data)
             
             # Delete the original command message
@@ -273,159 +296,245 @@ class LFGLogic:
             
         except discord.HTTPException as e:
             await ctx.send(f"❌ Failed to create LFG post: {e}")
+        except Exception as e:
+            log.error(f"Error creating LFG post: {e}")
+            await ctx.send("❌ An error occurred while creating the LFG post.")
     
-    async def on_reaction_add(self, reaction, user):
-        """Handle LFG reactions"""
-        if user.bot:
-            return
-        
-        message = reaction.message
-        
-        # Check if this is an LFG thread
-        if not isinstance(message.channel, discord.Thread):
-            return
-        
-        if not message.channel.parent or not isinstance(message.channel.parent, discord.ForumChannel):
-            return
-        
-        # Get LFG data
-        lfg_data = await self.config.channel(message.channel).lfg_data()
-        if not lfg_data or message.id != lfg_data.get("message_id"):
-            return
-        
-        if lfg_data.get("closed", False):
-            await reaction.remove(user)
-            return
-        
-        emoji = str(reaction.emoji)
-        host_id = lfg_data["host_id"]
-        current_players = lfg_data["current_players"]
-        players_needed = lfg_data["players_needed"]
-        
-        if emoji == "🎮":  # Join group
-            if user.id in current_players:
-                await reaction.remove(user)
+    async def handle_join(self, interaction: discord.Interaction, lfg_data):
+        """Handle join button click"""
+        try:
+            user = interaction.user
+            
+            # Check if already in group
+            if user.id in lfg_data["current_players"]:
+                await interaction.response.send_message("❌ You're already in this group!", ephemeral=True)
                 return
             
-            if len(current_players) >= players_needed:
-                await reaction.remove(user)
-                try:
-                    await user.send("❌ This LFG group is already full!")
-                except discord.HTTPException:
-                    pass
+            # Check if group is full
+            if len(lfg_data["current_players"]) >= lfg_data["players_needed"]:
+                await interaction.response.send_message("❌ This group is already full!", ephemeral=True)
                 return
             
             # Check if user has required role
-            if not await self._has_required_role(user, message.guild):
-                await reaction.remove(user)
-                try:
-                    required_role = await self.config.guild(message.guild).lfg_required_role()
-                    await user.send(f"❌ You need the `{required_role}` role to join LFG groups.")
-                except discord.HTTPException:
-                    pass
+            if not await self._has_required_role(user, interaction.guild):
+                required_role = await self.config.guild(interaction.guild).lfg_required_role()
+                if not required_role:
+                    required_role = "Recruit"
+                await interaction.response.send_message(f"❌ You need the `{required_role}` role to join LFG groups.", ephemeral=True)
                 return
             
             # Add user to group
-            current_players.append(user.id)
-            lfg_data["current_players"] = current_players
-            await self.config.channel(message.channel).lfg_data.set(lfg_data)
+            lfg_data["current_players"].append(user.id)
+            await self.config.channel(interaction.channel).lfg_data.set(lfg_data)
             
             # Update embed
-            await self._update_lfg_embed(message, lfg_data)
+            await self._update_lfg_embed(interaction.message, lfg_data)
             
-            # Send join message
-            join_embed = discord.Embed(
-                title="🎮 Player Joined!",
-                description=f"{user.mention} joined the group for **{lfg_data['game']}**!",
-                color=0x00ff00
-            )
-            await message.channel.send(embed=join_embed)
+            # Send response
+            await interaction.response.send_message(f"✅ {user.mention} joined the group for **{lfg_data['game']}**!")
             
-        elif emoji == "❌":  # Leave group
-            if user.id == host_id:
-                await reaction.remove(user)
+        except Exception as e:
+            log.error(f"Error handling join: {e}")
+            await interaction.response.send_message("❌ An error occurred while joining the group.", ephemeral=True)
+    
+    async def handle_leave(self, interaction: discord.Interaction, lfg_data):
+        """Handle leave button click"""
+        try:
+            user = interaction.user
+            
+            # Check if user is host
+            if user.id == lfg_data["host_id"]:
+                await interaction.response.send_message("❌ The host cannot leave the group. Use 'Close Group' instead.", ephemeral=True)
                 return
             
-            if user.id not in current_players:
-                await reaction.remove(user)
+            # Check if user is in group
+            if user.id not in lfg_data["current_players"]:
+                await interaction.response.send_message("❌ You're not in this group!", ephemeral=True)
                 return
             
             # Remove user from group
-            current_players.remove(user.id)
-            lfg_data["current_players"] = current_players
-            await self.config.channel(message.channel).lfg_data.set(lfg_data)
+            lfg_data["current_players"].remove(user.id)
+            await self.config.channel(interaction.channel).lfg_data.set(lfg_data)
             
             # Update embed
-            await self._update_lfg_embed(message, lfg_data)
+            await self._update_lfg_embed(interaction.message, lfg_data)
             
-            # Send leave message
-            leave_embed = discord.Embed(
-                title="👋 Player Left",
-                description=f"{user.mention} left the group for **{lfg_data['game']}**.",
-                color=0xff9900
-            )
-            await message.channel.send(embed=leave_embed)
+            # Send response
+            await interaction.response.send_message(f"👋 {user.mention} left the group for **{lfg_data['game']}**.")
             
-        elif emoji == "🔒" and user.id == host_id:  # Close group (host only)
+        except Exception as e:
+            log.error(f"Error handling leave: {e}")
+            await interaction.response.send_message("❌ An error occurred while leaving the group.", ephemeral=True)
+    
+    async def handle_close(self, interaction: discord.Interaction, lfg_data):
+        """Handle close button click"""
+        try:
+            user = interaction.user
+            
+            # Check if user is host
+            if user.id != lfg_data["host_id"]:
+                await interaction.response.send_message("❌ Only the host can close the group!", ephemeral=True)
+                return
+            
+            # Close the group
             lfg_data["closed"] = True
-            await self.config.channel(message.channel).lfg_data.set(lfg_data)
+            await self.config.channel(interaction.channel).lfg_data.set(lfg_data)
             
             # Update embed to show closed
-            await self._update_lfg_embed(message, lfg_data)
+            await self._update_lfg_embed(interaction.message, lfg_data)
             
-            # Clear reactions
-            await message.clear_reactions()
+            # Disable all buttons
+            view = discord.ui.View()
+            for item in interaction.message.components[0].children:
+                button = discord.ui.Button(
+                    label=item.label,
+                    emoji=item.emoji,
+                    style=item.style,
+                    disabled=True
+                )
+                view.add_item(button)
             
-            # Send close message
-            close_embed = discord.Embed(
-                title="🔒 Group Closed",
-                description=f"The host has closed this LFG group for **{lfg_data['game']}**.",
-                color=0xff0000
-            )
-            await message.channel.send(embed=close_embed)
+            await interaction.message.edit(view=view)
+            
+            # Send response
+            await interaction.response.send_message(f"🔒 The host has closed this LFG group for **{lfg_data['game']}**.")
+            
+        except Exception as e:
+            log.error(f"Error handling close: {e}")
+            await interaction.response.send_message("❌ An error occurred while closing the group.", ephemeral=True)
     
     async def _update_lfg_embed(self, message, lfg_data):
         """Update the LFG embed with current player information"""
-        current_players = lfg_data["current_players"]
-        players_needed = lfg_data["players_needed"]
-        game = lfg_data["game"]
-        description = lfg_data.get("description", "No description provided")
-        time = lfg_data.get("time", "Not specified")
-        closed = lfg_data.get("closed", False)
-        
-        # Get player names
-        player_names = []
-        for player_id in current_players:
-            user = message.guild.get_member(player_id)
-            if user:
-                player_names.append(user.display_name)
-        
-        # Create updated embed
-        color = 0xff0000 if closed else (0x00ff00 if len(current_players) < players_needed else 0xffff00)
-        status = "🔒 CLOSED" if closed else ("🟢 OPEN" if len(current_players) < players_needed else "🟡 FULL")
-        
-        embed = discord.Embed(
-            title=f"🎮 {game} {status}",
-            description=description,
-            color=color,
-            timestamp=datetime.utcnow()
-        )
-        
-        host = message.guild.get_member(lfg_data["host_id"])
-        embed.add_field(name="👤 Host", value=host.mention if host else "Unknown", inline=True)
-        embed.add_field(name="👥 Players", value=f"{len(current_players)}/{players_needed}", inline=True)
-        embed.add_field(name="🕐 Time", value=time, inline=True)
-        embed.add_field(name="📋 Current Players", value="\n".join(player_names) or "None", inline=False)
-        
-        if host:
-            embed.set_thumbnail(url=host.display_avatar.url)
-        
-        if not closed:
-            embed.set_footer(text="🎮 Join | ❌ Leave | 🔒 Close (Host only)")
-        else:
-            embed.set_footer(text="This group is closed.")
-        
         try:
+            current_players = lfg_data["current_players"]
+            players_needed = lfg_data["players_needed"]
+            game = lfg_data["game"]
+            description = lfg_data.get("description", "No description provided")
+            time = lfg_data.get("time", "Not specified")
+            closed = lfg_data.get("closed", False)
+            
+            # Get player names
+            player_names = []
+            for player_id in current_players:
+                user = message.guild.get_member(player_id)
+                if user:
+                    player_names.append(user.display_name)
+            
+            # Create updated embed
+            color = 0xff0000 if closed else (0x00ff00 if len(current_players) < players_needed else 0xffff00)
+            status = "🔒 CLOSED" if closed else ("🟢 OPEN" if len(current_players) < players_needed else "🟡 FULL")
+            
+            embed = discord.Embed(
+                title=f"🎮 {game} {status}",
+                description=description,
+                color=color,
+                timestamp=datetime.utcnow()
+            )
+            
+            host = message.guild.get_member(lfg_data["host_id"])
+            embed.add_field(name="👤 Host", value=host.mention if host else "Unknown", inline=True)
+            embed.add_field(name="👥 Players", value=f"{len(current_players)}/{players_needed}", inline=True)
+            embed.add_field(name="🕐 Time", value=time, inline=True)
+            embed.add_field(name="📋 Current Players", value="\n".join(player_names) or "None", inline=False)
+            
+            if host:
+                embed.set_thumbnail(url=host.display_avatar.url)
+            
+            if not closed:
+                embed.set_footer(text="Use the buttons below to join or leave this group!")
+            else:
+                embed.set_footer(text="This group is closed.")
+            
             await message.edit(embed=embed)
-        except discord.HTTPException:
-            pass
+            
+        except Exception as e:
+            log.error(f"Error updating LFG embed: {e}")
+    
+    # This method is no longer needed since we're using buttons
+    async def on_reaction_add(self, reaction, user):
+        """Legacy method - now using buttons instead"""
+        pass
+    
+    async def on_message(self, message):
+        """Handle messages in LFG forum channels"""
+        try:
+            # Ignore bot messages
+            if message.author.bot:
+                return
+            
+            # Check if this is in an LFG forum channel
+            if not isinstance(message.channel, discord.Thread):
+                return
+            
+            if not message.channel.parent or not isinstance(message.channel.parent, discord.ForumChannel):
+                return
+            
+            # Get the configured LFG forum ID for this guild
+            forum_id = await self.config.guild(message.guild).lfg_forum_id()
+            if not forum_id or message.channel.parent.id != forum_id:
+                return
+            
+            # ONLY filter messages in the pinned "How to Use" thread
+            if not message.channel.name.startswith("📌 How to Use"):
+                return  # Allow all messages in actual LFG threads
+            
+            # Check if message starts with !lfg (allow some flexibility with spacing)
+            message_content = message.content.strip().lower()
+            if message_content.startswith('!lfg'):
+                return  # Allow LFG commands in the instruction thread
+            
+            # This is a non-LFG message in the "How to Use" thread - delete it and warn the user
+            try:
+                # Delete the message first
+                await message.delete()
+                
+                # Send a helpful reminder to the user via DM
+                reminder_embed = discord.Embed(
+                    title="❌ LFG Instructions Thread",
+                    description=f"Hi {message.author.display_name}! Your message in the LFG instructions thread was removed.",
+                    color=0xff6b6b
+                )
+                
+                forum_name = message.channel.parent.name
+                reminder_embed.add_field(
+                    name="📋 Instructions Thread Rules",
+                    value=(
+                        f"The **📌 How to Use LFG System** thread is for instructions only.\n\n"
+                        "**To create an LFG post, use:**\n"
+                        "`!lfg <game> <players_needed> [description] [time]`\n\n"
+                        "This will create a **new thread** where you and others can chat freely!"
+                    ),
+                    inline=False
+                )
+                
+                reminder_embed.add_field(
+                    name="💡 Tip",
+                    value=(
+                        "Don't reply to the instructions - create your own LFG post instead!\n"
+                        "Each LFG post gets its own thread for discussion."
+                    ),
+                    inline=False
+                )
+                
+                reminder_embed.set_footer(text=f"Server: {message.guild.name}")
+                
+                # Try to send DM, fallback to ephemeral if DMs are closed
+                try:
+                    await message.author.send(embed=reminder_embed)
+                except discord.HTTPException:
+                    # If DM fails, try to send a brief message in the channel that deletes quickly
+                    try:
+                        warning_msg = await message.channel.send(
+                            f"{message.author.mention} Please create your own LFG post with `!lfg <game> <players>` instead of replying here. "
+                            f"(This message will delete in 10 seconds)",
+                            delete_after=10
+                        )
+                    except discord.HTTPException:
+                        pass  # If we can't send anywhere, just log it
+                        log.info(f"Deleted non-LFG message from {message.author} in instructions thread but couldn't send warning")
+                
+            except discord.HTTPException as e:
+                log.error(f"Failed to delete non-LFG message: {e}")
+                
+        except Exception as e:
+            log.error(f"Error in LFG message filter: {e}")

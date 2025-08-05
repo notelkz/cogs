@@ -186,10 +186,13 @@ class Zerolivesleft(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Handle messages for XP awards."""
+        """Handle messages for XP awards and LFG forum filtering."""
         if message.author.bot or not message.guild:
             return
         await self.activity_tracking_logic.handle_message(message)
+        
+        # Handle LFG forum message filtering
+        await self.lfg_logic.on_message(message)
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
