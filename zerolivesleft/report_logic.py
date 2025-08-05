@@ -291,140 +291,77 @@ class ReportLogic:
         """Set cooldown for user."""
         self.user_cooldowns[user_id] = datetime.utcnow().timestamp() + cooldown_seconds
     
-    async def handle_moderator_response(self, interaction, original_embed, original_message, reporter_id, response_text):
-        """Handle moderator response to a report."""
+    async def store_active_report(self, reporter_id, report_id, report_message):
+        """Store active report for DM response tracking."""
+        self.active_reports[reporter_id] = {
+            'report_id': report_id,
+            'report_message': report_message,
+            'last_response_time': datetime.utcnow()
+        }
+    
+    async def handle_dm_response(self, message):
+        """Handle DM responses from reporters."""
+        user_id = message.author.id
+        
+        if user_id not in self.active_reports:
+            return False  # Not an active report response
+        
+        report_info = self.active_reports[user_id]
+        report_message = report_info['report_message']
+        report_id = report_info['report_id']
+        
         try:
-            # Send anonymous DM to the reporter
-            reporter = interaction.guild.get_member(reporter_id)
-            if reporter:
-                # Get report ID from the embed
-                report_id = None
-                for field in original_embed.fields:
-                    if field.name == "🆔 Report ID":
-                        report_id = field.value
-                        break
-                
-                dm_embed = discord.Embed(
-                    title="📋 Report Update",
-                    description=f"A moderator has responded to your report {report_id}:",
-                    color=discord.Color.orange(),
-                    timestamp=datetime.utcnow()
-                )
-                dm_embed.add_field(
-                    name="Moderator Response",
-                    value=response_text,
-                    inline=False
-                )
-                dm_embed.add_field(
-                    name="What's Next?",
-                    value="You can reply to this DM with additional information if needed.",
-                    inline=False
-                )
-                
-                # Store the report info for tracking DM responses
-                await self.store_active_report(reporter_id, report_id, original_message)
-                
-                await reporter.send(embed=dm_embed)
-                
-                # Add a note to the original report
-                updated_embed = original_embed.copy()
-                updated_embed.color = discord.Color.orange()
-                updated_embed.add_field(
-                    name="📨 Moderator Response Sent",
-                    value=f"Response sent at {datetime.utcnow().strftime('%H:%M:%S')}",
-                    inline=False
-                )
-                
-                await original_message.edit(embed=updated_embed)
-                
-                await interaction.response.send_message(
-                    f"✅ Your response has been sent anonymously to the reporter.",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    "❌ Could not find the reporter to send the response.",
-                    ephemeral=True
-                )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ Could not send DM to the reporter. They may have DMs disabled.",
-                ephemeral=True
+            # Create embed for the DM response
+            response_embed = discord.Embed(
+                title="📬 Reporter Response Received",
+                description=f"The reporter has responded to {report_id}:",
+                color=discord.Color.green(),
+                timestamp=datetime.utcnow()
             )
+            response_embed.add_field(
+                name="Response",
+                value=message.content[:1000] + ("..." if len(message.content) > 1000 else ""),
+                inline=False
+            )
+            response_embed.add_field(
+                name="Reporter",
+                value=f"{message.author.mention} ({message.author})",
+                inline=True
+            )
+            
+            # Send the response to the report channel as a reply to the original report
+            await report_message.reply(embed=response_embed)
+            
+            # Update the active report timestamp
+            self.active_reports[user_id]['last_response_time'] = datetime.utcnow()
+            
+            # Send confirmation to the reporter
+            confirm_embed = discord.Embed(
+                title="✅ Response Received",
+                description=f"Your response to {report_id} has been forwarded to the moderators.",
+                color=discord.Color.green()
+            )
+            await message.author.send(embed=confirm_embed)
+            
+            return True
+            
         except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Error sending response: {str(e)}",
-                ephemeral=True
-            )
-
-    async def handle_final_response(self, interaction, original_embed, original_message, reporter_id, final_response):
-        """Handle final resolution of a report."""
-        try:
-            # Send final response to the reporter
-            reporter = interaction.guild.get_member(reporter_id)
-            if reporter:
-                # Get report ID from the embed
-                report_id = None
-                for field in original_embed.fields:
-                    if field.name == "🆔 Report ID":
-                        report_id = field.value
-                        break
-                
-                dm_embed = discord.Embed(
-                    title="📋 Report Resolved",
-                    description=f"Your report {report_id} has been resolved:",
-                    color=discord.Color.green(),
-                    timestamp=datetime.utcnow()
-                )
-                dm_embed.add_field(
-                    name="Final Resolution",
-                    value=final_response,
-                    inline=False
-                )
-                dm_embed.add_field(
-                    name="Status",
-                    value="✅ Closed - This report has been resolved",
-                    inline=False
-                )
-                
-                await reporter.send(embed=dm_embed)
-                
-                # Update the original report to show resolved status
-                resolved_embed = original_embed.copy()
-                resolved_embed.color = discord.Color.green()
-                resolved_embed.set_footer(text=f"{original_embed.footer.text} • Resolved")
-                resolved_embed.add_field(
-                    name="✅ Resolution",
-                    value=f"Resolved at {datetime.utcnow().strftime('%H:%M:%S')}",
-                    inline=False
-                )
-                
-                # Disable all buttons in the view
-                view = ReportModerationView(self, resolved_embed, reporter_id)
-                for item in view.children:
-                    item.disabled = True
-                
-                await original_message.edit(embed=resolved_embed, view=view)
-                
-                await interaction.response.send_message(
-                    f"✅ Report has been resolved and the reporter has been notified.",
-                    ephemeral=True
-                )
-            else:
-                await interaction.response.send_message(
-                    "❌ Could not find the reporter to send the final response.",
-                    ephemeral=True
-                )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ Could not send DM to the reporter. They may have DMs disabled.",
-                ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Error sending final response: {str(e)}",
-                ephemeral=True
-            )
+            log.error(f"Error handling DM response: {e}")
+            return False
+    
+    async def cleanup_old_reports(self):
+        """Clean up old report tracking (call this periodically)."""
+        cutoff_time = datetime.utcnow().timestamp() - (24 * 60 * 60)  # 24 hours
+        
+        to_remove = []
+        for user_id, report_info in self.active_reports.items():
+            if report_info['last_response_time'].timestamp() < cutoff_time:
+                to_remove.append(user_id)
+        
+        for user_id in to_remove:
+            del self.active_reports[user_id]
+    
+    async def log_report(self, guild, reporter, reported_user, reason):
         """Log report submissions for tracking purposes."""
         config = await self.get_report_config(guild)
         if not config['report_log_enabled']:
@@ -570,6 +507,145 @@ class ReportLogic:
                 ephemeral=True
             )
     
+    async def handle_moderator_response(self, interaction, original_embed, original_message, reporter_id, response_text):
+        """Handle moderator response to a report."""
+        try:
+            # Send anonymous DM to the reporter
+            reporter = interaction.guild.get_member(reporter_id)
+            if reporter:
+                # Get report ID from the embed
+                report_id = None
+                for field in original_embed.fields:
+                    if field.name == "🆔 Report ID":
+                        report_id = field.value
+                        break
+                
+                dm_embed = discord.Embed(
+                    title="📋 Report Update",
+                    description=f"A moderator has responded to your report {report_id}:",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Moderator Response",
+                    value=response_text,
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="What's Next?",
+                    value="You can reply to this DM with additional information if needed.",
+                    inline=False
+                )
+                
+                # Store the report info for tracking DM responses
+                await self.store_active_report(reporter_id, report_id, original_message)
+                
+                await reporter.send(embed=dm_embed)
+                
+                # Add a note to the original report
+                updated_embed = original_embed.copy()
+                updated_embed.color = discord.Color.orange()
+                updated_embed.add_field(
+                    name="📨 Moderator Response Sent",
+                    value=f"Response sent at {datetime.utcnow().strftime('%H:%M:%S')}",
+                    inline=False
+                )
+                
+                await original_message.edit(embed=updated_embed)
+                
+                await interaction.response.send_message(
+                    f"✅ Your response has been sent anonymously to the reporter.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Could not find the reporter to send the response.",
+                    ephemeral=True
+                )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Could not send DM to the reporter. They may have DMs disabled.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Error sending response: {str(e)}",
+                ephemeral=True
+            )
+
+    async def handle_final_response(self, interaction, original_embed, original_message, reporter_id, final_response):
+        """Handle final resolution of a report."""
+        try:
+            # Send final response to the reporter
+            reporter = interaction.guild.get_member(reporter_id)
+            if reporter:
+                # Get report ID from the embed
+                report_id = None
+                for field in original_embed.fields:
+                    if field.name == "🆔 Report ID":
+                        report_id = field.value
+                        break
+                
+                dm_embed = discord.Embed(
+                    title="📋 Report Resolved",
+                    description=f"Your report {report_id} has been resolved:",
+                    color=discord.Color.green(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Final Resolution",
+                    value=final_response,
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="Status",
+                    value="✅ Closed - This report has been resolved",
+                    inline=False
+                )
+                
+                await reporter.send(embed=dm_embed)
+                
+                # Update the original report to show resolved status
+                resolved_embed = original_embed.copy()
+                resolved_embed.color = discord.Color.green()
+                resolved_embed.set_footer(text=f"{original_embed.footer.text} • Resolved")
+                resolved_embed.add_field(
+                    name="✅ Resolution",
+                    value=f"Resolved at {datetime.utcnow().strftime('%H:%M:%S')}",
+                    inline=False
+                )
+                
+                # Disable all buttons in the view
+                view = ReportModerationView(self, resolved_embed, reporter_id)
+                for item in view.children:
+                    item.disabled = True
+                
+                await original_message.edit(embed=resolved_embed, view=view)
+                
+                # Remove from active reports tracking
+                if reporter_id in self.active_reports:
+                    del self.active_reports[reporter_id]
+                
+                await interaction.response.send_message(
+                    f"✅ Report has been resolved and the reporter has been notified.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Could not find the reporter to send the final response.",
+                    ephemeral=True
+                )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Could not send DM to the reporter. They may have DMs disabled.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Error sending final response: {str(e)}",
+                ephemeral=True
+            )
+    
     # Configuration commands
     async def set_report_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel where reports will be sent."""
@@ -661,10 +737,29 @@ class ReportLogic:
     
     async def show_stats(self, ctx):
         """Show report system statistics."""
-        # This is a placeholder - you could expand this to track actual statistics
         embed = discord.Embed(
             title="📋 Report Statistics",
-            description="Report tracking is enabled but detailed statistics are not yet implemented.",
             color=discord.Color.blue()
         )
+        
+        active_count = len(self.active_reports)
+        embed.add_field(
+            name="Active Reports",
+            value=f"{active_count} reports currently tracking DM responses",
+            inline=False
+        )
+        
+        if active_count > 0:
+            recent_reports = []
+            for user_id, report_info in list(self.active_reports.items())[:5]:
+                time_ago = datetime.utcnow() - report_info['last_response_time']
+                hours_ago = int(time_ago.total_seconds() / 3600)
+                recent_reports.append(f"• {report_info['report_id']} ({hours_ago}h ago)")
+            
+            embed.add_field(
+                name="Recent Active Reports",
+                value="\n".join(recent_reports),
+                inline=False
+            )
+        
         await ctx.send(embed=embed)
