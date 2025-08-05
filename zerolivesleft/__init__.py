@@ -22,6 +22,7 @@ from .application_ping import ApplicationPingLogic  # NEW
 from .role_menus import RoleMenuLogic
 from .gamertags import GamertagsLogic # NEW
 from .lfg_logic import LFGLogic # NEW
+from .report_logic import ReportLogic # NEW
 from . import role_menus
 
 log = logging.getLogger("red.Elkz.zerolivesleft")
@@ -73,6 +74,11 @@ class Zerolivesleft(commands.Cog):
             "lfg_required_role": "Recruit", 
             "lfg_cleanup_hours": 24,
             "lfg_max_players": 10,
+            # Report System settings
+            "report_channel": None,
+            "report_cooldown": 300,  # 5 minutes
+            "report_allowed_roles": [],  # Empty means everyone can report
+            "report_log_enabled": True,
         }
         self.config.register_guild(**default_guild)
 
@@ -102,6 +108,7 @@ class Zerolivesleft(commands.Cog):
         self.role_menu_logic = RoleMenuLogic(self)
         self.gamertags_logic = GamertagsLogic(self) # NEW
         self.lfg_logic = LFGLogic(self) # NEW
+        self.report_logic = ReportLogic(self) # NEW
 
         self.bot.add_view(role_menus.AutoRoleView())
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
@@ -267,6 +274,7 @@ class Zerolivesleft(commands.Cog):
         await self.calendar_sync_logic.show_config(ctx)
         await self.application_roles_logic.show_config(ctx)
         await self.application_ping_logic.show_config(ctx)  # NEW
+        await self.report_logic.show_config(ctx)  # NEW
         # Acknowledge the gamertag system, which is user-based
         embed = discord.Embed(
             title="🎮 Gamertag System",
@@ -550,6 +558,64 @@ class Zerolivesleft(commands.Cog):
         Example: !lfg "Valorant" 3 "Ranked games" "8pm EST"
         """
         await self.lfg_logic.create_lfg(ctx, game, players_needed, description, time)
+
+    # =============================================================================
+    # REPORT SYSTEM COMMANDS
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="report")
+    async def report_group(self, ctx: commands.Context):
+        """📋 Configure the server reporting system."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @report_group.command(name="setchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def report_set_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel where reports will be sent."""
+        await self.report_logic.set_report_channel(ctx, channel)
+
+    @report_group.command(name="setcooldown")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def report_set_cooldown(self, ctx, seconds: int):
+        """Set the cooldown between reports (in seconds)."""
+        await self.report_logic.set_cooldown(ctx, seconds)
+
+    @report_group.command(name="addrole")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def report_add_role(self, ctx, role: discord.Role):
+        """Add a role that can submit reports."""
+        await self.report_logic.add_allowed_role(ctx, role)
+
+    @report_group.command(name="removerole")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def report_remove_role(self, ctx, role: discord.Role):
+        """Remove a role from being able to submit reports."""
+        await self.report_logic.remove_allowed_role(ctx, role)
+
+    @report_group.command(name="clearroles")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def report_clear_roles(self, ctx):
+        """Clear all role restrictions (everyone can report)."""
+        await self.report_logic.clear_allowed_roles(ctx)
+
+    @report_group.command(name="config")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def report_show_config(self, ctx):
+        """Show current report system configuration."""
+        await self.report_logic.show_config(ctx)
+
+    @report_group.command(name="stats")
+    @commands.mod_or_permissions(manage_messages=True)
+    async def report_show_stats(self, ctx):
+        """View report system statistics."""
+        await self.report_logic.show_stats(ctx)
+
+    # User command (outside the admin group)
+    @commands.hybrid_command(name="report")
+    async def report_command(self, ctx):
+        """Submit a report using an interactive form."""
+        await self.report_logic.submit_report(ctx)
 
     # =============================================================================
     # WEBSERVER COMMANDS
