@@ -1,33 +1,28 @@
+# lfg_logic.py
 import discord
-from discord.ext import commands, tasks
-from redbot.core import commands, Config, checks
-from redbot.core.utils.embed import EmbedUtils
-from redbot.core.utils.predicates import MessagePredicate
+from discord.ext import tasks
+from redbot.core import commands
 from datetime import datetime, timedelta
 import asyncio
-import re
+import logging
 
-class LFG(commands.Cog):
+log = logging.getLogger("red.Elkz.zerolivesleft.lfg")
+
+class LFGLogic:
     """
     Looking for Group system using Discord Forums
     """
     
-    def __init__(self, bot):
-        self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
+    def __init__(self, parent_cog):
+        self.parent_cog = parent_cog
+        self.bot = parent_cog.bot
+        self.config = parent_cog.config
         
-        default_guild = {
-            "lfg_forum_id": None,
-            "required_role": "Recruit",
-            "cleanup_hours": 24,
-            "max_players": 10,
-            "allowed_channels": []
-        }
-        
-        self.config.register_guild(**default_guild)
+        # LFG-specific config will be registered in the parent cog
         self.cleanup_task.start()
     
-    def cog_unload(self):
+    def stop_tasks(self):
+        """Stop all background tasks"""
         self.cleanup_task.cancel()
     
     @tasks.loop(hours=1)
@@ -37,7 +32,7 @@ class LFG(commands.Cog):
             try:
                 await self._cleanup_old_posts(guild)
             except Exception as e:
-                print(f"Error cleaning up LFG posts in {guild.name}: {e}")
+                log.error(f"Error cleaning up LFG posts in {guild.name}: {e}")
     
     @cleanup_task.before_loop
     async def before_cleanup_task(self):
@@ -53,7 +48,7 @@ class LFG(commands.Cog):
         if not forum or not isinstance(forum, discord.ForumChannel):
             return
         
-        cleanup_hours = await self.config.guild(guild).cleanup_hours()
+        cleanup_hours = await self.config.guild(guild).lfg_cleanup_hours()
         cutoff_time = datetime.utcnow() - timedelta(hours=cleanup_hours)
         
         for thread in forum.threads:
@@ -63,13 +58,6 @@ class LFG(commands.Cog):
                 except discord.HTTPException:
                     pass
     
-    @commands.group(name="lfg")
-    async def lfg_group(self, ctx):
-        """LFG system commands"""
-        pass
-    
-    @lfg_group.command(name="setup")
-    @checks.admin_or_permissions(manage_guild=True)
     async def setup_lfg(self, ctx, forum_channel: discord.ForumChannel):
         """Set up the LFG system with a forum channel"""
         await self.config.guild(ctx.guild).lfg_forum_id.set(forum_channel.id)
@@ -132,8 +120,6 @@ class LFG(commands.Cog):
         
         await ctx.send(f"✅ LFG system set up in {forum_channel.mention}!")
     
-    @lfg_group.command(name="config")
-    @checks.admin_or_permissions(manage_guild=True)
     async def config_lfg(self, ctx, setting: str = None, *, value: str = None):
         """Configure LFG settings"""
         if not setting:
@@ -143,27 +129,27 @@ class LFG(commands.Cog):
             
             forum = ctx.guild.get_channel(config["lfg_forum_id"])
             embed.add_field(name="Forum Channel", value=forum.mention if forum else "Not set", inline=False)
-            embed.add_field(name="Required Role", value=config["required_role"], inline=True)
-            embed.add_field(name="Cleanup Hours", value=config["cleanup_hours"], inline=True)
-            embed.add_field(name="Max Players", value=config["max_players"], inline=True)
+            embed.add_field(name="Required Role", value=config["lfg_required_role"], inline=True)
+            embed.add_field(name="Cleanup Hours", value=config["lfg_cleanup_hours"], inline=True)
+            embed.add_field(name="Max Players", value=config["lfg_max_players"], inline=True)
             
             await ctx.send(embed=embed)
             return
         
         if setting.lower() == "role" and value:
-            await self.config.guild(ctx.guild).required_role.set(value)
+            await self.config.guild(ctx.guild).lfg_required_role.set(value)
             await ctx.send(f"✅ Required role set to: {value}")
         elif setting.lower() == "cleanup" and value:
             try:
                 hours = int(value)
-                await self.config.guild(ctx.guild).cleanup_hours.set(hours)
+                await self.config.guild(ctx.guild).lfg_cleanup_hours.set(hours)
                 await ctx.send(f"✅ Cleanup time set to: {hours} hours")
             except ValueError:
                 await ctx.send("❌ Please provide a valid number of hours.")
         elif setting.lower() == "maxplayers" and value:
             try:
                 max_players = int(value)
-                await self.config.guild(ctx.guild).max_players.set(max_players)
+                await self.config.guild(ctx.guild).lfg_max_players.set(max_players)
                 await ctx.send(f"✅ Max players set to: {max_players}")
             except ValueError:
                 await ctx.send("❌ Please provide a valid number.")
@@ -172,11 +158,10 @@ class LFG(commands.Cog):
     
     async def _has_required_role(self, member, guild):
         """Check if member has the required role"""
-        required_role_name = await self.config.guild(guild).required_role()
+        required_role_name = await self.config.guild(guild).lfg_required_role()
         required_role = discord.utils.get(member.roles, name=required_role_name)
         return required_role is not None
     
-    @commands.command(name="lfg")
     async def create_lfg(self, ctx, game: str, players_needed: int, description: str = None, time: str = None):
         """
         Create a Looking for Group post
@@ -186,7 +171,7 @@ class LFG(commands.Cog):
         """
         # Check if user has required role
         if not await self._has_required_role(ctx.author, ctx.guild):
-            required_role = await self.config.guild(ctx.guild).required_role()
+            required_role = await self.config.guild(ctx.guild).lfg_required_role()
             await ctx.send(f"❌ You need the `{required_role}` role or higher to use the LFG system.")
             return
         
@@ -202,7 +187,7 @@ class LFG(commands.Cog):
             return
         
         # Validate players needed
-        max_players = await self.config.guild(ctx.guild).max_players()
+        max_players = await self.config.guild(ctx.guild).lfg_max_players()
         if players_needed < 1 or players_needed > max_players:
             await ctx.send(f"❌ Players needed must be between 1 and {max_players}.")
             return
@@ -279,7 +264,6 @@ class LFG(commands.Cog):
         except discord.HTTPException as e:
             await ctx.send(f"❌ Failed to create LFG post: {e}")
     
-    @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
         """Handle LFG reactions"""
         if user.bot:
@@ -325,7 +309,7 @@ class LFG(commands.Cog):
             if not await self._has_required_role(user, message.guild):
                 await reaction.remove(user)
                 try:
-                    required_role = await self.config.guild(message.guild).required_role()
+                    required_role = await self.config.guild(message.guild).lfg_required_role()
                     await user.send(f"❌ You need the `{required_role}` role to join LFG groups.")
                 except discord.HTTPException:
                     pass
