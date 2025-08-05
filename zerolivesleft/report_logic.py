@@ -1,14 +1,13 @@
 import discord
-from discord.ext import commands
-from redbot.core import commands as red_commands, Config, checks
-from redbot.core.utils.chat_formatting import box, pagify
-import asyncio
 from datetime import datetime
-from typing import Optional
+import logging
+
+log = logging.getLogger("red.Elkz.zerolivesleft.report")
 
 class ReportModal(discord.ui.Modal):
-    def __init__(self):
+    def __init__(self, report_logic):
         super().__init__(title="Submit a Report", timeout=300)
+        self.report_logic = report_logic
         
         # User being reported
         self.reported_user = discord.ui.TextInput(
@@ -58,22 +57,116 @@ class ReportModal(discord.ui.Modal):
         self.add_item(self.when_occurred)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Get the cog instance to access config
-        cog = interaction.client.get_cog("Report")
-        if not cog:
-            await interaction.response.send_message("❌ Report system is not available.", ephemeral=True)
+        await self.report_logic.handle_report_submission(
+            interaction,
+            self.reported_user.value,
+            self.reason.value,
+            self.description.value,
+            self.evidence.value,
+            self.when_occurred.value
+        )
+
+class ReportLogic:
+    """Logic for handling the report system within the main zerolivesleft cog."""
+    
+    def __init__(self, main_cog):
+        self.main_cog = main_cog
+        self.bot = main_cog.bot
+        self.config = main_cog.config
+        self.user_cooldowns = {}
+        
+        # Register report-specific config
+        self._register_config()
+    
+    def _register_config(self):
+        """Register report-specific configuration in the main config."""
+        # This adds to the existing guild config structure
+        default_report_config = {
+            "report_channel": None,
+            "report_cooldown": 300,  # 5 minutes
+            "report_allowed_roles": [],  # Empty means everyone can report
+            "report_log_enabled": True,
+        }
+        
+        # Since we can't modify the existing registration, we'll handle this in the main cog
+        log.info("Report system initialized within main cog")
+    
+    async def get_report_config(self, guild):
+        """Get report configuration for a guild."""
+        guild_config = await self.config.guild(guild).all()
+        
+        # Use existing keys or defaults if they don't exist
+        return {
+            'report_channel': guild_config.get('report_channel'),
+            'report_cooldown': guild_config.get('report_cooldown', 300),
+            'report_allowed_roles': guild_config.get('report_allowed_roles', []),
+            'report_log_enabled': guild_config.get('report_log_enabled', True),
+        }
+    
+    async def set_report_config(self, guild, key, value):
+        """Set report configuration for a guild."""
+        await self.config.guild(guild).set_raw(key, value=value)
+    
+    def check_cooldown(self, user_id: int, cooldown_seconds: int) -> bool:
+        """Check if user is on cooldown."""
+        if user_id in self.user_cooldowns:
+            remaining = self.user_cooldowns[user_id] - datetime.utcnow().timestamp()
+            return remaining > 0
+        return False
+    
+    def set_cooldown(self, user_id: int, cooldown_seconds: int):
+        """Set cooldown for user."""
+        self.user_cooldowns[user_id] = datetime.utcnow().timestamp() + cooldown_seconds
+    
+    async def log_report(self, guild, reporter, reported_user, reason):
+        """Log report submissions for tracking purposes."""
+        config = await self.get_report_config(guild)
+        if not config['report_log_enabled']:
             return
             
-        # Get report channel
-        report_channel_id = await cog.config.guild(interaction.guild).report_channel()
-        if not report_channel_id:
-            await interaction.response.send_message(
-                "❌ No report channel has been configured. Please contact an administrator.",
+        log.info(f"[REPORT] {guild.name} - {reporter} reported {reported_user} for: {reason}")
+    
+    async def submit_report(self, ctx):
+        """Handle the !report command - opens the modal."""
+        config = await self.get_report_config(ctx.guild)
+        
+        # Check if user has permission
+        if config['report_allowed_roles']:
+            user_role_ids = [role.id for role in ctx.author.roles]
+            if not any(role_id in config['report_allowed_roles'] for role_id in user_role_ids):
+                await ctx.send("❌ You don't have permission to submit reports.", ephemeral=True)
+                return
+        
+        # Check cooldown
+        if self.check_cooldown(ctx.author.id, config['report_cooldown']):
+            remaining = self.user_cooldowns[ctx.author.id] - datetime.utcnow().timestamp()
+            await ctx.send(
+                f"⏱️ You're on cooldown. Please wait {int(remaining)} seconds before submitting another report.",
                 ephemeral=True
             )
             return
-            
-        report_channel = interaction.guild.get_channel(report_channel_id)
+        
+        # Check if report channel is configured
+        if not config['report_channel']:
+            await ctx.send(
+                "❌ The report system hasn't been configured yet. Please contact an administrator.",
+                ephemeral=True
+            )
+            return
+        
+        # Set cooldown
+        self.set_cooldown(ctx.author.id, config['report_cooldown'])
+        
+        # Create and send modal
+        modal = ReportModal(self)
+        await ctx.interaction.response.send_modal(modal)
+    
+    async def handle_report_submission(self, interaction, reported_user, reason, description, evidence, when_occurred):
+        """Handle the actual report submission from the modal."""
+        config = await self.get_report_config(interaction.guild)
+        
+        # Get report channel
+        report_channel = interaction.guild.get_channel(config['report_channel'])
         if not report_channel:
             await interaction.response.send_message(
                 "❌ The configured report channel could not be found. Please contact an administrator.",
@@ -90,33 +183,33 @@ class ReportModal(discord.ui.Modal):
         
         embed.add_field(
             name="👤 Reported User",
-            value=self.reported_user.value,
+            value=reported_user,
             inline=False
         )
         
         embed.add_field(
             name="⚠️ Reason",
-            value=self.reason.value,
+            value=reason,
             inline=False
         )
         
         embed.add_field(
             name="📝 Description",
-            value=self.description.value,
+            value=description,
             inline=False
         )
         
-        if self.evidence.value:
+        if evidence:
             embed.add_field(
                 name="🔍 Evidence",
-                value=self.evidence.value,
+                value=evidence,
                 inline=False
             )
             
-        if self.when_occurred.value:
+        if when_occurred:
             embed.add_field(
                 name="📅 When",
-                value=self.when_occurred.value,
+                value=when_occurred,
                 inline=True
             )
         
@@ -144,7 +237,7 @@ class ReportModal(discord.ui.Modal):
             await report_message.add_reaction("👀")  # Under review
             
             # Log the report
-            await cog.log_report(interaction.guild, interaction.user, self.reported_user.value, self.reason.value)
+            await self.log_report(interaction.guild, interaction.user, reported_user, reason)
             
             await interaction.response.send_message(
                 f"✅ Your report has been submitted successfully!\n"
@@ -163,184 +256,102 @@ class ReportModal(discord.ui.Modal):
                 f"❌ An error occurred while submitting your report: {str(e)}",
                 ephemeral=True
             )
-
-class Report(red_commands.Cog):
-    """A comprehensive reporting system for server moderation."""
     
-    def __init__(self, bot):
-        self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890, force_registration=True)
-        
-        default_guild = {
-            "report_channel": None,
-            "use_forum": False,
-            "forum_channel": None,
-            "log_reports": True,
-            "report_cooldown": 300,  # 5 minutes
-            "allowed_roles": [],  # Empty means everyone can report
-        }
-        
-        self.config.register_guild(**default_guild)
-        self.user_cooldowns = {}
-    
-    async def log_report(self, guild, reporter, reported_user, reason):
-        """Log report submissions for tracking purposes."""
-        if not await self.config.guild(guild).log_reports():
-            return
-            
-        # You can expand this to log to a database or file
-        print(f"[REPORT LOG] {guild.name} - {reporter} reported {reported_user} for: {reason}")
-    
-    def check_cooldown(self, user_id: int) -> bool:
-        """Check if user is on cooldown."""
-        if user_id in self.user_cooldowns:
-            remaining = self.user_cooldowns[user_id] - datetime.utcnow().timestamp()
-            return remaining > 0
-        return False
-    
-    def set_cooldown(self, user_id: int, cooldown_seconds: int):
-        """Set cooldown for user."""
-        self.user_cooldowns[user_id] = datetime.utcnow().timestamp() + cooldown_seconds
-
-    @red_commands.hybrid_command(name="report")
-    async def report_command(self, ctx):
-        """Submit a report using an interactive form."""
-        
-        # Check if user has permission
-        allowed_roles = await self.config.guild(ctx.guild).allowed_roles()
-        if allowed_roles:
-            user_role_ids = [role.id for role in ctx.author.roles]
-            if not any(role_id in allowed_roles for role_id in user_role_ids):
-                await ctx.send("❌ You don't have permission to submit reports.", ephemeral=True)
-                return
-        
-        # Check cooldown
-        cooldown_time = await self.config.guild(ctx.guild).report_cooldown()
-        if self.check_cooldown(ctx.author.id):
-            remaining = self.user_cooldowns[ctx.author.id] - datetime.utcnow().timestamp()
-            await ctx.send(
-                f"⏱️ You're on cooldown. Please wait {int(remaining)} seconds before submitting another report.",
-                ephemeral=True
-            )
-            return
-        
-        # Check if report channel is configured
-        report_channel_id = await self.config.guild(ctx.guild).report_channel()
-        if not report_channel_id:
-            await ctx.send(
-                "❌ The report system hasn't been configured yet. Please contact an administrator.",
-                ephemeral=True
-            )
-            return
-        
-        # Set cooldown
-        self.set_cooldown(ctx.author.id, cooldown_time)
-        
-        # Create and send modal
-        modal = ReportModal()
-        await ctx.interaction.response.send_modal(modal)
-
-    @red_commands.group(name="reportset")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def report_settings(self, ctx):
-        """Configure the report system."""
-        if ctx.invoked_subcommand is None:
-            settings = await self.config.guild(ctx.guild).all()
-            
-            embed = discord.Embed(
-                title="Report System Configuration",
-                color=discord.Color.blue()
-            )
-            
-            report_channel = ctx.guild.get_channel(settings["report_channel"]) if settings["report_channel"] else None
-            embed.add_field(
-                name="Report Channel",
-                value=report_channel.mention if report_channel else "Not set",
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Cooldown",
-                value=f"{settings['report_cooldown']} seconds",
-                inline=True
-            )
-            
-            embed.add_field(
-                name="Log Reports",
-                value="✅ Yes" if settings["log_reports"] else "❌ No",
-                inline=True
-            )
-            
-            if settings["allowed_roles"]:
-                roles = [ctx.guild.get_role(role_id) for role_id in settings["allowed_roles"]]
-                roles = [role.mention for role in roles if role]
-                embed.add_field(
-                    name="Allowed Roles",
-                    value=", ".join(roles) if roles else "None",
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Allowed Roles",
-                    value="Everyone can report",
-                    inline=False
-                )
-            
-            await ctx.send(embed=embed)
-
-    @report_settings.command(name="channel")
+    # Configuration commands
     async def set_report_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel where reports will be sent."""
-        await self.config.guild(ctx.guild).report_channel.set(channel.id)
+        await self.set_report_config(ctx.guild, 'report_channel', channel.id)
         await ctx.send(f"✅ Report channel set to {channel.mention}")
-
-    @report_settings.command(name="cooldown")
+    
     async def set_cooldown(self, ctx, seconds: int):
         """Set the cooldown between reports (in seconds)."""
         if seconds < 0:
             await ctx.send("❌ Cooldown cannot be negative.")
             return
             
-        await self.config.guild(ctx.guild).report_cooldown.set(seconds)
+        await self.set_report_config(ctx.guild, 'report_cooldown', seconds)
         await ctx.send(f"✅ Report cooldown set to {seconds} seconds.")
-
-    @report_settings.command(name="addrole")
+    
     async def add_allowed_role(self, ctx, role: discord.Role):
         """Add a role that can submit reports."""
-        async with self.config.guild(ctx.guild).allowed_roles() as roles:
-            if role.id not in roles:
-                roles.append(role.id)
-                await ctx.send(f"✅ {role.mention} can now submit reports.")
-            else:
-                await ctx.send(f"❌ {role.mention} is already allowed to submit reports.")
-
-    @report_settings.command(name="removerole")
+        config = await self.get_report_config(ctx.guild)
+        roles = config['report_allowed_roles']
+        
+        if role.id not in roles:
+            roles.append(role.id)
+            await self.set_report_config(ctx.guild, 'report_allowed_roles', roles)
+            await ctx.send(f"✅ {role.mention} can now submit reports.")
+        else:
+            await ctx.send(f"❌ {role.mention} is already allowed to submit reports.")
+    
     async def remove_allowed_role(self, ctx, role: discord.Role):
         """Remove a role from being able to submit reports."""
-        async with self.config.guild(ctx.guild).allowed_roles() as roles:
-            if role.id in roles:
-                roles.remove(role.id)
-                await ctx.send(f"✅ {role.mention} can no longer submit reports.")
-            else:
-                await ctx.send(f"❌ {role.mention} wasn't allowed to submit reports.")
-
-    @report_settings.command(name="clearroles")
+        config = await self.get_report_config(ctx.guild)
+        roles = config['report_allowed_roles']
+        
+        if role.id in roles:
+            roles.remove(role.id)
+            await self.set_report_config(ctx.guild, 'report_allowed_roles', roles)
+            await ctx.send(f"✅ {role.mention} can no longer submit reports.")
+        else:
+            await ctx.send(f"❌ {role.mention} wasn't allowed to submit reports.")
+    
     async def clear_allowed_roles(self, ctx):
         """Clear all role restrictions (everyone can report)."""
-        await self.config.guild(ctx.guild).allowed_roles.set([])
+        await self.set_report_config(ctx.guild, 'report_allowed_roles', [])
         await ctx.send("✅ Role restrictions cleared. Everyone can now submit reports.")
-
-    @red_commands.command(name="reportstats")
-    @checks.mod_or_permissions(manage_messages=True)
-    async def report_stats(self, ctx):
-        """View report system statistics."""
+    
+    async def show_config(self, ctx):
+        """Show current report system configuration."""
+        config = await self.get_report_config(ctx.guild)
+        
+        embed = discord.Embed(
+            title="📋 Report System Configuration",
+            color=discord.Color.blue()
+        )
+        
+        report_channel = ctx.guild.get_channel(config['report_channel']) if config['report_channel'] else None
+        embed.add_field(
+            name="Report Channel",
+            value=report_channel.mention if report_channel else "Not set",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Cooldown",
+            value=f"{config['report_cooldown']} seconds",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Log Reports",
+            value="✅ Yes" if config['report_log_enabled'] else "❌ No",
+            inline=True
+        )
+        
+        if config['report_allowed_roles']:
+            roles = [ctx.guild.get_role(role_id) for role_id in config['report_allowed_roles']]
+            roles = [role.mention for role in roles if role]
+            embed.add_field(
+                name="Allowed Roles",
+                value=", ".join(roles) if roles else "None",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="Allowed Roles",
+                value="Everyone can report",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+    
+    async def show_stats(self, ctx):
+        """Show report system statistics."""
         # This is a placeholder - you could expand this to track actual statistics
         embed = discord.Embed(
-            title="Report Statistics",
+            title="📋 Report Statistics",
             description="Report tracking is enabled but detailed statistics are not yet implemented.",
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed)
-
-async def setup(bot):
-    await bot.add_cog(Report(bot))
