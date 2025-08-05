@@ -57,7 +57,16 @@ class LFGLogic:
     async def _set_lfg_config(self, guild, key, value):
         """Safely set LFG config"""
         try:
-            return await getattr(self.config.guild(guild), f"lfg_{key}").set(value)
+            full_key = f"lfg_{key}"
+            config_obj = self.config.guild(guild)
+            
+            # Direct attribute access should work since we registered the keys
+            if hasattr(config_obj, full_key):
+                await getattr(config_obj, full_key).set(value)
+                return True
+            else:
+                log.error(f"Config key {full_key} not found for guild {guild.name}")
+                return False
         except Exception as e:
             log.error(f"Error setting LFG config {key} for guild {guild.name}: {e}")
             return False
@@ -100,9 +109,15 @@ class LFGLogic:
     
     async def setup_lfg(self, ctx, forum_channel: discord.ForumChannel):
         """Set up the LFG system with a forum channel"""
-        success = await self._set_lfg_config(ctx.guild, "forum_id", forum_channel.id)
-        if not success:
-            await ctx.send("❌ Failed to save LFG configuration.")
+        log.info(f"Setting up LFG in guild {ctx.guild.name} with forum {forum_channel.name}")
+        
+        try:
+            # Try direct config access first for debugging
+            await self.config.guild(ctx.guild).lfg_forum_id.set(forum_channel.id)
+            log.info(f"Successfully set LFG forum ID to {forum_channel.id}")
+        except Exception as e:
+            log.error(f"Direct config set failed: {e}")
+            await ctx.send(f"❌ Failed to save LFG configuration: {e}")
             return
         
         # Create the pinned explanation post
