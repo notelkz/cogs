@@ -22,7 +22,7 @@ from .application_ping import ApplicationPingLogic  # NEW
 from .role_menus import RoleMenuLogic
 from .gamertags import GamertagsLogic # NEW
 from .lfg_logic import LFGLogic # NEW
-from .report_logic import ReportLogic # NEW
+from .report_logic import ReportLogic, ReportModerationView # NEW
 from . import role_menus
 
 log = logging.getLogger("red.Elkz.zerolivesleft")
@@ -111,6 +111,8 @@ class Zerolivesleft(commands.Cog):
         self.report_logic = ReportLogic(self) # NEW
 
         self.bot.add_view(role_menus.AutoRoleView())
+        # Add persistent report moderation view
+        self.bot.add_view(ReportModerationView(None, None, None))
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
         self.web_manager.register_all_routes()
         self.application_ping_logic.register_routes(self.web_app)  # NEW - Register ping routes
