@@ -473,11 +473,10 @@ class Zerolivesleft(commands.Cog):
     # =============================================================================
 
     @commands.hybrid_group(name="gamertag", aliases=["gtag"], invoke_without_command=True)
-    async def gamertag_group(self, ctx: commands.Context, *, member: discord.Member = None):
+    async def gamertag_group(self, ctx: commands.Context, *, user_input: str = None):
         """🎮 View your own or another user's gamertags. Use `!gtag setup` to begin."""
         if ctx.invoked_subcommand is None:
-            target_user = member or ctx.author
-            await self.gamertags_logic.view_gamertags(ctx, target_user)
+            await self.gamertags_logic.view_gamertags(ctx, user_input)
 
     @gamertag_group.command(name="setup")
     async def gtag_setup(self, ctx: commands.Context):

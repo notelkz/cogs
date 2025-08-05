@@ -1,8 +1,9 @@
 import asyncio
 import discord
 import logging
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Union
 from redbot.core import commands
+from redbot.core.utils.chat_formatting import pagify
 
 log = logging.getLogger("red.Elkz.zerolivesleft.gamertags")
 
@@ -32,6 +33,98 @@ class GamertagsLogic:
             "gamertags": {}  # Will store platform: username pairs
         }
         self.config.register_user(**default_user)
+
+    async def find_user(self, ctx: commands.Context, user_input: str) -> Optional[Union[discord.User, discord.Member]]:
+        """
+        Enhanced user finding that handles various input formats:
+        - User mentions (@user)
+        - User IDs (123456789)
+        - Usernames (partial matching)
+        - Display names (partial matching)
+        - Case-insensitive matching
+        """
+        
+        # First try the built-in converter (handles mentions, IDs, exact usernames)
+        try:
+            # Use MemberConverter if in a guild, UserConverter otherwise
+            if ctx.guild:
+                converter = commands.MemberConverter()
+                return await converter.convert(ctx, user_input)
+            else:
+                converter = commands.UserConverter()
+                return await converter.convert(ctx, user_input)
+        except commands.BadArgument:
+            pass  # Continue with manual search
+        
+        # Manual search for partial matches
+        user_input_lower = user_input.lower()
+        
+        # Search in guild members first (if in a guild)
+        if ctx.guild:
+            # Exact matches first
+            for member in ctx.guild.members:
+                if (member.name.lower() == user_input_lower or 
+                    member.display_name.lower() == user_input_lower):
+                    return member
+            
+            # Partial matches
+            matches = []
+            for member in ctx.guild.members:
+                if (user_input_lower in member.name.lower() or 
+                    user_input_lower in member.display_name.lower()):
+                    matches.append(member)
+            
+            # If we have matches, return the best one or ask for clarification
+            if len(matches) == 1:
+                return matches[0]
+            elif len(matches) > 1:
+                # Multiple matches found - let user choose
+                await self._handle_multiple_matches(ctx, matches, user_input)
+                return None
+        
+        # If no guild or no matches in guild, search bot's users
+        # This is limited but we can try cached users
+        for user in self.bot.users:
+            if user.name.lower() == user_input_lower:
+                return user
+        
+        # Partial match in bot users
+        partial_matches = []
+        for user in self.bot.users:
+            if user_input_lower in user.name.lower():
+                partial_matches.append(user)
+        
+        if len(partial_matches) == 1:
+            return partial_matches[0]
+        elif len(partial_matches) > 1:
+            await self._handle_multiple_matches(ctx, partial_matches, user_input)
+            return None
+        
+        return None
+
+    async def _handle_multiple_matches(self, ctx: commands.Context, matches: List[Union[discord.User, discord.Member]], user_input: str):
+        """Handle when multiple users match the input"""
+        embed = discord.Embed(
+            title="🔍 Multiple Users Found",
+            description=f"Multiple users match `{user_input}`. Please be more specific or use one of these:",
+            color=discord.Color.orange()
+        )
+        
+        match_list = []
+        for i, user in enumerate(matches[:10], 1):  # Limit to 10 matches
+            if hasattr(user, 'display_name'):  # Member
+                match_list.append(f"{i}. **{user.display_name}** ({user.name}) - ID: {user.id}")
+            else:  # User
+                match_list.append(f"{i}. **{user.name}** - ID: {user.id}")
+        
+        embed.add_field(
+            name="Matches",
+            value="\n".join(match_list),
+            inline=False
+        )
+        
+        embed.set_footer(text="💡 Tip: You can use @mention, user ID, or be more specific with the name")
+        await ctx.send(embed=embed)
 
     async def setup_gamertags(self, ctx: commands.Context):
         """Start the DM-based gamertag setup process"""
@@ -189,9 +282,30 @@ class GamertagsLogic:
             )
             await user.send(embed=empty_embed)
 
-    async def view_gamertags(self, ctx: commands.Context, target_user: discord.User):
+    async def view_gamertags(self, ctx: commands.Context, user_input: str = None):
         """Display a user's gamertags privately via DM"""
         requester = ctx.author
+        
+        # If no user specified, show their own gamertags
+        if not user_input:
+            target_user = requester
+        else:
+            # Find the target user using enhanced search
+            target_user = await self.find_user(ctx, user_input)
+            if not target_user:
+                error_embed = discord.Embed(
+                    title="❌ User Not Found",
+                    description=f"Could not find a user matching `{user_input}`.\n\n"
+                                "**Valid formats:**\n"
+                                "• @mention the user\n"
+                                "• Use their User ID\n"
+                                "• Type their username or display name\n"
+                                "• Use partial names (if unique)",
+                    color=discord.Color.red()
+                )
+                error_embed.set_footer(text="💡 Try being more specific if you got multiple matches")
+                await ctx.send(embed=error_embed)
+                return
 
         # Get target user's gamertags
         user_gamertags = await self.config.user(target_user).gamertags()
@@ -318,21 +432,7 @@ class GamertagsLogic:
 
     async def list_my_gamertags(self, ctx: commands.Context):
         """Show the user their own gamertags"""
-        user = ctx.author
-        user_gamertags = await self.config.user(user).gamertags()
-
-        if not user_gamertags:
-            no_tags_embed = discord.Embed(
-                title="❌ No Gamertags Set",
-                description="You haven't set up any gamertags yet!\n\n"
-                            "Use `!gtag setup` to add your gaming platform usernames.",
-                color=discord.Color.red()
-            )
-            await ctx.send(embed=no_tags_embed)
-            return
-
-        # Show their own gamertags (similar to view_gamertags but for self)
-        await self.view_gamertags(ctx, user)
+        await self.view_gamertags(ctx)  # No user input = show own gamertags
 
     async def get_stats(self, ctx: commands.Context):
         """Show gamertag system statistics"""
