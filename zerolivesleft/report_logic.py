@@ -13,6 +13,169 @@ class ReportButtonView(discord.ui.View):
     async def submit_report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(self.modal)
 
+class ModeratorResponseModal(discord.ui.Modal):
+    def __init__(self, report_logic, original_report_embed, original_message, reporter_id):
+        super().__init__(title="Respond to Report", timeout=300)
+        self.report_logic = report_logic
+        self.original_report_embed = original_report_embed
+        self.original_message = original_message
+        self.reporter_id = reporter_id
+        
+        self.response_text = discord.ui.TextInput(
+            label="Your Response",
+            placeholder="Type your response or question to the reporter...",
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            required=True
+        )
+        self.add_item(self.response_text)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.report_logic.handle_moderator_response(
+            interaction,
+            self.original_report_embed,
+            self.original_message,
+            self.reporter_id,
+            self.response_text.value
+        )
+
+class FinalResponseModal(discord.ui.Modal):
+    def __init__(self, report_logic, original_report_embed, original_message, reporter_id):
+        super().__init__(title="Final Report Resolution", timeout=300)
+        self.report_logic = report_logic
+        self.original_report_embed = original_report_embed
+        self.original_message = original_message
+        self.reporter_id = reporter_id
+        
+        self.final_response = discord.ui.TextInput(
+            label="Final Resolution",
+            placeholder="Type your final response to close this report...",
+            style=discord.TextStyle.paragraph,
+            max_length=1000,
+            required=True
+        )
+        self.add_item(self.final_response)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.report_logic.handle_final_response(
+            interaction,
+            self.original_report_embed,
+            self.original_message,
+            self.reporter_id,
+            self.final_response.value
+        )
+
+class ReportModerationView(discord.ui.View):
+    def __init__(self, report_logic, report_embed, reporter_id):
+        super().__init__(timeout=None)  # Persistent view
+        self.report_logic = report_logic
+        self.report_embed = report_embed
+        self.reporter_id = reporter_id
+
+    @discord.ui.button(label="📝 Respond", style=discord.ButtonStyle.secondary, emoji="📝")
+    async def respond_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ModeratorResponseModal(
+            self.report_logic, 
+            self.report_embed, 
+            interaction.message,
+            self.reporter_id
+        )
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="❓ Ask Question", style=discord.ButtonStyle.primary, emoji="❓")
+    async def ask_question_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ModeratorResponseModal(
+            self.report_logic, 
+            self.report_embed, 
+            interaction.message,
+            self.reporter_id
+        )
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="✅ Resolve", style=discord.ButtonStyle.success, emoji="✅")
+    async def resolve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = FinalResponseModal(
+            self.report_logic, 
+            self.report_embed, 
+            interaction.message,
+            self.reporter_id
+        )
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="❌ Dismiss", style=discord.ButtonStyle.danger, emoji="❌")
+    async def dismiss_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Update the original message to show dismissed status
+        embed = self.report_embed.copy()
+        embed.color = discord.Color.dark_gray()
+        embed.set_footer(text=f"{embed.footer.text} • Dismissed by moderator")
+        
+        # Disable all buttons
+        for item in self.children:
+            item.disabled = True
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+        
+        # Send anonymous dismissal message to reporter
+        try:
+            reporter = interaction.guild.get_member(self.reporter_id)
+            if reporter:
+                report_id = None
+                for field in embed.fields:
+                    if field.name == "🆔 Report ID":
+                        report_id = field.value
+                        break
+                
+                dm_embed = discord.Embed(
+                    title="📋 Report Update",
+                    description=f"Your report {report_id} has been reviewed and dismissed.",
+                    color=discord.Color.dark_gray(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Status",
+                    value="Dismissed - No further action required",
+                    inline=False
+                )
+                
+                await reporter.send(embed=dm_embed)
+        except Exception as e:
+            log.error(f"Failed to send dismissal DM to reporter: {e}")
+
+    @discord.ui.button(label="👀 Under Review", style=discord.ButtonStyle.blurple, emoji="👀")
+    async def under_review_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Update the original message to show under review status
+        embed = self.report_embed.copy()
+        embed.color = discord.Color.blue()
+        embed.set_footer(text=f"{embed.footer.text} • Under Review")
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+        
+        # Send anonymous status update to reporter
+        try:
+            reporter = interaction.guild.get_member(self.reporter_id)
+            if reporter:
+                report_id = None
+                for field in embed.fields:
+                    if field.name == "🆔 Report ID":
+                        report_id = field.value
+                        break
+                
+                dm_embed = discord.Embed(
+                    title="📋 Report Update",
+                    description=f"Your report {report_id} is now under review.",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Status",
+                    value="Under Review - A moderator is investigating your report",
+                    inline=False
+                )
+                
+                await reporter.send(embed=dm_embed)
+        except Exception as e:
+            log.error(f"Failed to send under review DM to reporter: {e}")
+
 class ReportModal(discord.ui.Modal):
     def __init__(self, report_logic):
         super().__init__(title="Submit a Report", timeout=300)
@@ -127,7 +290,137 @@ class ReportLogic:
         """Set cooldown for user."""
         self.user_cooldowns[user_id] = datetime.utcnow().timestamp() + cooldown_seconds
     
-    async def log_report(self, guild, reporter, reported_user, reason):
+    async def handle_moderator_response(self, interaction, original_embed, original_message, reporter_id, response_text):
+        """Handle moderator response to a report."""
+        try:
+            # Send anonymous DM to the reporter
+            reporter = interaction.guild.get_member(reporter_id)
+            if reporter:
+                # Get report ID from the embed
+                report_id = None
+                for field in original_embed.fields:
+                    if field.name == "🆔 Report ID":
+                        report_id = field.value
+                        break
+                
+                dm_embed = discord.Embed(
+                    title="📋 Report Update",
+                    description=f"A moderator has responded to your report {report_id}:",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Moderator Response",
+                    value=response_text,
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="What's Next?",
+                    value="Please check your DMs for any follow-up questions. You can reply to this message if needed.",
+                    inline=False
+                )
+                
+                await reporter.send(embed=dm_embed)
+                
+                # Add a note to the original report
+                updated_embed = original_embed.copy()
+                updated_embed.color = discord.Color.orange()
+                updated_embed.add_field(
+                    name="📨 Moderator Response Sent",
+                    value=f"Response sent at {datetime.utcnow().strftime('%H:%M:%S')}",
+                    inline=False
+                )
+                
+                await original_message.edit(embed=updated_embed)
+                
+                await interaction.response.send_message(
+                    f"✅ Your response has been sent anonymously to the reporter.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Could not find the reporter to send the response.",
+                    ephemeral=True
+                )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Could not send DM to the reporter. They may have DMs disabled.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Error sending response: {str(e)}",
+                ephemeral=True
+            )
+
+    async def handle_final_response(self, interaction, original_embed, original_message, reporter_id, final_response):
+        """Handle final resolution of a report."""
+        try:
+            # Send final response to the reporter
+            reporter = interaction.guild.get_member(reporter_id)
+            if reporter:
+                # Get report ID from the embed
+                report_id = None
+                for field in original_embed.fields:
+                    if field.name == "🆔 Report ID":
+                        report_id = field.value
+                        break
+                
+                dm_embed = discord.Embed(
+                    title="📋 Report Resolved",
+                    description=f"Your report {report_id} has been resolved:",
+                    color=discord.Color.green(),
+                    timestamp=datetime.utcnow()
+                )
+                dm_embed.add_field(
+                    name="Final Resolution",
+                    value=final_response,
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="Status",
+                    value="✅ Closed - This report has been resolved",
+                    inline=False
+                )
+                
+                await reporter.send(embed=dm_embed)
+                
+                # Update the original report to show resolved status
+                resolved_embed = original_embed.copy()
+                resolved_embed.color = discord.Color.green()
+                resolved_embed.set_footer(text=f"{original_embed.footer.text} • Resolved")
+                resolved_embed.add_field(
+                    name="✅ Resolution",
+                    value=f"Resolved at {datetime.utcnow().strftime('%H:%M:%S')}",
+                    inline=False
+                )
+                
+                # Disable all buttons in the view
+                view = ReportModerationView(self, resolved_embed, reporter_id)
+                for item in view.children:
+                    item.disabled = True
+                
+                await original_message.edit(embed=resolved_embed, view=view)
+                
+                await interaction.response.send_message(
+                    f"✅ Report has been resolved and the reporter has been notified.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Could not find the reporter to send the final response.",
+                    ephemeral=True
+                )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Could not send DM to the reporter. They may have DMs disabled.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Error sending final response: {str(e)}",
+                ephemeral=True
+            )
         """Log report submissions for tracking purposes."""
         config = await self.get_report_config(guild)
         if not config['report_log_enabled']:
