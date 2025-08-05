@@ -24,9 +24,17 @@ class LFGView(discord.ui.View):
     async def leave_group(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.lfg_logic.handle_leave(interaction, self.lfg_data)
     
-    @discord.ui.button(label="Close Group", emoji="🔒", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(label="Lock Group", emoji="🔒", style=discord.ButtonStyle.secondary)
+    async def lock_group(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.lfg_logic.handle_lock(interaction, self.lfg_data)
+    
+    @discord.ui.button(label="Close Group", emoji="🛑", style=discord.ButtonStyle.secondary)
     async def close_group(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.lfg_logic.handle_close(interaction, self.lfg_data)
+    
+    @discord.ui.button(label="Delete Group", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def delete_group(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.lfg_logic.handle_delete(interaction, self.lfg_data)
 
 class LFGLogic:
     """
@@ -291,7 +299,7 @@ class LFGLogic:
             embed.add_field(name="📋 Current Players", value=ctx.author.display_name, inline=False)
             
             embed.set_thumbnail(url=ctx.author.display_avatar.url)
-            embed.set_footer(text="Use the buttons below to join or leave this group! 🎮 Join will also connect you to voice if available.")
+            embed.set_footer(text="🎮 Join (auto-connects to voice) | ❌ Leave | 🔒 Lock | 🛑 Close | 🗑️ Delete (Host only)")
             
             # Create thread title with username to avoid duplicates
             thread_title = f"[LFG] {game} [{players_needed} players] [{ctx.author.display_name}]"
@@ -307,6 +315,7 @@ class LFGLogic:
                 "description": description,
                 "time": time,
                 "closed": False,
+                "locked": False,
                 "guild_id": ctx.guild.id,
                 "voice_channel_id": ctx.author.voice.channel.id if ctx.author.voice and ctx.author.voice.channel else None
             }
@@ -358,6 +367,15 @@ class LFGLogic:
         """Handle join button click"""
         try:
             user = interaction.user
+            
+            # Check if group is locked or closed
+            if lfg_data.get("locked", False):
+                await interaction.response.send_message("🔒 This group is locked - no new members can join!", ephemeral=True)
+                return
+            
+            if lfg_data.get("closed", False):
+                await interaction.response.send_message("🛑 This group is closed!", ephemeral=True)
+                return
             
             # Check if already in group
             if user.id in lfg_data["current_players"]:
@@ -444,8 +462,37 @@ class LFGLogic:
             log.error(f"Error handling leave: {e}")
             await interaction.response.send_message("❌ An error occurred while leaving the group.", ephemeral=True)
     
+    async def handle_lock(self, interaction: discord.Interaction, lfg_data):
+        """Handle lock button click - prevents new joins but allows current members to stay"""
+        try:
+            user = interaction.user
+            
+            # Check if user is host
+            if user.id != lfg_data["host_id"]:
+                await interaction.response.send_message("❌ Only the host can lock the group!", ephemeral=True)
+                return
+            
+            # Check if already locked
+            if lfg_data.get("locked", False):
+                await interaction.response.send_message("🔒 This group is already locked!", ephemeral=True)
+                return
+            
+            # Lock the group
+            lfg_data["locked"] = True
+            await self.config.channel(interaction.channel).lfg_data.set(lfg_data)
+            
+            # Update embed to show locked
+            await self._update_lfg_embed(interaction.message, lfg_data)
+            
+            # Send response
+            await interaction.response.send_message(f"🔒 The host has locked this LFG group for **{lfg_data['game']}**. No new members can join.")
+            
+        except Exception as e:
+            log.error(f"Error handling lock: {e}")
+            await interaction.response.send_message("❌ An error occurred while locking the group.", ephemeral=True)
+    
     async def handle_close(self, interaction: discord.Interaction, lfg_data):
-        """Handle close button click"""
+        """Handle close button click - closes group but keeps thread active"""
         try:
             user = interaction.user
             
@@ -456,30 +503,73 @@ class LFGLogic:
             
             # Close the group
             lfg_data["closed"] = True
+            lfg_data["locked"] = True  # Also lock it
             await self.config.channel(interaction.channel).lfg_data.set(lfg_data)
             
             # Update embed to show closed
             await self._update_lfg_embed(interaction.message, lfg_data)
             
-            # Disable all buttons
+            # Disable most buttons but keep delete available
             view = discord.ui.View()
-            for item in interaction.message.components[0].children:
-                button = discord.ui.Button(
-                    label=item.label,
-                    emoji=item.emoji,
-                    style=item.style,
-                    disabled=True
-                )
+            
+            # Add disabled buttons
+            disabled_buttons = [
+                discord.ui.Button(label="Join Group", emoji="🎮", style=discord.ButtonStyle.green, disabled=True),
+                discord.ui.Button(label="Leave Group", emoji="❌", style=discord.ButtonStyle.red, disabled=True),
+                discord.ui.Button(label="Lock Group", emoji="🔒", style=discord.ButtonStyle.secondary, disabled=True),
+                discord.ui.Button(label="Close Group", emoji="🛑", style=discord.ButtonStyle.secondary, disabled=True),
+            ]
+            
+            for button in disabled_buttons:
                 view.add_item(button)
+            
+            # Keep delete button active for host
+            delete_button = discord.ui.Button(label="Delete Group", emoji="🗑️", style=discord.ButtonStyle.danger)
+            async def delete_callback(delete_interaction):
+                await self.handle_delete(delete_interaction, lfg_data)
+            delete_button.callback = delete_callback
+            view.add_item(delete_button)
             
             await interaction.message.edit(view=view)
             
             # Send response
-            await interaction.response.send_message(f"🔒 The host has closed this LFG group for **{lfg_data['game']}**.")
+            await interaction.response.send_message(f"🛑 The host has closed this LFG group for **{lfg_data['game']}**. Thread remains for discussion.")
             
         except Exception as e:
             log.error(f"Error handling close: {e}")
             await interaction.response.send_message("❌ An error occurred while closing the group.", ephemeral=True)
+    
+    async def handle_delete(self, interaction: discord.Interaction, lfg_data):
+        """Handle delete button click - completely removes the thread"""
+        try:
+            user = interaction.user
+            
+            # Check if user is host
+            if user.id != lfg_data["host_id"]:
+                await interaction.response.send_message("❌ Only the host can delete the group!", ephemeral=True)
+                return
+            
+            # Send confirmation response first
+            await interaction.response.send_message(f"🗑️ **{lfg_data['game']}** LFG group is being deleted by the host...")
+            
+            # Wait a moment for the message to be sent
+            await asyncio.sleep(2)
+            
+            # Delete the entire thread
+            try:
+                await interaction.channel.delete()
+                log.info(f"LFG thread deleted by host {user.display_name} in guild {interaction.guild.name}")
+            except discord.HTTPException as delete_error:
+                log.error(f"Failed to delete LFG thread: {delete_error}")
+                # Send error message if deletion fails
+                await interaction.followup.send("❌ Failed to delete the thread. You may need to delete it manually.", ephemeral=True)
+            
+        except Exception as e:
+            log.error(f"Error handling delete: {e}")
+            try:
+                await interaction.response.send_message("❌ An error occurred while deleting the group.", ephemeral=True)
+            except:
+                pass
     
     async def _update_lfg_embed(self, message, lfg_data):
         """Update the LFG embed with current player information"""
@@ -490,6 +580,7 @@ class LFGLogic:
             description = lfg_data.get("description", "No description provided")
             time = lfg_data.get("time", "Not specified")
             closed = lfg_data.get("closed", False)
+            locked = lfg_data.get("locked", False)
             
             # Get player names
             player_names = []
@@ -498,9 +589,19 @@ class LFGLogic:
                 if user:
                     player_names.append(user.display_name)
             
-            # Create updated embed
-            color = 0xff0000 if closed else (0x00ff00 if len(current_players) < players_needed else 0xffff00)
-            status = "🔒 CLOSED" if closed else ("🟢 OPEN" if len(current_players) < players_needed else "🟡 FULL")
+            # Create updated embed with status
+            if closed:
+                color = 0xff0000
+                status = "🛑 CLOSED"
+            elif locked:
+                color = 0xffa500  # Orange for locked
+                status = "🔒 LOCKED"
+            elif len(current_players) >= players_needed:
+                color = 0xffff00  # Yellow for full
+                status = "🟡 FULL"
+            else:
+                color = 0x00ff00  # Green for open
+                status = "🟢 OPEN"
             
             embed = discord.Embed(
                 title=f"🎮 {game} {status}",
@@ -530,10 +631,12 @@ class LFGLogic:
             if host:
                 embed.set_thumbnail(url=host.display_avatar.url)
             
-            if not closed:
-                embed.set_footer(text="🎮 Join (auto-connects to voice) | ❌ Leave | 🔒 Close (Host only)")
-            else:
+            if closed:
                 embed.set_footer(text="This group is closed.")
+            elif locked:
+                embed.set_footer(text="🔒 This group is locked - no new members can join.")
+            else:
+                embed.set_footer(text="🎮 Join (auto-connects to voice) | ❌ Leave | 🔒 Lock/🛑 Close/🗑️ Delete (Host only)")
             
             await message.edit(embed=embed)
             
