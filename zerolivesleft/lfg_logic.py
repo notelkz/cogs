@@ -40,16 +40,20 @@ class LFGLogic:
     
     async def _cleanup_old_posts(self, guild):
         """Clean up old LFG posts"""
-        forum_id = await self.config.guild(guild).lfg_forum_id()
-        if not forum_id:
-            return
+        try:
+            forum_id = await self.config.guild(guild).lfg_forum_id()
+            if not forum_id:
+                return
+                
+            forum = guild.get_channel(forum_id)
+            if not forum or not isinstance(forum, discord.ForumChannel):
+                return
             
-        forum = guild.get_channel(forum_id)
-        if not forum or not isinstance(forum, discord.ForumChannel):
+            cleanup_hours = await self.config.guild(guild).lfg_cleanup_hours()
+            cutoff_time = datetime.utcnow() - timedelta(hours=cleanup_hours)
+        except Exception as e:
+            log.error(f"Error accessing LFG config for guild {guild.name}: {e}")
             return
-        
-        cleanup_hours = await self.config.guild(guild).lfg_cleanup_hours()
-        cutoff_time = datetime.utcnow() - timedelta(hours=cleanup_hours)
         
         for thread in forum.threads:
             if thread.created_at < cutoff_time and thread.name.startswith("[LFG]"):
@@ -158,9 +162,15 @@ class LFGLogic:
     
     async def _has_required_role(self, member, guild):
         """Check if member has the required role"""
-        required_role_name = await self.config.guild(guild).lfg_required_role()
-        required_role = discord.utils.get(member.roles, name=required_role_name)
-        return required_role is not None
+        try:
+            required_role_name = await self.config.guild(guild).lfg_required_role()
+            if not required_role_name:
+                required_role_name = "Recruit"  # Default fallback
+            required_role = discord.utils.get(member.roles, name=required_role_name)
+            return required_role is not None
+        except Exception as e:
+            log.error(f"Error checking required role for {member} in {guild.name}: {e}")
+            return False
     
     async def create_lfg(self, ctx, game: str, players_needed: int, description: str = None, time: str = None):
         """
