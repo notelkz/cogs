@@ -7,7 +7,7 @@ import asyncio
 import json
 from typing import Dict, List, Optional
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiohttp import web
 from redbot.core import commands, Config
 
@@ -38,12 +38,19 @@ class ApplicationPingLogic:
             ap_pending_applications={},        # Track pending applications {app_id: {user_id, submitted_at, etc}}
             ap_processed_applications=[],      # Track processed applications to avoid duplicates (LIST not set)
             ap_last_startup_check=None,        # Last time we did a startup check
+            
+            # Periodic check configuration
+            ap_periodic_check_enabled=True,      # Enable/disable periodic checks
+            ap_check_interval_minutes=5,         # Check every 5 minutes
+            ap_last_periodic_check=None,         # Last time we did a periodic check
+            ap_periodic_check_running=False,     # Flag to prevent overlapping checks
         )
         
-        # Schedule startup check
+        # Start both startup check and periodic checking
         self.bot.loop.create_task(self._startup_application_check())
+        self.bot.loop.create_task(self._start_periodic_checking())
         
-        log.info("ApplicationPingLogic initialized")
+        log.info("ApplicationPingLogic initialized with periodic checking")
 
     async def handle_application_submitted_ping(self, request):
         """
@@ -173,13 +180,27 @@ class ApplicationPingLogic:
         # Add application details if available
         if application_data:
             details = []
+            
+            # Add age if available
+            if application_data.get("age"):
+                details.append(f"**Age:** {application_data['age']}")
+            
+            # Add display name and ingame name if available
+            if application_data.get("display_name"):
+                details.append(f"**Display Name:** {application_data['display_name']}")
+            
+            if application_data.get("ingame_name"):
+                details.append(f"**In-Game Name:** {application_data['ingame_name']}")
+            
             if application_data.get("region"):
                 details.append(f"**Region:** {application_data['region']}")
+                
             if application_data.get("games"):
                 games = application_data["games"][:3]  # Show first 3 games
                 details.append(f"**Games:** {', '.join(games)}")
                 if len(application_data["games"]) > 3:
                     details.append(f"... and {len(application_data['games']) - 3} more")
+                    
             if application_data.get("platforms"):
                 details.append(f"**Platforms:** {', '.join(application_data['platforms'])}")
                 
@@ -372,17 +393,287 @@ class ApplicationPingLogic:
         except Exception as e:
             log.error(f"❌ Fatal error in startup application check: {e}")
 
+    async def _start_periodic_checking(self):
+        """Start the periodic application checking loop"""
+        await self.bot.wait_until_ready()
+        
+        # Wait for startup check to complete first
+        await asyncio.sleep(15)
+        
+        log.info("🔄 Starting periodic application checking...")
+        
+        while True:
+            try:
+                # Check if periodic checking is enabled
+                if not await self.config.ap_periodic_check_enabled():
+                    log.debug("Periodic checking is disabled, skipping...")
+                    await asyncio.sleep(60)  # Check again in 1 minute
+                    continue
+                
+                # Check if we're already running a check
+                if await self.config.ap_periodic_check_running():
+                    log.debug("Periodic check already running, skipping...")
+                    await asyncio.sleep(30)  # Wait 30 seconds and try again
+                    continue
+                
+                # Get the check interval
+                interval_minutes = await self.config.ap_check_interval_minutes()
+                
+                # Check if it's time for the next check
+                last_check_str = await self.config.ap_last_periodic_check()
+                if last_check_str:
+                    last_check = datetime.fromisoformat(last_check_str)
+                    next_check = last_check + timedelta(minutes=interval_minutes)
+                    
+                    if datetime.now() < next_check:
+                        # Not time yet, wait until it is
+                        wait_seconds = (next_check - datetime.now()).total_seconds()
+                        log.debug(f"Next periodic check in {wait_seconds:.0f} seconds")
+                        await asyncio.sleep(min(wait_seconds, 60))  # Max 60 second sleep
+                        continue
+                
+                # Time to run the check
+                await self._run_periodic_check()
+                
+            except Exception as e:
+                log.error(f"❌ Error in periodic checking loop: {e}")
+                await asyncio.sleep(60)  # Wait 1 minute before retrying
+
+    async def _run_periodic_check(self):
+        """Run a periodic check for new applications"""
+        try:
+            # Set flag that we're running
+            await self.config.ap_periodic_check_running.set(True)
+            
+            log.info("🔍 Running periodic application check...")
+            
+            # Get configuration
+            moderator_channel_id = await self.config.ap_moderator_channel_id()
+            processed_applications = await self.config.ap_processed_applications()
+            
+            if not moderator_channel_id:
+                log.debug("📭 Periodic check skipped: No moderator channel configured")
+                return
+            
+            # Get API configuration
+            api_url = await self.cog.config.ar_api_url()
+            api_key = await self.cog.config.ar_api_key()
+            
+            if not api_url or not api_key:
+                log.debug("📭 Periodic check skipped: Django API not configured")
+                return
+            
+            # Call Django API to get pending applications
+            try:
+                endpoint = f"{api_url.rstrip('/')}/api/applications/pending/"
+                headers = {"Authorization": f"Token {api_key}"}
+                
+                async with self.session.get(endpoint, headers=headers, timeout=10) as resp:
+                    if resp.status == 200:
+                        pending_apps = await resp.json()
+                        log.debug(f"📋 Periodic check found {len(pending_apps)} pending applications")
+                        
+                        notifications_sent = 0
+                        for app in pending_apps:
+                            app_id = str(app.get('id'))
+                            
+                            # Skip if we've already processed this application
+                            if app_id in processed_applications:
+                                continue
+                            
+                            # Send notification for this new application
+                            try:
+                                await self._send_moderator_notification(
+                                    discord_id=int(app.get('discord_id')),
+                                    application_id=app_id,
+                                    application_data=app.get('application_data', {}),
+                                    submitted_at=app.get('submitted_at')
+                                )
+                                notifications_sent += 1
+                                log.info(f"📨 Sent periodic notification for new application {app_id}")
+                                
+                                # Small delay to avoid rate limits
+                                await asyncio.sleep(1)
+                                
+                            except Exception as e:
+                                log.error(f"❌ Failed to send periodic notification for application {app_id}: {e}")
+                        
+                        if notifications_sent > 0:
+                            log.info(f"✅ Periodic check complete: {notifications_sent} new applications found and notified")
+                        else:
+                            log.debug("✅ Periodic check complete: No new applications found")
+                    
+                    elif resp.status == 404:
+                        log.debug("📭 Periodic check: No pending applications endpoint available")
+                    else:
+                        log.warning(f"⚠️ Periodic check API returned {resp.status}")
+                        
+            except asyncio.TimeoutError:
+                log.warning("⏰ Periodic check timed out - Django API may be slow")
+            except Exception as e:
+                log.error(f"❌ Error during periodic application check: {e}")
+            
+            # Update last check time
+            await self.config.ap_last_periodic_check.set(datetime.now().isoformat())
+            
+        except Exception as e:
+            log.error(f"❌ Fatal error in periodic application check: {e}")
+        finally:
+            # Always clear the running flag
+            await self.config.ap_periodic_check_running.set(False)
+
     async def force_startup_check(self, ctx: commands.Context):
         """Manually trigger startup application check"""
         await ctx.send("🔍 Running startup application check...")
         await self._startup_application_check()
         await ctx.send("✅ Startup application check completed!")
 
+    async def force_periodic_check(self, ctx: commands.Context):
+        """Manually trigger a periodic application check"""
+        if await self.config.ap_periodic_check_running():
+            await ctx.send("⏳ A periodic check is already running. Please wait for it to complete.")
+            return
+        
+        await ctx.send("🔍 Running periodic application check...")
+        await self._run_periodic_check()
+        await ctx.send("✅ Periodic application check completed!")
+
+    async def set_check_interval(self, ctx: commands.Context, minutes: int):
+        """Set the interval for periodic application checks (in minutes)"""
+        if minutes < 1:
+            await ctx.send("❌ Check interval must be at least 1 minute.")
+            return
+        
+        if minutes > 1440:  # 24 hours
+            await ctx.send("❌ Check interval cannot be more than 1440 minutes (24 hours).")
+            return
+        
+        await self.config.ap_check_interval_minutes.set(minutes)
+        await ctx.send(f"✅ Periodic check interval set to **{minutes} minutes**")
+        log.info(f"Periodic check interval set to {minutes} minutes")
+
+    async def toggle_periodic_checks(self, ctx: commands.Context, enabled: bool = None):
+        """Enable or disable periodic application checks"""
+        if enabled is None:
+            # Toggle current state
+            current_state = await self.config.ap_periodic_check_enabled()
+            enabled = not current_state
+        
+        await self.config.ap_periodic_check_enabled.set(enabled)
+        status = "enabled" if enabled else "disabled"
+        await ctx.send(f"✅ Periodic application checks have been **{status}**")
+        log.info(f"Periodic checks {status}")
+
+    async def show_periodic_status(self, ctx: commands.Context):
+        """Show the status of periodic application checking"""
+        embed = discord.Embed(
+            title="🔄 Periodic Application Check Status",
+            color=discord.Color.blue()
+        )
+        
+        # Get configuration
+        enabled = await self.config.ap_periodic_check_enabled()
+        interval_minutes = await self.config.ap_check_interval_minutes()
+        last_check = await self.config.ap_last_periodic_check()
+        running = await self.config.ap_periodic_check_running()
+        
+        # Status
+        status_emoji = "🟢" if enabled else "🔴"
+        embed.add_field(
+            name="Status",
+            value=f"{status_emoji} {'Enabled' if enabled else 'Disabled'}",
+            inline=True
+        )
+        
+        # Current state
+        if running:
+            embed.add_field(
+                name="Current State",
+                value="🔄 Check Running",
+                inline=True
+            )
+        else:
+            embed.add_field(
+                name="Current State",
+                value="⏸️ Idle",
+                inline=True
+            )
+        
+        # Interval
+        embed.add_field(
+            name="Check Interval",
+            value=f"`{interval_minutes} minutes`",
+            inline=True
+        )
+        
+        # Last check
+        if last_check:
+            last_check_time = datetime.fromisoformat(last_check)
+            time_ago = datetime.now() - last_check_time
+            
+            if time_ago.total_seconds() < 60:
+                time_str = f"{int(time_ago.total_seconds())} seconds ago"
+            elif time_ago.total_seconds() < 3600:
+                time_str = f"{int(time_ago.total_seconds() / 60)} minutes ago"
+            else:
+                time_str = f"{int(time_ago.total_seconds() / 3600)} hours ago"
+                
+            embed.add_field(
+                name="Last Check",
+                value=f"`{last_check[:19]}`\n({time_str})",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="Last Check",
+                value="`Never`",
+                inline=False
+            )
+        
+        # Next check (if enabled)
+        if enabled and last_check and not running:
+            last_check_time = datetime.fromisoformat(last_check)
+            next_check = last_check_time + timedelta(minutes=interval_minutes)
+            time_until = next_check - datetime.now()
+            
+            if time_until.total_seconds() > 0:
+                if time_until.total_seconds() < 60:
+                    next_str = f"{int(time_until.total_seconds())} seconds"
+                else:
+                    next_str = f"{int(time_until.total_seconds() / 60)} minutes"
+                    
+                embed.add_field(
+                    name="Next Check",
+                    value=f"In `{next_str}`",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="Next Check",
+                    value="⏰ Due now",
+                    inline=True
+                )
+        
+        # Commands
+        embed.add_field(
+            name="Commands",
+            value=(
+                "`periodic status` - Show this status\n"
+                "`periodic toggle` - Enable/disable checks\n"
+                "`periodic interval <minutes>` - Set check interval\n"
+                "`periodic check` - Force check now"
+            ),
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+
     async def get_processed_count(self, ctx: commands.Context):
         """Show how many applications have been processed"""
         processed_applications = await self.config.ap_processed_applications()
         pending_applications = await self.config.ap_pending_applications()
-        last_check = await self.config.ap_last_startup_check()
+        last_startup_check = await self.config.ap_last_startup_check()
+        last_periodic_check = await self.config.ap_last_periodic_check()
         
         embed = discord.Embed(
             title="📊 Application Tracking Statistics",
@@ -403,7 +694,13 @@ class ApplicationPingLogic:
         
         embed.add_field(
             name="Last Startup Check",
-            value=f"`{last_check[:19] if last_check else 'Never'}`",
+            value=f"`{last_startup_check[:19] if last_startup_check else 'Never'}`",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Last Periodic Check",
+            value=f"`{last_periodic_check[:19] if last_periodic_check else 'Never'}`",
             inline=False
         )
         
@@ -449,6 +746,9 @@ class ApplicationPingLogic:
             "discord_id": target_user.id,
             "application_id": "TEST-" + str(datetime.now().strftime("%Y%m%d-%H%M%S")),
             "application_data": {
+                "display_name": target_user.display_name,
+                "ingame_name": f"{target_user.name}_gaming",
+                "age": 25,
                 "region": "US",
                 "games": ["Minecraft", "Call of Duty", "Valorant"],
                 "platforms": ["PC", "Console"]
@@ -485,6 +785,10 @@ class ApplicationPingLogic:
         embed_color = await self.config.ap_notification_embed_color()
         pending_apps = await self.config.ap_pending_applications()
         
+        # Periodic check info
+        periodic_enabled = await self.config.ap_periodic_check_enabled()
+        check_interval = await self.config.ap_check_interval_minutes()
+        
         # Channel configuration
         if moderator_channel_id:
             channel = ctx.guild.get_channel(int(moderator_channel_id))
@@ -512,6 +816,14 @@ class ApplicationPingLogic:
         embed.add_field(
             name="📳 Ping Settings",
             value=f"Online only: `{'Yes' if ping_online_only else 'No'}`\nEmbed color: `#{embed_color:06x}`",
+            inline=False
+        )
+        
+        # Periodic check settings
+        periodic_status = "🟢 Enabled" if periodic_enabled else "🔴 Disabled"
+        embed.add_field(
+            name="🔄 Periodic Checks",
+            value=f"Status: {periodic_status}\nInterval: `{check_interval} minutes`",
             inline=False
         )
         
