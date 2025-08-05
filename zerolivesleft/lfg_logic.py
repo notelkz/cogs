@@ -239,10 +239,17 @@ class LFGLogic:
             embed.add_field(name="👤 Host", value=ctx.author.mention, inline=True)
             embed.add_field(name="👥 Players Needed", value=f"1/{players_needed}", inline=True)
             embed.add_field(name="🕐 Time", value=time or "Not specified", inline=True)
+            
+            # Add voice channel info if host is in voice
+            if ctx.author.voice and ctx.author.voice.channel:
+                embed.add_field(name="🔊 Voice Channel", value=ctx.author.voice.channel.mention, inline=True)
+            else:
+                embed.add_field(name="🔊 Voice Channel", value="Not in voice", inline=True)
+            
             embed.add_field(name="📋 Current Players", value=ctx.author.display_name, inline=False)
             
             embed.set_thumbnail(url=ctx.author.display_avatar.url)
-            embed.set_footer(text="Use the buttons below to join or leave this group!")
+            embed.set_footer(text="Use the buttons below to join or leave this group! 🎮 Join will also connect you to voice if available.")
             
             # Create thread title
             thread_title = f"[LFG] {game} - {players_needed} players needed"
@@ -258,7 +265,8 @@ class LFGLogic:
                 "description": description,
                 "time": time,
                 "closed": False,
-                "guild_id": ctx.guild.id
+                "guild_id": ctx.guild.id,
+                "voice_channel_id": ctx.author.voice.channel.id if ctx.author.voice and ctx.author.voice.channel else None
             }
             
             # Create view with buttons
@@ -271,6 +279,26 @@ class LFGLogic:
                 embed=embed,
                 view=view
             )
+            
+            # Copy permissions from the forum's parent category to the new thread
+            try:
+                if forum.category:
+                    # Get the category's permission overwrites
+                    category_overwrites = forum.category.overwrites
+                    
+                    # Apply the same overwrites to the thread
+                    for target, overwrite in category_overwrites.items():
+                        try:
+                            await thread.thread.set_permissions(target, overwrite=overwrite)
+                        except discord.HTTPException as perm_error:
+                            log.warning(f"Failed to set permissions for {target} on LFG thread: {perm_error}")
+                    
+                    log.info(f"Applied category permissions to LFG thread: {thread.thread.name}")
+                else:
+                    log.info(f"Forum {forum.name} has no parent category - using default permissions")
+            except Exception as perm_error:
+                log.error(f"Error copying permissions to LFG thread: {perm_error}")
+                # Don't fail the whole operation, just log the error
             
             # Update LFG data with thread and message info
             lfg_data["thread_id"] = thread.thread.id
@@ -327,11 +355,37 @@ class LFGLogic:
             lfg_data["current_players"].append(user.id)
             await self.config.channel(interaction.channel).lfg_data.set(lfg_data)
             
+            # Try to connect user to host's voice channel
+            voice_channel_id = lfg_data.get("voice_channel_id")
+            voice_connection_msg = ""
+            
+            if voice_channel_id:
+                voice_channel = interaction.guild.get_channel(voice_channel_id)
+                if voice_channel and isinstance(voice_channel, discord.VoiceChannel):
+                    # Check if user is currently in voice
+                    if user.voice and user.voice.channel:
+                        try:
+                            # Move user to the LFG voice channel
+                            await user.move_to(voice_channel)
+                            voice_connection_msg = f" and moved to {voice_channel.mention}"
+                        except discord.HTTPException as e:
+                            if "permissions" in str(e).lower():
+                                voice_connection_msg = f" (couldn't move you to voice - check permissions)"
+                            else:
+                                voice_connection_msg = f" (couldn't move you to voice - {e})"
+                    else:
+                        # User not in voice, just mention the channel
+                        voice_connection_msg = f" Join {voice_channel.mention} to play together!"
+                else:
+                    # Voice channel no longer exists or host left
+                    voice_connection_msg = " (host's voice channel unavailable)"
+            
             # Update embed
             await self._update_lfg_embed(interaction.message, lfg_data)
             
-            # Send response
-            await interaction.response.send_message(f"✅ {user.mention} joined the group for **{lfg_data['game']}**!")
+            # Send response with voice info
+            response_msg = f"✅ {user.mention} joined the group for **{lfg_data['game']}**{voice_connection_msg}"
+            await interaction.response.send_message(response_msg)
             
         except Exception as e:
             log.error(f"Error handling join: {e}")
@@ -435,13 +489,25 @@ class LFGLogic:
             embed.add_field(name="👤 Host", value=host.mention if host else "Unknown", inline=True)
             embed.add_field(name="👥 Players", value=f"{len(current_players)}/{players_needed}", inline=True)
             embed.add_field(name="🕐 Time", value=time, inline=True)
+            
+            # Add voice channel info
+            voice_channel_id = lfg_data.get("voice_channel_id")
+            if voice_channel_id:
+                voice_channel = message.guild.get_channel(voice_channel_id)
+                if voice_channel:
+                    embed.add_field(name="🔊 Voice Channel", value=voice_channel.mention, inline=True)
+                else:
+                    embed.add_field(name="🔊 Voice Channel", value="Channel unavailable", inline=True)
+            else:
+                embed.add_field(name="🔊 Voice Channel", value="Not in voice", inline=True)
+            
             embed.add_field(name="📋 Current Players", value="\n".join(player_names) or "None", inline=False)
             
             if host:
                 embed.set_thumbnail(url=host.display_avatar.url)
             
             if not closed:
-                embed.set_footer(text="Use the buttons below to join or leave this group!")
+                embed.set_footer(text="🎮 Join (auto-connects to voice) | ❌ Leave | 🔒 Close (Host only)")
             else:
                 embed.set_footer(text="This group is closed.")
             
