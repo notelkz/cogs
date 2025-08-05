@@ -72,7 +72,7 @@ class ReportModerationView(discord.ui.View):
         self.report_embed = report_embed
         self.reporter_id = reporter_id
 
-    @discord.ui.button(label="📝 Respond", style=discord.ButtonStyle.secondary, emoji="📝", custom_id="report_respond")
+    @discord.ui.button(label="📝 Respond", style=discord.ButtonStyle.secondary, emoji="📝")
     async def respond_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = ModeratorResponseModal(
             self.report_logic, 
@@ -82,7 +82,7 @@ class ReportModerationView(discord.ui.View):
         )
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="❓ Ask Question", style=discord.ButtonStyle.primary, emoji="❓", custom_id="report_question")
+    @discord.ui.button(label="❓ Ask Question", style=discord.ButtonStyle.primary, emoji="❓")
     async def ask_question_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = ModeratorResponseModal(
             self.report_logic, 
@@ -92,7 +92,7 @@ class ReportModerationView(discord.ui.View):
         )
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="✅ Resolve", style=discord.ButtonStyle.success, emoji="✅", custom_id="report_resolve")
+    @discord.ui.button(label="✅ Resolve", style=discord.ButtonStyle.success, emoji="✅")
     async def resolve_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = FinalResponseModal(
             self.report_logic, 
@@ -102,7 +102,7 @@ class ReportModerationView(discord.ui.View):
         )
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="❌ Dismiss", style=discord.ButtonStyle.danger, emoji="❌", custom_id="report_dismiss")
+    @discord.ui.button(label="❌ Dismiss", style=discord.ButtonStyle.danger, emoji="❌")
     async def dismiss_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Update the original message to show dismissed status
         embed = self.report_embed.copy()
@@ -141,7 +141,7 @@ class ReportModerationView(discord.ui.View):
         except Exception as e:
             log.error(f"Failed to send dismissal DM to reporter: {e}")
 
-    @discord.ui.button(label="👀 Under Review", style=discord.ButtonStyle.blurple, emoji="👀", custom_id="report_review")
+    @discord.ui.button(label="👀 Under Review", style=discord.ButtonStyle.blurple, emoji="👀")
     async def under_review_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Update the original message to show under review status
         embed = self.report_embed.copy()
