@@ -21,7 +21,6 @@ from .application_roles import ApplicationRolesLogic
 from .application_ping import ApplicationPingLogic  # NEW
 from .role_menus import RoleMenuLogic
 from .gamertags import GamertagsLogic # NEW
-from .lfg_logic import LFGLogic # NEW
 from . import role_menus
 
 log = logging.getLogger("red.Elkz.zerolivesleft")
@@ -68,11 +67,6 @@ class Zerolivesleft(commands.Cog):
             "at_user_activity": {},
             # Role Menus settings - THIS WAS MISSING!
             "role_menus": {},
-            # LFG System settings
-            "lfg_forum_id": None,
-            "lfg_required_role": "Recruit", 
-            "lfg_cleanup_hours": 24,
-            "lfg_max_players": 10,
         }
         self.config.register_guild(**default_guild)
 
@@ -95,7 +89,6 @@ class Zerolivesleft(commands.Cog):
         self.application_ping_logic = ApplicationPingLogic(self)  # NEW
         self.role_menu_logic = RoleMenuLogic(self)
         self.gamertags_logic = GamertagsLogic(self) # NEW
-        self.lfg_logic = LFGLogic(self) # NEW
 
         self.bot.add_view(role_menus.AutoRoleView())
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
@@ -156,7 +149,6 @@ class Zerolivesleft(commands.Cog):
         self.calendar_sync_logic.stop_tasks()
         self.activity_tracking_logic.stop_tasks()
         self.application_roles_logic.stop_tasks()
-        self.lfg_logic.stop_tasks() # NEW
         if hasattr(self, 'view_init_task'): self.view_init_task.cancel()
         if self.web_runner: asyncio.create_task(self.shutdown_webserver())
         asyncio.create_task(self.session.close())
@@ -193,13 +185,10 @@ class Zerolivesleft(commands.Cog):
 
     @commands.Cog.listener()
     async def on_reaction_add(self, reaction, user):
-        """Handle reaction additions for XP awards and LFG system."""
+        """Handle reaction additions for XP awards."""
         if user.bot or not reaction.message.guild:
             return
         await self.activity_tracking_logic.handle_reaction_add(reaction, user)
-        
-        # Handle LFG reactions
-        await self.lfg_logic.on_reaction_add(reaction, user)
 
     @commands.Cog.listener()
     async def on_guild_role_create(self, role):
@@ -509,38 +498,6 @@ class Zerolivesleft(commands.Cog):
     async def gtag_stats(self, ctx: commands.Context):
         """Show statistics for the gamertag system."""
         await self.gamertags_logic.get_stats(ctx)
-
-    # =============================================================================
-    # LFG SYSTEM COMMANDS (NEW)
-    # =============================================================================
-
-    @zerolivesleft_group.group(name="lfg")
-    async def lfg_group(self, ctx: commands.Context):
-        """🎮 Looking for Group system commands"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @lfg_group.command(name="setup")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def lfg_setup(self, ctx, forum_channel: discord.ForumChannel):
-        """Set up the LFG system with a forum channel"""
-        await self.lfg_logic.setup_lfg(ctx, forum_channel)
-
-    @lfg_group.command(name="config")
-    @commands.admin_or_permissions(manage_guild=True)
-    async def lfg_config(self, ctx, setting: str = None, *, value: str = None):
-        """Configure LFG settings: role, cleanup, maxplayers"""
-        await self.lfg_logic.config_lfg(ctx, setting, value=value)
-
-    @commands.hybrid_command(name="lfg")
-    async def create_lfg_post(self, ctx, game: str, players_needed: int, description: str = None, time: str = None):
-        """
-        Create a Looking for Group post
-        
-        Usage: !lfg <game> <players_needed> [description] [time]
-        Example: !lfg "Valorant" 3 "Ranked games" "8pm EST"
-        """
-        await self.lfg_logic.create_lfg(ctx, game, players_needed, description, time)
 
     # =============================================================================
     # WEBSERVER COMMANDS
