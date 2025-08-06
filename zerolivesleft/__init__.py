@@ -70,6 +70,11 @@ class Zerolivesleft(commands.Cog):
             "at_user_activity": {},
             # Role Menus settings - THIS WAS MISSING!
             "role_menus": {},
+            # Twitch Roles settings
+            "twitch_role_id": None,
+            "twitch_auto_assign": True, 
+            "twitch_log_channel_id": None,
+            "twitch_require_verification": False,
             # LFG System settings
             "lfg_forum_id": None,
             "lfg_required_role": "Recruit", 
@@ -110,6 +115,7 @@ class Zerolivesleft(commands.Cog):
         self.gamertags_logic = GamertagsLogic(self) # NEW
         self.lfg_logic = LFGLogic(self) # NEW
         self.report_logic = ReportLogic(self) # NEW
+        self.twitch_roles_logic = TwitchRolesLogic(self)
 
         self.bot.add_view(role_menus.AutoRoleView())
         self.view_init_task = self.bot.loop.create_task(self.initialize_persistent_views())
@@ -171,6 +177,8 @@ class Zerolivesleft(commands.Cog):
                 await self.web_runner.setup()
                 self.web_site = web.TCPSite(self.web_runner, host, port)
                 await self.web_site.start()
+                # Register Twitch routes after server setup
+                self.twitch_roles_logic.register_routes(self.web_app)
                 log.info(f"Central web server started on http://{host}:{port}")
             except Exception as e:
                 log.error(f"Failed to start central web server: {e}")
@@ -295,6 +303,7 @@ class Zerolivesleft(commands.Cog):
         await self.calendar_sync_logic.show_config(ctx)
         await self.application_roles_logic.show_config(ctx)
         await self.application_ping_logic.show_config(ctx)  # NEW
+        await self.twitch_roles_logic.show_config(ctx)
         await self.report_logic.show_config(ctx)  # NEW
         # Acknowledge the gamertag system, which is user-based
         embed = discord.Embed(
@@ -637,6 +646,55 @@ class Zerolivesleft(commands.Cog):
     async def report_command(self, ctx):
         """Submit a report using an interactive form."""
         await self.report_logic.submit_report(ctx)
+
+    # =============================================================================
+    # TWITCH ROLES COMMANDS
+    # =============================================================================
+
+    @zerolivesleft_group.group(name="twitch")
+    async def twitch_group(self, ctx: commands.Context):
+        """🎮 Twitch integration commands."""
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+
+    @twitch_group.command(name="setrole")
+    @commands.admin_or_permissions(manage_roles=True)
+    async def twitch_set_role(self, ctx, role: discord.Role):
+        """Set the role to assign to verified Twitch streamers."""
+        await self.twitch_roles_logic.set_twitch_role(ctx, role)
+
+    @twitch_group.command(name="setlogchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def twitch_set_log_channel(self, ctx, channel: discord.TextChannel):
+        """Set the channel for Twitch verification logs."""
+        await self.twitch_roles_logic.set_log_channel(ctx, channel)
+
+    @twitch_group.command(name="autoassign")
+    @commands.admin_or_permissions(manage_roles=True)
+    async def twitch_auto_assign(self, ctx, enabled: bool):
+        """Enable or disable automatic role assignment for verified streamers."""
+        await self.twitch_roles_logic.set_auto_assign(ctx, enabled)
+
+    @twitch_group.command(name="requireverification")
+    @commands.admin_or_permissions(manage_roles=True)
+    async def twitch_require_verification(self, ctx, enabled: bool):
+        """Enable or disable requirement for Twitch verification."""
+        await self.twitch_roles_logic.set_require_verification(ctx, enabled)
+
+    @twitch_group.command(name="config")
+    async def twitch_show_config(self, ctx):
+        """Show current Twitch integration configuration."""
+        await self.twitch_roles_logic.show_config(ctx)
+
+    @twitch_group.command(name="verify")
+    async def twitch_verify_user(self, ctx, member: discord.Member = None):
+        """Manually verify a user's Twitch status and assign role if applicable."""
+        await self.twitch_roles_logic.verify_user(ctx, member)
+
+    @twitch_group.command(name="refresh")
+    async def twitch_refresh_all(self, ctx):
+        """Refresh Twitch verification status for all members with the Twitch role."""
+        await self.twitch_roles_logic.refresh_all_users(ctx)
 
     # =============================================================================
     # WEBSERVER COMMANDS
