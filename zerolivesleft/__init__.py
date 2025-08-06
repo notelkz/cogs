@@ -24,6 +24,7 @@ from .gamertags import GamertagsLogic # NEW
 from .lfg_logic import LFGLogic # NEW
 from .report_logic import ReportLogic, ReportModerationView # NEW
 from . import role_menus
+from .twitch_roles import TwitchRolesLogic
 
 log = logging.getLogger("red.Elkz.zerolivesleft")
 
