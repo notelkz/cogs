@@ -460,7 +460,7 @@ class TwitchSchedule(commands.Cog):
                 await warning_msg.delete()
                 
                 bot_messages = []
-                async for message in channel.history(limit=30): # Adjust limit if many messages are posted
+                async for message in channel.history(limit=50): # Increased limit for multiple weeks
                     if message.author == self.bot.user and message.id != warning_msg.id:
                         bot_messages.append(message)
                 
@@ -478,110 +478,139 @@ class TwitchSchedule(commands.Cog):
                         break
 
             async with channel.typing():
-                # --- Generate and Post Main Schedule Image (for configured weeks) ---
-                # Determine the start of the week for the image
+                # Determine starting week
                 if start_date_for_image is None:
-                    # Default: current week's Sunday
                     today_london = datetime.datetime.now(london_tz)
                     days_since_sunday = today_london.weekday() + 1
-                    if days_since_sunday == 7: # If today is Sunday, it's the start of the current week
+                    if days_since_sunday == 7:
                         days_since_sunday = 0
-                    start_of_week_image = today_london - timedelta(days=days_since_sunday)
-                    start_of_week_image = start_of_week_image.replace(hour=0, minute=0, second=0, microsecond=0)
+                    start_of_first_week = today_london - timedelta(days=days_since_sunday)
+                    start_of_first_week = start_of_first_week.replace(hour=0, minute=0, second=0, microsecond=0)
                 else:
-                    start_of_week_image = start_date_for_image
-                
-                # Calculate end date based on weeks_to_show
-                end_of_week_image = start_of_week_image + timedelta(days=(weeks_to_show * 7) - 1, hours=23, minutes=59, seconds=59)
+                    start_of_first_week = start_date_for_image
 
-                schedule_for_image = [
-                    s for s in future_segments
-                    if start_of_week_image <= dateutil.parser.isoparse(s["start_time"]).astimezone(london_tz) <= end_of_week_image
-                ]
-                
-                main_schedule_message = None
-                if schedule_for_image:
-                    if dry_run:
-                        week_text = "week" if weeks_to_show == 1 else f"{weeks_to_show} weeks"
-                        await channel.send(f"🧪 Dry run: Generating {week_text} schedule image...")
-                    image_buf = await self.generate_schedule_image(schedule_for_image, channel.guild, start_date=start_of_week_image)
-                    if image_buf:
-                        main_schedule_message = await channel.send(
-                            file=discord.File(image_buf, filename="schedule.png")
+                # Track if we've posted the "next up" stream
+                next_stream_posted = False
+                first_message_for_pinning = None
+
+                # Loop through each week
+                for week_num in range(weeks_to_show):
+                    week_start = start_of_first_week + timedelta(days=week_num * 7)
+                    week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+                    
+                    # Filter streams for this specific week
+                    week_streams = [
+                        s for s in future_segments
+                        if week_start <= dateutil.parser.isoparse(s["start_time"]).astimezone(london_tz) <= week_end
+                    ]
+                    
+                    # Generate and post week image
+                    if week_streams:
+                        if dry_run:
+                            await channel.send(f"🧪 Dry run: Generating week {week_num + 1} schedule image...")
+                        
+                        # Take only up to event_count streams for the image
+                        image_streams = week_streams[:event_count]
+                        image_buf = await self.generate_schedule_image(image_streams, channel.guild, start_date=week_start)
+                        if image_buf:
+                            week_message = await channel.send(
+                                file=discord.File(image_buf, filename=f"schedule_week_{week_num + 1}.png")
+                            )
+                            if first_message_for_pinning is None:
+                                first_message_for_pinning = week_message
+                    else:
+                        # No streams for this week
+                        week_title = f"Week of {week_start.strftime('%B %d')}"
+                        embed_no_streams = discord.Embed(
+                            title=f"No Streams Scheduled - {week_title}",
+                            description="There are no streams currently scheduled for this week on Twitch.",
+                            color=discord.Color.orange()
                         )
-                else:
-                    week_text = "week" if weeks_to_show == 1 else f"{weeks_to_show} weeks"
-                    embed_no_image = discord.Embed(
-                        title=f"No Streams Scheduled This {week_text.title()}",
-                        description=f"There are no streams currently scheduled for the next {week_text} on Twitch.",
-                        color=discord.Color.orange()
-                    )
-                    main_schedule_message = await channel.send(embed=embed_no_image)
+                        if dry_run:
+                            embed_no_streams.set_author(name="DRY RUN PREVIEW")
+                            embed_no_streams.color = discord.Color.dark_grey()
+                        
+                        week_message = await channel.send(embed=embed_no_streams)
+                        if first_message_for_pinning is None:
+                            first_message_for_pinning = week_message
 
-                # --- Post "Next Upcoming Stream" ---
-                next_stream_segment = None
-                if future_segments:
-                    next_stream_segment = future_segments[0]
-                    # Create a copy of future_segments to iterate for individual embeds later
-                    streams_for_individual_embeds = list(future_segments)
-                    if next_stream_segment in streams_for_individual_embeds:
-                        streams_for_individual_embeds.remove(next_stream_segment) # Ensure no duplicate next stream embed
+                    # Post individual stream embeds for this week
+                    for stream in week_streams:
+                        start_time = datetime.datetime.fromisoformat(stream["start_time"].replace("Z", "+00:00"))
+                        title = stream["title"]
+                        category = stream.get("category", {})
+                        game_name = category.get("name", "No Category")
+                        
+                        boxart_url = None
+                        if category and category.get("id"):
+                            cat_info = await self.get_category_info(category["id"])
+                            if cat_info and cat_info.get("box_art_url"):
+                                boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
 
-                if next_stream_segment:
-                    start_time = datetime.datetime.fromisoformat(next_stream_segment["start_time"].replace("Z", "+00:00"))
-                    title = next_stream_segment["title"]
-                    category = next_stream_segment.get("category", {})
-                    game_name = category.get("name", "No Category")
-                    
-                    boxart_url = None
-                    if category and category.get("id"):
-                        cat_info = await self.get_category_info(category["id"])
-                        if cat_info and cat_info.get("box_art_url"):
-                            boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
+                        unix_ts = int(start_time.timestamp())
+                        time_str_relative = f"<t:{unix_ts}:R>"
+                        time_str_full = f"<t:{unix_ts}:F>"
+                        
+                        end_time = stream.get("end_time")
+                        duration_str = "Unknown"
+                        if end_time:
+                            end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                            duration = end_dt - start_time
+                            hours, remainder = divmod(duration.seconds, 3600)
+                            minutes = remainder // 60
+                            duration_str = f"{hours}h {minutes}m"
 
-                    unix_ts = int(start_time.timestamp())
-                    time_str_relative = f"<t:{unix_ts}:R>"
-                    time_str_full = f"<t:{unix_ts}:F>"
-                    
-                    end_time = next_stream_segment.get("end_time")
-                    duration_str = "Unknown"
-                    if end_time:
-                        end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                        duration = end_dt - start_time
-                        hours, remainder = divmod(duration.seconds, 3600)
-                        minutes = remainder // 60
-                        duration_str = f"{hours}h {minutes}m"
+                        twitch_url = f"https://twitch.tv/{twitch_username}"
+                        
+                        # Check if this is the next upcoming stream overall
+                        is_next_stream = not next_stream_posted and stream == future_segments[0] if future_segments else False
+                        
+                        if is_next_stream:
+                            embed = discord.Embed(
+                                title=f"📣 NEXT UP: {title}",
+                                url=twitch_url,
+                                description=f"**[Watch Live Here!]({twitch_url})**\n\nStarting {time_str_relative} on {time_str_full}",
+                                color=discord.Color.green(),
+                                timestamp=start_time
+                            )
+                            embed.add_field(name="🎮 Game", value=game_name, inline=True)
+                            embed.add_field(name="⏳ Expected Duration", value=duration_str, inline=True)
+                            next_stream_posted = True
+                        else:
+                            embed = discord.Embed(
+                                title=title,
+                                url=twitch_url,
+                                description=f"**[Watch Live Here]({twitch_url})**",
+                                color=discord.Color.purple(),
+                                timestamp=start_time
+                            )
+                            embed.add_field(name="🕒 Start Time", value=time_str_full, inline=True)
+                            embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
+                            embed.add_field(name="🎮 Game", value=game_name, inline=True)
+                        
+                        embed.set_footer(text=f"Twitch Stream • {twitch_username}")
+                        
+                        if boxart_url:
+                            embed.set_thumbnail(url=boxart_url)
 
-                    twitch_url = f"https://twitch.tv/{twitch_username}"
-                    
-                    next_embed = discord.Embed(
-                        title=f"📣 NEXT UP: {title}",
-                        url=twitch_url,
-                        description=f"**[Watch Live Here!]({twitch_url})**\n\nStarting {time_str_relative} on {time_str_full}",
-                        color=discord.Color.green(), # Distinct color for next stream
-                        timestamp=start_time
-                    )
-                    next_embed.add_field(name="🎮 Game", value=game_name, inline=True)
-                    next_embed.add_field(name="⏳ Expected Duration", value=duration_str, inline=True)
-                    next_embed.set_footer(text=f"Twitch Stream • {twitch_username}")
-                    if boxart_url:
-                        next_embed.set_thumbnail(url=boxart_url)
+                        # Check for VODs if stream has passed
+                        if end_time:
+                            end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+                            if end_dt < now_utc:
+                                vods = await self.get_vods_for_user(twitch_username, start_time, end_dt)
+                                if vods and len(vods) > 0:
+                                    vod_url = vods[0]["url"]
+                                    embed.add_field(name="🎥 Watch VOD", value=f"[Click Here]({vod_url})", inline=False)
 
-                    if dry_run:
-                        next_embed.set_author(name="DRY RUN PREVIEW (NEXT STREAM)")
-                        next_embed.color = discord.Color.dark_grey()
-                    
-                    await channel.send(embed=next_embed)
+                        if dry_run:
+                            embed.set_author(name="DRY RUN PREVIEW")
+                            embed.color = discord.Color.dark_grey()
+                            
+                        await channel.send(embed=embed)
+                        await asyncio.sleep(0.5)
 
-                # --- Post remaining individual stream embeds ---
-                # Use a slice to ensure we don't exceed event_count (minus 1 if next_stream_segment was unique and already counted)
-                # Max number of *additional* embeds after the 'next up' one.
-                max_additional_embeds = event_count - (1 if next_stream_segment else 0)
-                streams_for_individual_embeds_slice = streams_for_individual_embeds[:max_additional_embeds]
-
-
-                if not streams_for_individual_embeds_slice and not next_stream_segment and not schedule_for_image:
-                    # Only send this if no streams were found at all (and no "next up" embed was sent)
+                # Handle case where no streams found at all
+                if not future_segments:
                     week_text = "week" if weeks_to_show == 1 else f"{weeks_to_show} weeks"
                     embed = discord.Embed(
                         title="No Upcoming Streams",
@@ -592,78 +621,12 @@ class TwitchSchedule(commands.Cog):
                         embed.set_author(name="DRY RUN PREVIEW")
                         embed.color = discord.Color.dark_grey()
                     await channel.send(embed=embed)
-                else:
-                    for segment in streams_for_individual_embeds_slice:
-                        start_time = datetime.datetime.fromisoformat(segment["start_time"].replace("Z", "+00:00"))
-                        title = segment["title"]
-                        category = segment.get("category", {})
-                        game_name = category.get("name", "No Category")
-                        
-                        boxart_url = None
-                        if category and category.get("id"):
-                            cat_info = await self.get_category_info(category["id"])
-                            if cat_info and cat_info.get("box_art_url"):
-                                boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
 
-                        unix_ts = int(start_time.timestamp())
-                        time_str = f"<t:{unix_ts}:F>"
-                        
-                        end_time = segment.get("end_time")
-                        end_dt = None
-                        if end_time:
-                            end_dt = datetime.datetime.fromisoformat(end_time.replace("Z", "+00:00"))
-                            duration = end_dt - start_time
-                            hours, remainder = divmod(duration.seconds, 3600)
-                            minutes = remainder // 60
-                            duration_str = f"{hours}h {minutes}m"
-                        else:
-                            duration_str = "Unknown"
-
-                        twitch_url = f"https://twitch.tv/{twitch_username}"
-                        
-                        embed = discord.Embed(
-                            title=title,
-                            url=twitch_url,
-                            description=f"**[Watch Live Here]({twitch_url})**",
-                            color=discord.Color.purple(),
-                            timestamp=start_time
-                        )
-                        embed.add_field(name="🕒 Start Time", value=time_str, inline=True)
-                        embed.add_field(name="⏳ Duration", value=duration_str, inline=True)
-                        embed.add_field(name="🎮 Game", value=game_name, inline=True)
-                        embed.set_footer(text=f"Scheduled Stream • {twitch_username}")
-                        
-                        if boxart_url:
-                            embed.set_thumbnail(url=boxart_url)
-
-                        if end_dt and end_dt < now_utc: # If event has passed
-                            vods = await self.get_vods_for_user(twitch_username, start_time, end_dt)
-                            if vods and len(vods) > 0:
-                                vod_url = vods[0]["url"]
-                                embed.add_field(name="🎥 Watch VOD", value=f"[Click Here]({vod_url})", inline=False)
-
-
-                        if dry_run:
-                            embed.set_author(name="DRY RUN PREVIEW")
-                            embed.color = discord.Color.dark_grey()
-                            
-                        await channel.send(embed=embed)
-                        await asyncio.sleep(0.5)
-
-                # --- Pin the main message ---
-                if not dry_run and main_schedule_message:
+                # --- Pin the first message ---
+                if not dry_run and first_message_for_pinning:
                     try:
-                        # Ensure the message object is valid for pinning (it will be if sent in this function)
-                        if isinstance(main_schedule_message, discord.Message):
-                            await main_schedule_message.pin()
-                            await self.config.guild(channel.guild).schedule_message_id.set(main_schedule_message.id)
-                        else: # If main_schedule_message was an embed, it's not a direct message object to pin.
-                             # Try to get the first message sent by bot after cleanup to pin.
-                            async for msg in channel.history(limit=10, oldest_first=True):
-                                if msg.author == self.bot.user:
-                                    await msg.pin()
-                                    await self.config.guild(channel.guild).schedule_message_id.set(msg.id)
-                                    break
+                        await first_message_for_pinning.pin()
+                        await self.config.guild(channel.guild).schedule_message_id.set(first_message_for_pinning.id)
                     except discord.errors.Forbidden:
                         await self._log_error(channel.guild, f"Missing permissions to pin messages in {channel.name}.")
                     except Exception as e:
