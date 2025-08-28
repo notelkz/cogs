@@ -14,7 +14,6 @@ class TwitchAnnouncer(commands.Cog):
         default_guild = {
             "announcement_channel": None,
             "ping_roles": [],
-            "dm_roles": [],  # NEW: Roles that get DM'd instead of pinged
             "streamers": {},  # {twitch_name: {"discord_id": id, "last_announced": timestamp}}
             "client_id": None,
             "client_secret": None,
@@ -175,98 +174,9 @@ class TwitchAnnouncer(commands.Cog):
             print(f"[DEBUG] Error in check_guild_streams: {str(e)}")
             import traceback
             traceback.print_exc()  # This will print the full stack trace
-
-    async def send_dm_notifications(self, guild, twitch_name, stream_data):
-        """Send DM notifications to users with DM roles."""
-        dm_roles = await self.config.guild(guild).dm_roles()
-        if not dm_roles:
-            return
-        
-        print(f"[DEBUG] Sending DMs for {twitch_name} to roles: {dm_roles}")
-        
-        # Create the embed for DM
-        embed = discord.Embed(
-            title=stream_data["title"],
-            url=f"https://twitch.tv/{twitch_name}",
-            color=discord.Color.purple(),
-            timestamp=datetime.now()
-        )
-        
-        embed.set_author(
-            name=f"{twitch_name} is now live on Twitch!",
-            icon_url="https://static.twitchcdn.net/assets/favicon-32-d6025c14e900565d6177.png"
-        )
-        
-        embed.add_field(
-            name="Playing",
-            value=stream_data.get("game_name", "Unknown"),
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Viewers",
-            value=str(stream_data.get("viewer_count", 0)),
-            inline=True
-        )
-
-        # Add thumbnail
-        if stream_data.get("thumbnail_url"):
-            try:
-                thumbnail = stream_data["thumbnail_url"]
-                timestamp = int(datetime.now().timestamp())
-                current_thumbnail = thumbnail.replace("{width}", "640").replace("{height}", "360")
-                current_thumbnail = f"{current_thumbnail}?t={timestamp}"
-                embed.set_image(url=current_thumbnail)
-            except Exception as e:
-                print(f"Error setting DM thumbnail: {e}")
-
-        # Create view with buttons
-        view = StreamView(twitch_name)
-        
-        # Get all members with DM roles
-        members_to_dm = set()
-        for role_id in dm_roles:
-            role = guild.get_role(role_id)
-            if role:
-                print(f"[DEBUG] Found DM role: {role.name}")
-                for member in role.members:
-                    members_to_dm.add(member)
-            else:
-                print(f"[DEBUG] Could not find DM role with ID {role_id}")
-        
-        print(f"[DEBUG] Found {len(members_to_dm)} members to DM")
-        
-        # Send DMs
-        successful_dms = 0
-        failed_dms = []
-        
-        for member in members_to_dm:
-            try:
-                await member.send(embed=embed, view=view)
-                successful_dms += 1
-                print(f"[DEBUG] Successfully sent DM to {member.display_name}")
-                # Small delay to avoid rate limits
-                await asyncio.sleep(0.5)
-            except discord.Forbidden:
-                failed_dms.append(member.display_name)
-                print(f"[DEBUG] Failed to DM {member.display_name} (DMs disabled or blocked)")
-            except discord.HTTPException as e:
-                failed_dms.append(member.display_name)
-                print(f"[DEBUG] Failed to DM {member.display_name} (HTTP error: {e})")
-            except Exception as e:
-                failed_dms.append(member.display_name)
-                print(f"[DEBUG] Failed to DM {member.display_name} (Error: {e})")
-        
-        print(f"[DEBUG] DM Summary: {successful_dms} successful, {len(failed_dms)} failed")
-        if failed_dms:
-            print(f"[DEBUG] Failed DMs: {', '.join(failed_dms)}")
     
     async def announce_stream(self, guild, twitch_name, stream_data):
         """Announce a live stream."""
-        # Send DMs first
-        await self.send_dm_notifications(guild, twitch_name, stream_data)
-        
-        # Then do the regular channel announcement
         channel_id = await self.config.guild(guild).announcement_channel()
         if not channel_id:
             print(f"[DEBUG] No announcement channel set for guild {guild.id}")
@@ -429,31 +339,17 @@ class TwitchAnnouncer(commands.Cog):
     async def list_ping_roles(self, ctx):
         """List all roles that will be pinged for stream announcements."""
         ping_roles = await self.config.guild(ctx.guild).ping_roles()
-        dm_roles = await self.config.guild(ctx.guild).dm_roles()
-        
-        if not ping_roles and not dm_roles:
-            await ctx.send("No roles configured for notifications.")
+        if not ping_roles:
+            await ctx.send("No roles configured for pinging.")
             return
             
-        msg = "**Stream Notification Roles:**\n"
-        
-        if ping_roles:
-            msg += "\n**Channel Ping Roles:**\n"
-            for role_id in ping_roles:
-                role = ctx.guild.get_role(role_id)
-                if role:
-                    msg += f"- {role.name} (ID: {role_id})\n"
-                else:
-                    msg += f"- Unknown role (ID: {role_id})\n"
-        
-        if dm_roles:
-            msg += "\n**DM Roles:**\n"
-            for role_id in dm_roles:
-                role = ctx.guild.get_role(role_id)
-                if role:
-                    msg += f"- {role.name} (ID: {role_id})\n"
-                else:
-                    msg += f"- Unknown role (ID: {role_id})\n"
+        msg = "**Roles that will be pinged:**\n"
+        for role_id in ping_roles:
+            role = ctx.guild.get_role(role_id)
+            if role:
+                msg += f"- {role.name} (ID: {role_id})\n"
+            else:
+                msg += f"- Unknown role (ID: {role_id})\n"
         
         await ctx.send(msg)
 
@@ -498,22 +394,14 @@ class TwitchAnnouncer(commands.Cog):
                 inline=False
             )
         
-        # Check if role is in ping_roles or dm_roles
+        # Check if role is in ping_roles
         ping_roles = await self.config.guild(ctx.guild).ping_roles()
-        dm_roles = await self.config.guild(ctx.guild).dm_roles()
         in_ping_roles = role.id in ping_roles
-        in_dm_roles = role.id in dm_roles
         
         embed.add_field(
             name="In Ping Roles List",
-            value="✅ Yes" if in_ping_roles else "❌ No",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="In DM Roles List",
-            value="✅ Yes" if in_dm_roles else "❌ No",
-            inline=True
+            value="✅ Yes" if in_ping_roles else "❌ No - Role not configured for pinging",
+            inline=False
         )
         
         # Test ping
@@ -586,62 +474,6 @@ class TwitchAnnouncer(commands.Cog):
             if role.id in roles:
                 roles.remove(role.id)
         await ctx.send(f"Removed {role.name} from announcement pings.")
-
-    # NEW COMMANDS FOR DM FUNCTIONALITY
-    @twitchannouncer.command(name="adddmrole")
-    async def add_dm_role(self, ctx, role: discord.Role):
-        """Add a role to receive DMs for stream announcements."""
-        async with self.config.guild(ctx.guild).dm_roles() as roles:
-            if role.id not in roles:
-                roles.append(role.id)
-        await ctx.send(f"Added {role.name} to DM notifications. Members with this role will be DM'd when streams go live.")
-
-    @twitchannouncer.command(name="removedmrole")
-    async def remove_dm_role(self, ctx, role: discord.Role):
-        """Remove a role from DM stream announcements."""
-        async with self.config.guild(ctx.guild).dm_roles() as roles:
-            if role.id in roles:
-                roles.remove(role.id)
-        await ctx.send(f"Removed {role.name} from DM notifications.")
-
-    @twitchannouncer.command(name="listdmroles")
-    async def list_dm_roles(self, ctx):
-        """List all roles that will receive DMs for stream announcements."""
-        dm_roles = await self.config.guild(ctx.guild).dm_roles()
-        if not dm_roles:
-            await ctx.send("No roles configured for DM notifications.")
-            return
-            
-        msg = "**Roles that will receive DMs:**\n"
-        for role_id in dm_roles:
-            role = ctx.guild.get_role(role_id)
-            if role:
-                member_count = len(role.members)
-                msg += f"- {role.name} ({member_count} members) (ID: {role_id})\n"
-            else:
-                msg += f"- Unknown role (ID: {role_id})\n"
-        
-        await ctx.send(msg)
-
-    @twitchannouncer.command(name="testdm")
-    async def test_dm_announcement(self, ctx, twitch_name: str):
-        """Test DM announcement for a specific streamer."""
-        dm_roles = await self.config.guild(ctx.guild).dm_roles()
-        if not dm_roles:
-            await ctx.send("No DM roles configured! Use `adddmrole` to add roles for DM notifications.")
-            return
-
-        # Create test data
-        test_data = {
-            "title": "Test Stream - DM Notification",
-            "game_name": "Just Chatting",
-            "viewer_count": 0,
-            "started_at": datetime.utcnow().isoformat(),
-            "thumbnail_url": "https://static-cdn.jtvnw.net/previews-ttv/live_user_test-{width}x{height}.jpg"
-        }
-        
-        await self.send_dm_notifications(ctx.guild, twitch_name, test_data)
-        await ctx.send(f"Test DM notifications sent for {twitch_name}!")
 
     @twitchannouncer.command(name="setauth")
     @commands.guild_only()
