@@ -1,6 +1,5 @@
 import discord
 from redbot.core import commands, Config, checks
-from redbot.core.utils.embed import EmbedWithEmoji
 from typing import Optional
 import asyncio
 from datetime import datetime
@@ -8,7 +7,7 @@ from datetime import datetime
 
 class SuggestionBox(commands.Cog):
     """Anonymous suggestion box for server members."""
-    
+
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
@@ -21,19 +20,34 @@ class SuggestionBox(commands.Cog):
         }
         
         self.config.register_guild(**default_guild)
-    
+
+        self.status_colors = {
+            "pending": discord.Color.blue(),
+            "approved": discord.Color.green(),
+            "denied": discord.Color.red(),
+            "considering": discord.Color.orange(),
+            "implemented": discord.Color.purple()
+        }
+        self.status_emojis = {
+            "pending": "⏳",
+            "approved": "✅",
+            "denied": "❌",
+            "considering": "🤔",
+            "implemented": "🎉"
+        }
+
     @commands.group(name="suggestionbox", aliases=["sbox"])
     @commands.guild_only()
     async def suggestionbox(self, ctx):
         """Suggestion box commands."""
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
-    
+
     @suggestionbox.command(name="setup")
     @checks.admin_or_permissions(manage_guild=True)
     async def setup_suggestion_box(self, ctx, suggestion_channel: discord.TextChannel, log_channel: Optional[discord.TextChannel] = None):
         """Set up the suggestion box.
-        
+
         Parameters:
         - suggestion_channel: Channel where suggestions will be posted
         - log_channel: Optional channel for logging (defaults to suggestion channel)
@@ -49,13 +63,13 @@ class SuggestionBox(commands.Cog):
             color=discord.Color.green()
         )
         await ctx.send(embed=embed)
-    
-    @suggestionbox.command(name="suggest")
+
+    @suggestionbox.command(name="suggest")  # Corrected from @commands.command
     @commands.guild_only()
     async def submit_suggestion(self, ctx, *, suggestion: str):
         """Submit an anonymous suggestion.
         
-        Usage: `[p]suggest Your suggestion here`
+        Usage: `[p]sbox suggest Your suggestion here`
         """
         # Delete the user's message to maintain anonymity
         try:
@@ -63,7 +77,7 @@ class SuggestionBox(commands.Cog):
         except discord.NotFound:
             pass
         except discord.Forbidden:
-            await ctx.send("⚠️ I need permission to delete messages to maintain anonymity. Please delete your message manually.", delete_after=10)
+            await ctx.author.send("⚠️ I need permission to delete messages to maintain anonymity. Please delete your message manually.", delete_after=10)
         
         guild_config = self.config.guild(ctx.guild)
         suggestion_channel_id = await guild_config.suggestion_channel()
@@ -81,12 +95,12 @@ class SuggestionBox(commands.Cog):
         suggestion_id = await guild_config.next_id()
         await guild_config.next_id.set(suggestion_id + 1)
         
-        # Create suggestion embed - Fixed timestamp issue
+        # Create suggestion embed
         embed = discord.Embed(
             title=f"💡 Suggestion #{suggestion_id}",
             description=suggestion,
-            color=discord.Color.blue(),
-            timestamp=datetime.now()  # Changed from datetime.utcnow() which is deprecated
+            color=self.status_colors["pending"],
+            timestamp=datetime.now()
         )
         embed.set_footer(text="React with ✅ to approve, ❌ to deny, or 🤔 for consideration")
         
@@ -98,13 +112,13 @@ class SuggestionBox(commands.Cog):
             await suggestion_msg.add_reaction("❌")
             await suggestion_msg.add_reaction("🤔")
             
-            # Store suggestion data - Fixed timestamp serialization
+            # Store suggestion data
             suggestions = await guild_config.suggestions()
             suggestions[str(suggestion_id)] = {
                 "message_id": suggestion_msg.id,
                 "channel_id": suggestion_channel.id,
                 "content": suggestion,
-                "timestamp": datetime.now().isoformat(),  # Changed from datetime.utcnow()
+                "timestamp": datetime.now().isoformat(),
                 "status": "pending"
             }
             await guild_config.suggestions.set(suggestions)
@@ -124,9 +138,9 @@ class SuggestionBox(commands.Cog):
                 if log_channel:
                     log_embed = discord.Embed(
                         title="📝 New Suggestion Logged",
-                        description=f"**ID:** {suggestion_id}\n**Channel:** {suggestion_channel.mention}",
-                        color=discord.Color.orange(),
-                        timestamp=datetime.now()  # Changed from datetime.utcnow()
+                        description=f"**ID:** {suggestion_id}\n**Channel:** {suggestion_channel.mention}\n**Original Author:** {ctx.author.name} ({ctx.author.id})",
+                        color=self.status_colors["pending"],
+                        timestamp=datetime.now()
                     )
                     await log_channel.send(embed=log_embed)
         
@@ -134,7 +148,7 @@ class SuggestionBox(commands.Cog):
             await ctx.author.send("❌ I don't have permission to send messages in the suggestion channel.")
         except Exception as e:
             await ctx.author.send(f"❌ An error occurred while submitting your suggestion: {str(e)}")
-    
+
     @suggestionbox.command(name="status")
     @checks.mod_or_permissions(manage_messages=True)
     async def suggestion_status(self, ctx, suggestion_id: int, status: str, *, reason: Optional[str] = None):
@@ -142,11 +156,10 @@ class SuggestionBox(commands.Cog):
         
         Status options: approved, denied, considering, implemented
         """
-        valid_statuses = ["approved", "denied", "considering", "implemented"]
         status = status.lower()
         
-        if status not in valid_statuses:
-            await ctx.send(f"❌ Invalid status. Valid options: {', '.join(valid_statuses)}")
+        if status not in self.status_emojis:
+            await ctx.send(f"❌ Invalid status. Valid options: {', '.join(self.status_emojis.keys())}")
             return
         
         guild_config = self.config.guild(ctx.guild)
@@ -158,9 +171,9 @@ class SuggestionBox(commands.Cog):
         
         suggestion_data = suggestions[str(suggestion_id)]
         
-        # Update suggestion status - Fixed discriminator issue
+        # Update suggestion status
         suggestion_data["status"] = status
-        suggestion_data["moderator"] = str(ctx.author)  # Changed from name#discriminator format
+        suggestion_data["moderator"] = str(ctx.author)
         suggestion_data["reason"] = reason
         
         suggestions[str(suggestion_id)] = suggestion_data
@@ -171,32 +184,15 @@ class SuggestionBox(commands.Cog):
             channel = ctx.guild.get_channel(suggestion_data["channel_id"])
             message = await channel.fetch_message(suggestion_data["message_id"])
             
-            # Color mapping for statuses
-            color_map = {
-                "approved": discord.Color.green(),
-                "denied": discord.Color.red(),
-                "considering": discord.Color.orange(),
-                "implemented": discord.Color.purple()
-            }
-            
-            # Status emoji mapping
-            emoji_map = {
-                "approved": "✅",
-                "denied": "❌",
-                "considering": "🤔",
-                "implemented": "🎉"
-            }
-            
-            # Fixed datetime parsing issue
             try:
                 timestamp = datetime.fromisoformat(suggestion_data["timestamp"])
             except (ValueError, KeyError):
                 timestamp = datetime.now()
             
             embed = discord.Embed(
-                title=f"{emoji_map[status]} Suggestion #{suggestion_id} - {status.title()}",
+                title=f"{self.status_emojis[status]} Suggestion #{suggestion_id} - {status.title()}",
                 description=suggestion_data["content"],
-                color=color_map[status],
+                color=self.status_colors[status],
                 timestamp=timestamp
             )
             
@@ -214,7 +210,7 @@ class SuggestionBox(commands.Cog):
             await ctx.send(f"⚠️ Could not find the original message for suggestion #{suggestion_id}, but status was updated in database.")
         except Exception as e:
             await ctx.send(f"❌ Error updating suggestion: {str(e)}")
-    
+
     @suggestionbox.command(name="list")
     @checks.mod_or_permissions(manage_messages=True)
     async def list_suggestions(self, ctx, status: Optional[str] = None):
@@ -232,6 +228,8 @@ class SuggestionBox(commands.Cog):
         # Filter by status if provided
         if status:
             status = status.lower()
+            if status not in self.status_emojis:
+                return await ctx.send(f"❌ Invalid status. Valid options: {', '.join(self.status_emojis.keys())}")
             filtered_suggestions = {k: v for k, v in suggestions.items() if v.get("status", "pending") == status}
             if not filtered_suggestions:
                 await ctx.send(f"📭 No suggestions found with status: {status}")
@@ -246,16 +244,8 @@ class SuggestionBox(commands.Cog):
         
         suggestion_list = []
         for suggestion_id, data in list(suggestions.items())[:10]:  # Limit to 10 for readability
-            status_emoji = {
-                "pending": "⏳",
-                "approved": "✅", 
-                "denied": "❌",
-                "considering": "🤔",
-                "implemented": "🎉"
-            }
-            
             current_status = data.get("status", "pending")
-            emoji = status_emoji.get(current_status, "❓")
+            emoji = self.status_emojis.get(current_status, "❓")
             
             content_preview = data["content"][:50] + ("..." if len(data["content"]) > 50 else "")
             suggestion_list.append(f"{emoji} **#{suggestion_id}** - {content_preview}")
@@ -268,7 +258,7 @@ class SuggestionBox(commands.Cog):
                 embed.set_footer(text=f"Showing 10 of {total_count} suggestions")
         
         await ctx.send(embed=embed)
-    
+
     @suggestionbox.command(name="view")
     @checks.mod_or_permissions(manage_messages=True)
     async def view_suggestion(self, ctx, suggestion_id: int):
@@ -281,18 +271,8 @@ class SuggestionBox(commands.Cog):
             return
         
         data = suggestions[str(suggestion_id)]
-        
-        color_map = {
-            "pending": discord.Color.blue(),
-            "approved": discord.Color.green(),
-            "denied": discord.Color.red(),
-            "considering": discord.Color.orange(),
-            "implemented": discord.Color.purple()
-        }
-        
         status = data.get("status", "pending")
         
-        # Fixed datetime parsing issue
         try:
             timestamp = datetime.fromisoformat(data["timestamp"])
         except (ValueError, KeyError):
@@ -301,7 +281,7 @@ class SuggestionBox(commands.Cog):
         embed = discord.Embed(
             title=f"💡 Suggestion #{suggestion_id}",
             description=data["content"],
-            color=color_map.get(status, discord.Color.blue()),
+            color=self.status_colors.get(status, discord.Color.blue()),
             timestamp=timestamp
         )
         
@@ -314,7 +294,7 @@ class SuggestionBox(commands.Cog):
             embed.add_field(name="Moderator Note", value=data["reason"], inline=False)
         
         await ctx.send(embed=embed)
-    
+
     @suggestionbox.command(name="config")
     @checks.admin_or_permissions(manage_guild=True)
     async def show_config(self, ctx):
