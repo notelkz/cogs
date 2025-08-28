@@ -1,14 +1,99 @@
 import discord
 from redbot.core import commands, Config, checks
+from redbot.core.bot import Red
 from typing import Optional
 import asyncio
 from datetime import datetime
 
 
-class SuggestionBox(commands.Cog):
-    """Anonymous suggestion box for server members."""
+class SuggestionModal(discord.ui.Modal, title="Submit Your Suggestion"):
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
 
-    def __init__(self, bot):
+    suggestion = discord.ui.TextInput(
+        label="Your Suggestion",
+        placeholder="Type your suggestion here...",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        guild_config = self.cog.config.guild(interaction.guild)
+        log_channel_id = await guild_config.log_channel()
+        
+        if not log_channel_id:
+            await interaction.followup.send("❌ The suggestion system hasn't been set up properly. Please contact an administrator.", ephemeral=True)
+            return
+        
+        log_channel = interaction.guild.get_channel(log_channel_id)
+        if not log_channel:
+            await interaction.followup.send("❌ The suggestion log channel no longer exists. Please contact an administrator.", ephemeral=True)
+            return
+        
+        # Get next suggestion ID
+        suggestion_id = await guild_config.next_id()
+        await guild_config.next_id.set(suggestion_id + 1)
+        
+        # Create suggestion embed for log channel
+        embed = discord.Embed(
+            title=f"💡 Suggestion #{suggestion_id}",
+            description=self.suggestion.value,
+            color=self.cog.status_colors["pending"],
+            timestamp=datetime.now()
+        )
+        embed.set_footer(text="React with ✅ to approve or ❌ to deny")
+        
+        try:
+            suggestion_msg = await log_channel.send(embed=embed)
+            
+            # Add reaction options
+            await suggestion_msg.add_reaction("✅")
+            await suggestion_msg.add_reaction("❌")
+            
+            # Store suggestion data
+            suggestions = await guild_config.suggestions()
+            suggestions[str(suggestion_id)] = {
+                "message_id": suggestion_msg.id,
+                "channel_id": log_channel.id,
+                "content": self.suggestion.value,
+                "timestamp": datetime.now().isoformat(),
+                "status": "pending",
+                "author_id": interaction.user.id  # Store for potential feedback
+            }
+            await guild_config.suggestions.set(suggestions)
+            
+            # Send confirmation to user
+            await interaction.followup.send(
+                f"✅ Your suggestion has been submitted anonymously as **Suggestion #{suggestion_id}**. "
+                f"Thank you for your feedback!",
+                ephemeral=True
+            )
+            
+        except discord.Forbidden:
+            await interaction.followup.send("❌ I don't have permission to send messages in the suggestion log channel.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ An error occurred while submitting your suggestion: {str(e)}", ephemeral=True)
+
+
+class SuggestionView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    @discord.ui.button(label="Submit Suggestion", style=discord.ButtonStyle.primary, emoji="💡")
+    async def submit_suggestion(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = SuggestionModal(self.cog)
+        await interaction.response.send_modal(modal)
+
+
+class SuggestionBox(commands.Cog):
+    """Anonymous suggestion box for server members with interactive buttons."""
+
+    def __init__(self, bot: Red):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1234567890)
         
@@ -16,7 +101,8 @@ class SuggestionBox(commands.Cog):
             "suggestion_channel": None,
             "log_channel": None,
             "next_id": 1,
-            "suggestions": {}
+            "suggestions": {},
+            "embed_message_id": None
         }
         
         self.config.register_guild(**default_guild)
@@ -36,6 +122,110 @@ class SuggestionBox(commands.Cog):
             "implemented": "🎉"
         }
 
+    async def cog_load(self):
+        """Called when the cog is loaded."""
+        # Add persistent view
+        self.bot.add_view(SuggestionView(self))
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload):
+        """Handle reactions on suggestion messages."""
+        if payload.user_id == self.bot.user.id:
+            return
+        
+        # Check if it's a reaction on a suggestion message
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+        
+        user = guild.get_member(payload.user_id)
+        if not user:
+            return
+        
+        # Check if user has mod permissions
+        if not (user.guild_permissions.manage_messages or await self.bot.is_mod(user)):
+            return
+        
+        guild_config = self.config.guild(guild)
+        suggestions = await guild_config.suggestions()
+        
+        # Find the suggestion with this message ID
+        suggestion_id = None
+        suggestion_data = None
+        for sid, data in suggestions.items():
+            if data.get("message_id") == payload.message_id:
+                suggestion_id = sid
+                suggestion_data = data
+                break
+        
+        if not suggestion_data:
+            return
+        
+        # Only handle ✅ and ❌ reactions
+        if str(payload.emoji) not in ["✅", "❌"]:
+            return
+        
+        channel = guild.get_channel(payload.channel_id)
+        if not channel:
+            return
+        
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except discord.NotFound:
+            return
+        
+        # Determine status based on reaction
+        if str(payload.emoji) == "✅":
+            new_status = "approved"
+            status_text = "approved"
+            response_message = "✅ **Your suggestion has been approved!** Thank you for your valuable input."
+        else:  # ❌
+            new_status = "denied"
+            status_text = "denied"
+            response_message = "❌ **Your suggestion has been reviewed and will not be implemented at this time.** Thank you for your feedback."
+        
+        # Update suggestion data
+        suggestion_data["status"] = new_status
+        suggestion_data["moderator"] = str(user)
+        suggestion_data["moderator_id"] = user.id
+        suggestions[suggestion_id] = suggestion_data
+        await guild_config.suggestions.set(suggestions)
+        
+        # Update the embed
+        try:
+            timestamp = datetime.fromisoformat(suggestion_data["timestamp"])
+        except (ValueError, KeyError):
+            timestamp = datetime.now()
+        
+        updated_embed = discord.Embed(
+            title=f"{self.status_emojis[new_status]} Suggestion #{suggestion_id} - {new_status.title()}",
+            description=suggestion_data["content"],
+            color=self.status_colors[new_status],
+            timestamp=timestamp
+        )
+        updated_embed.set_footer(text=f"Status updated by {user.display_name}")
+        
+        await message.edit(embed=updated_embed)
+        await message.clear_reactions()
+        
+        # Send feedback to the original author
+        try:
+            original_author = guild.get_member(suggestion_data.get("author_id"))
+            if original_author:
+                feedback_embed = discord.Embed(
+                    title=f"Suggestion #{suggestion_id} Update",
+                    description=response_message,
+                    color=self.status_colors[new_status]
+                )
+                feedback_embed.add_field(
+                    name="Your Suggestion",
+                    value=suggestion_data["content"][:500] + ("..." if len(suggestion_data["content"]) > 500 else ""),
+                    inline=False
+                )
+                await original_author.send(embed=feedback_embed)
+        except (discord.Forbidden, discord.NotFound, AttributeError):
+            pass  # Can't send DM or user not found
+
     @commands.group(name="suggestionbox", aliases=["sbox"])
     @commands.guild_only()
     async def suggestionbox(self, ctx):
@@ -45,114 +235,72 @@ class SuggestionBox(commands.Cog):
 
     @suggestionbox.command(name="setup")
     @checks.admin_or_permissions(manage_guild=True)
-    async def setup_suggestion_box(self, ctx, suggestion_channel: discord.TextChannel, log_channel: Optional[discord.TextChannel] = None):
-        """Set up the suggestion box.
+    async def setup_suggestion_box(self, ctx, suggestion_channel: discord.TextChannel, log_channel: discord.TextChannel):
+        """Set up the suggestion box with interactive embed.
 
         Parameters:
-        - suggestion_channel: Channel where suggestions will be posted
-        - log_channel: Optional channel for logging (defaults to suggestion channel)
+        - suggestion_channel: Channel where the suggestion embed will be posted
+        - log_channel: Channel where suggestions will be logged for review
         """
-        await self.config.guild(ctx.guild).suggestion_channel.set(suggestion_channel.id)
-        
-        log_chan = log_channel or suggestion_channel
-        await self.config.guild(ctx.guild).log_channel.set(log_chan.id)
-        
-        embed = discord.Embed(
-            title="✅ Suggestion Box Setup Complete",
-            description=f"**Suggestion Channel:** {suggestion_channel.mention}\n**Log Channel:** {log_chan.mention}",
-            color=discord.Color.green()
-        )
-        await ctx.send(embed=embed)
-
-    @suggestionbox.command(name="suggest")  # Corrected from @commands.command
-    @commands.guild_only()
-    async def submit_suggestion(self, ctx, *, suggestion: str):
-        """Submit an anonymous suggestion.
-        
-        Usage: `[p]sbox suggest Your suggestion here`
-        """
-        # Delete the user's message to maintain anonymity
-        try:
-            await ctx.message.delete()
-        except discord.NotFound:
-            pass
-        except discord.Forbidden:
-            await ctx.author.send("⚠️ I need permission to delete messages to maintain anonymity. Please delete your message manually.", delete_after=10)
-        
+        # Store configuration
         guild_config = self.config.guild(ctx.guild)
-        suggestion_channel_id = await guild_config.suggestion_channel()
+        await guild_config.suggestion_channel.set(suggestion_channel.id)
+        await guild_config.log_channel.set(log_channel.id)
         
-        if not suggestion_channel_id:
-            await ctx.author.send("❌ The suggestion box hasn't been set up yet. Please contact a server administrator.")
-            return
-        
-        suggestion_channel = ctx.guild.get_channel(suggestion_channel_id)
-        if not suggestion_channel:
-            await ctx.author.send("❌ The suggestion channel no longer exists. Please contact a server administrator.")
-            return
-        
-        # Get next suggestion ID
-        suggestion_id = await guild_config.next_id()
-        await guild_config.next_id.set(suggestion_id + 1)
-        
-        # Create suggestion embed
+        # Create and send the interactive embed
         embed = discord.Embed(
-            title=f"💡 Suggestion #{suggestion_id}",
-            description=suggestion,
-            color=self.status_colors["pending"],
-            timestamp=datetime.now()
+            title="💡 Suggestion Box",
+            description=(
+                "Have an idea to improve our server? We'd love to hear it!\n\n"
+                "Click the button below to submit your suggestion anonymously. "
+                "Your feedback helps us make this community better for everyone.\n\n"
+                "**Guidelines:**\n"
+                "• Keep suggestions constructive and specific\n"
+                "• One suggestion per submission\n"
+                "• All suggestions are reviewed by our team"
+            ),
+            color=discord.Color.blurple()
         )
-        embed.set_footer(text="React with ✅ to approve, ❌ to deny, or 🤔 for consideration")
+        embed.set_footer(text="Your suggestions are completely anonymous")
+        
+        view = SuggestionView(self)
         
         try:
-            suggestion_msg = await suggestion_channel.send(embed=embed)
+            # Delete old embed if it exists
+            old_message_id = await guild_config.embed_message_id()
+            if old_message_id:
+                try:
+                    old_message = await suggestion_channel.fetch_message(old_message_id)
+                    await old_message.delete()
+                except discord.NotFound:
+                    pass
             
-            # Add reaction options
-            await suggestion_msg.add_reaction("✅")
-            await suggestion_msg.add_reaction("❌")
-            await suggestion_msg.add_reaction("🤔")
+            # Send new embed
+            embed_message = await suggestion_channel.send(embed=embed, view=view)
+            await guild_config.embed_message_id.set(embed_message.id)
             
-            # Store suggestion data
-            suggestions = await guild_config.suggestions()
-            suggestions[str(suggestion_id)] = {
-                "message_id": suggestion_msg.id,
-                "channel_id": suggestion_channel.id,
-                "content": suggestion,
-                "timestamp": datetime.now().isoformat(),
-                "status": "pending"
-            }
-            await guild_config.suggestions.set(suggestions)
-            
-            # Send confirmation to user
-            confirm_embed = discord.Embed(
-                title="✅ Suggestion Submitted",
-                description=f"Your suggestion has been submitted anonymously as **Suggestion #{suggestion_id}**.",
+            # Confirmation message
+            setup_embed = discord.Embed(
+                title="✅ Suggestion Box Setup Complete",
+                description=(
+                    f"**Suggestion Channel:** {suggestion_channel.mention}\n"
+                    f"**Log Channel:** {log_channel.mention}\n\n"
+                    f"The interactive suggestion embed has been posted in {suggestion_channel.mention}. "
+                    f"All submissions will be logged in {log_channel.mention} for review."
+                ),
                 color=discord.Color.green()
             )
-            await ctx.author.send(embed=confirm_embed)
+            await ctx.send(embed=setup_embed)
             
-            # Log to log channel
-            log_channel_id = await guild_config.log_channel()
-            if log_channel_id and log_channel_id != suggestion_channel_id:
-                log_channel = ctx.guild.get_channel(log_channel_id)
-                if log_channel:
-                    log_embed = discord.Embed(
-                        title="📝 New Suggestion Logged",
-                        description=f"**ID:** {suggestion_id}\n**Channel:** {suggestion_channel.mention}\n**Original Author:** {ctx.author.name} ({ctx.author.id})",
-                        color=self.status_colors["pending"],
-                        timestamp=datetime.now()
-                    )
-                    await log_channel.send(embed=log_embed)
-        
         except discord.Forbidden:
-            await ctx.author.send("❌ I don't have permission to send messages in the suggestion channel.")
+            await ctx.send("❌ I don't have permission to send messages in the suggestion channel.")
         except Exception as e:
-            await ctx.author.send(f"❌ An error occurred while submitting your suggestion: {str(e)}")
+            await ctx.send(f"❌ An error occurred during setup: {str(e)}")
 
     @suggestionbox.command(name="status")
     @checks.mod_or_permissions(manage_messages=True)
     async def suggestion_status(self, ctx, suggestion_id: int, status: str, *, reason: Optional[str] = None):
-        """Update the status of a suggestion.
+        """Update the status of a suggestion manually.
         
         Status options: approved, denied, considering, implemented
         """
@@ -174,6 +322,7 @@ class SuggestionBox(commands.Cog):
         # Update suggestion status
         suggestion_data["status"] = status
         suggestion_data["moderator"] = str(ctx.author)
+        suggestion_data["moderator_id"] = ctx.author.id
         suggestion_data["reason"] = reason
         
         suggestions[str(suggestion_id)] = suggestion_data
@@ -205,6 +354,33 @@ class SuggestionBox(commands.Cog):
             await message.clear_reactions()
             
             await ctx.send(f"✅ Updated suggestion #{suggestion_id} status to **{status}**.")
+            
+            # Send feedback to original author if status is approved/denied
+            if status in ["approved", "denied"] and suggestion_data.get("author_id"):
+                try:
+                    original_author = ctx.guild.get_member(suggestion_data["author_id"])
+                    if original_author:
+                        if status == "approved":
+                            response_message = "✅ **Your suggestion has been approved!** Thank you for your valuable input."
+                        else:
+                            response_message = "❌ **Your suggestion has been reviewed and will not be implemented at this time.** Thank you for your feedback."
+                        
+                        feedback_embed = discord.Embed(
+                            title=f"Suggestion #{suggestion_id} Update",
+                            description=response_message,
+                            color=self.status_colors[status]
+                        )
+                        feedback_embed.add_field(
+                            name="Your Suggestion",
+                            value=suggestion_data["content"][:500] + ("..." if len(suggestion_data["content"]) > 500 else ""),
+                            inline=False
+                        )
+                        if reason:
+                            feedback_embed.add_field(name="Moderator Note", value=reason, inline=False)
+                        
+                        await original_author.send(embed=feedback_embed)
+                except (discord.Forbidden, discord.NotFound, AttributeError):
+                    pass
             
         except discord.NotFound:
             await ctx.send(f"⚠️ Could not find the original message for suggestion #{suggestion_id}, but status was updated in database.")
@@ -305,6 +481,7 @@ class SuggestionBox(commands.Cog):
         log_channel_id = await guild_config.log_channel()
         next_id = await guild_config.next_id()
         suggestions_count = len(await guild_config.suggestions())
+        embed_message_id = await guild_config.embed_message_id()
         
         embed = discord.Embed(
             title="⚙️ Suggestion Box Configuration",
@@ -328,8 +505,71 @@ class SuggestionBox(commands.Cog):
                 value=log_channel.mention if log_channel else "❌ Channel not found",
                 inline=False
             )
+        else:
+            embed.add_field(name="Log Channel", value="❌ Not configured", inline=False)
         
         embed.add_field(name="Next Suggestion ID", value=f"#{next_id}", inline=True)
         embed.add_field(name="Total Suggestions", value=suggestions_count, inline=True)
         
+        if embed_message_id:
+            embed.add_field(name="Interactive Embed", value="✅ Active", inline=True)
+        else:
+            embed.add_field(name="Interactive Embed", value="❌ Not found", inline=True)
+        
         await ctx.send(embed=embed)
+
+    @suggestionbox.command(name="refresh")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def refresh_embed(self, ctx):
+        """Refresh the interactive suggestion embed (useful after bot restart)."""
+        guild_config = self.config.guild(ctx.guild)
+        suggestion_channel_id = await guild_config.suggestion_channel()
+        embed_message_id = await guild_config.embed_message_id()
+        
+        if not suggestion_channel_id:
+            await ctx.send("❌ Suggestion box not set up. Use `sbox setup` first.")
+            return
+        
+        suggestion_channel = ctx.guild.get_channel(suggestion_channel_id)
+        if not suggestion_channel:
+            await ctx.send("❌ Suggestion channel not found.")
+            return
+        
+        # Create the embed and view
+        embed = discord.Embed(
+            title="💡 Suggestion Box",
+            description=(
+                "Have an idea to improve our server? We'd love to hear it!\n\n"
+                "Click the button below to submit your suggestion anonymously. "
+                "Your feedback helps us make this community better for everyone.\n\n"
+                "**Guidelines:**\n"
+                "• Keep suggestions constructive and specific\n"
+                "• One suggestion per submission\n"
+                "• All suggestions are reviewed by our team"
+            ),
+            color=discord.Color.blurple()
+        )
+        embed.set_footer(text="Your suggestions are completely anonymous")
+        
+        view = SuggestionView(self)
+        
+        try:
+            # Try to edit existing message first
+            if embed_message_id:
+                try:
+                    existing_message = await suggestion_channel.fetch_message(embed_message_id)
+                    await existing_message.edit(embed=embed, view=view)
+                    await ctx.send("✅ Suggestion embed refreshed successfully.")
+                    return
+                except discord.NotFound:
+                    pass
+            
+            # If no existing message or it wasn't found, create a new one
+            embed_message = await suggestion_channel.send(embed=embed, view=view)
+            await guild_config.embed_message_id.set(embed_message.id)
+            await ctx.send("✅ New suggestion embed created successfully.")
+            
+        except discord.Forbidden:
+            await ctx.send("❌ I don't have permission to send messages in the suggestion channel.")
+        except Exception as e:
+            await ctx.send(f"❌ Error refreshing embed: {str(e)}")
