@@ -32,9 +32,7 @@ class TwitchSchedule(commands.Cog):
             "timezone": None,            # Kept for potential future use or if existing functionality uses it
             "custom_template_url": None,
             "custom_font_url": None,     # New: Custom font URL
-            "log_channel_id": None,      # Channel for error reporting/logging
-            "include_next_week": False,  # NEW: Toggle for including next week's schedule
-            "weeks_to_show": 1          # NEW: Number of weeks to show (1 or 2)
+            "log_channel_id": None       # Channel for error reporting/logging
         }
         self.config.register_guild(**default_guild)
         
@@ -323,18 +321,11 @@ class TwitchSchedule(commands.Cog):
         else:
             start_of_week = start_date
         
-        # Check if we're showing multiple weeks
-        weeks_to_show = await self.config.guild(guild).weeks_to_show()
-        if weeks_to_show > 1:
-            end_week = start_of_week + timedelta(days=(weeks_to_show * 7) - 1)
-            date_text = f"{start_of_week.strftime('%b %d')} - {end_week.strftime('%b %d')}"
-        else:
-            date_text = start_of_week.strftime("%B %d")
-        
+        date_text = start_of_week.strftime("%B %d")
         width, _ = img.size
         right_margin = 100
         
-        week_of_text = "Week of" if weeks_to_show == 1 else "Weeks of"
+        week_of_text = "Week of"
         week_of_width, week_of_height = title_font.getbbox(week_of_text)[2:4]
         date_width, date_height = date_font.getbbox(date_text)[2:4]
         
@@ -394,11 +385,11 @@ class TwitchSchedule(commands.Cog):
 
                     if current_day in update_days and current_time == update_time:
                         try:
-                            # Fetch schedule range based on weeks_to_show setting
-                            weeks_to_show = await self.config.guild(guild).weeks_to_show()
+                            # Fetch a broader range of schedules to ensure we catch the very next one,
+                            # even if the main image is for the current week.
                             today_utc = datetime.datetime.now(datetime.timezone.utc)
-                            # Look ahead based on weeks setting (minimum 2 weeks to ensure we catch next streams)
-                            end_of_range = today_utc + timedelta(days=max(14, weeks_to_show * 7 + 7))
+                            # Look 2 weeks into the future
+                            end_of_range = today_utc + timedelta(days=14) 
                             
                             all_upcoming_segments = await self.get_schedule_for_range(
                                 twitch_username, today_utc.astimezone(london_tz), end_of_range.astimezone(london_tz)
@@ -435,7 +426,6 @@ class TwitchSchedule(commands.Cog):
         try:
             twitch_username = await self.config.guild(channel.guild).twitch_username()
             event_count = await self.config.guild(channel.guild).event_count()
-            weeks_to_show = await self.config.guild(channel.guild).weeks_to_show()
 
             # Filter for current and future streams, and sort them
             now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -478,7 +468,7 @@ class TwitchSchedule(commands.Cog):
                         break
 
             async with channel.typing():
-                # --- Generate and Post Main Schedule Image (for configured weeks) ---
+                # --- Generate and Post Main Schedule Image (for relevant week) ---
                 # Determine the start of the week for the image
                 if start_date_for_image is None:
                     # Default: current week's Sunday
@@ -491,8 +481,7 @@ class TwitchSchedule(commands.Cog):
                 else:
                     start_of_week_image = start_date_for_image
                 
-                # Calculate end date based on weeks_to_show
-                end_of_week_image = start_of_week_image + timedelta(days=(weeks_to_show * 7) - 1, hours=23, minutes=59, seconds=59)
+                end_of_week_image = start_of_week_image + timedelta(days=6, hours=23, minutes=59, seconds=59)
 
                 schedule_for_image = [
                     s for s in future_segments
@@ -502,18 +491,16 @@ class TwitchSchedule(commands.Cog):
                 main_schedule_message = None
                 if schedule_for_image:
                     if dry_run:
-                        week_text = "week" if weeks_to_show == 1 else f"{weeks_to_show} weeks"
-                        await channel.send(f"🧪 Dry run: Generating {week_text} schedule image...")
+                        await channel.send("🧪 Dry run: Generating weekly schedule image...")
                     image_buf = await self.generate_schedule_image(schedule_for_image, channel.guild, start_date=start_of_week_image)
                     if image_buf:
                         main_schedule_message = await channel.send(
                             file=discord.File(image_buf, filename="schedule.png")
                         )
                 else:
-                    week_text = "week" if weeks_to_show == 1 else f"{weeks_to_show} weeks"
                     embed_no_image = discord.Embed(
-                        title=f"No Streams Scheduled This {week_text.title()}",
-                        description=f"There are no streams currently scheduled for the next {week_text} on Twitch.",
+                        title="No Streams Scheduled This Week",
+                        description="There are no streams currently scheduled for the remainder of this week on Twitch.",
                         color=discord.Color.orange()
                     )
                     main_schedule_message = await channel.send(embed=embed_no_image)
@@ -582,10 +569,9 @@ class TwitchSchedule(commands.Cog):
 
                 if not streams_for_individual_embeds_slice and not next_stream_segment and not schedule_for_image:
                     # Only send this if no streams were found at all (and no "next up" embed was sent)
-                    week_text = "week" if weeks_to_show == 1 else f"{weeks_to_show} weeks"
                     embed = discord.Embed(
                         title="No Upcoming Streams",
-                        description=f"There are currently no streams scheduled on Twitch for the next {week_text}.",
+                        description="There are currently no streams scheduled on Twitch for this or the next week.",
                         color=discord.Color.red()
                     )
                     if dry_run:
@@ -690,27 +676,15 @@ class TwitchSchedule(commands.Cog):
                     f"`{ctx.clean_prefix}tsched force [next]` - Force an immediate schedule update.\n"
                     f"`{ctx.clean_prefix}tsched notify [@role/none]` - Set or clear notification role for schedule updates.\n"
                     f"`{ctx.clean_prefix}tsched events [number]` - Set number of events to show (1-10) on the image and as individual embeds.\n"
-                    f"`{ctx.clean_prefix}tsched weeks [1-2]` - Set number of weeks to show in schedule (1 or 2).\n"
                     f"`{ctx.clean_prefix}tsched settings` - Show all current settings.\n"
                     f"`{ctx.clean_prefix}tsched test #channel` - Test post schedule to a channel.\n"
                     f"`{ctx.clean_prefix}tsched reload [url]` - Redownload template image and font files (optional: set custom template URL).\n"
-                    f"`{ctx.clean_prefix}tsched setfont [url/none]` - Set or clear custom font URL for the schedule image.\n"
+                    f"`{ctx.clean_prefix}tsched setfont [url/none]` - Set or clear custom font URL for the schedule image.\n" # New command
                     f"`{ctx.clean_prefix}tsched dryrun [#channel]` - Test post schedule without deleting/pinning messages.\n"
                     f"`{ctx.clean_prefix}tsched setlogchannel [#channel/none]` - Set channel for bot error logs.\n"
                 )
             )
             await ctx.send(embed=embed)
-
-    @twitchschedule.command(name="weeks")
-    async def set_weeks(self, ctx, weeks: int):
-        """Set the number of weeks to show in the schedule (1 or 2)."""
-        if not 1 <= weeks <= 2:
-            await ctx.send("❌ Weeks must be 1 or 2!")
-            return
-        await self.config.guild(ctx.guild).weeks_to_show.set(weeks)
-        await self.config.guild(ctx.guild).include_next_week.set(weeks > 1)
-        week_text = "week" if weeks == 1 else "weeks"
-        await ctx.send(f"✅ Schedule will now show {weeks} {week_text}!")
 
     @twitchschedule.command(name="force")
     async def force_update(self, ctx, option: str = None):
@@ -732,7 +706,6 @@ class TwitchSchedule(commands.Cog):
 
             today_london = datetime.datetime.now(london_tz)
             start_date_for_image_param = None
-            weeks_to_show = await self.config.guild(ctx.guild).weeks_to_show()
             
             if option and option.lower() == "next":
                 # Calculate next week's Sunday for the image start date
@@ -742,11 +715,11 @@ class TwitchSchedule(commands.Cog):
                 start_date_for_image_param = today_london + timedelta(days=days_until_next_sunday)
                 start_date_for_image_param = start_date_for_image_param.replace(hour=0, minute=0, second=0, microsecond=0)
                 
-                # Fetch streams up to the end of the specified weeks from next Sunday
-                end_of_fetch_range = start_date_for_image_param + timedelta(days=weeks_to_show * 7 + 7)
+                # Fetch streams up to the end of the next week for embeddings
+                end_of_fetch_range = start_date_for_image_param + timedelta(days=13) # 2 full weeks from now
             else:
-                # Default behavior: image for current weeks, fetch streams for current + next week
-                end_of_fetch_range = today_london + timedelta(days=max(14, weeks_to_show * 7 + 7))
+                # Default behavior: image for current week, fetch streams for current + next week
+                end_of_fetch_range = today_london + timedelta(days=14) # Get enough streams to find the 'next'
 
 
             all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_fetch_range)
@@ -768,7 +741,7 @@ class TwitchSchedule(commands.Cog):
         # Channel ID
         channel = None
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/5:** Which channel should I post **all schedule updates (image, next stream, and individual streams)** in? (Mention the channel, e.g., `#schedule`)")
+            await ctx.send(f"**Step {i+1}/4:** Which channel should I post **all schedule updates (image, next stream, and individual streams)** in? (Mention the channel, e.g., `#schedule`)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -791,7 +764,7 @@ class TwitchSchedule(commands.Cog):
         # Twitch Username
         username = None
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/5:** What's the Twitch username of the streamer whose schedule I should track? (e.g., `notelkz`)")
+            await ctx.send(f"**Step {i+1}/4:** What's the Twitch username of the streamer whose schedule I should track? (e.g., `notelkz`)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -811,38 +784,10 @@ class TwitchSchedule(commands.Cog):
             await ctx.send("Too many invalid attempts to set the Twitch username. Setup cancelled.")
             return
 
-        # Number of weeks
-        weeks = None
-        for i in range(3):
-            await ctx.send(f"**Step {i+1}/5:** How many weeks should the schedule show? (Enter `1` for current week only, or `2` for current and next week)")
-            try:
-                msg = await self.bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
-                    timeout=30.0
-                )
-                try:
-                    weeks = int(msg.content.strip())
-                    if weeks not in [1, 2]:
-                        await ctx.send("❌ Please enter either 1 or 2. Try again.")
-                        continue
-                    await self.config.guild(ctx.guild).weeks_to_show.set(weeks)
-                    await self.config.guild(ctx.guild).include_next_week.set(weeks > 1)
-                    break
-                except ValueError:
-                    await ctx.send("❌ Please enter a valid number (1 or 2). Try again.")
-                    continue
-            except asyncio.TimeoutError:
-                await ctx.send("⌛ Setup timed out. Please try again from the beginning with `!tsched setup`.")
-                return
-        else:
-            await ctx.send("Too many invalid attempts to set weeks. Setup cancelled.")
-            return
-
         # Update Days
         days = []
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/5:** On which days should I automatically update the schedule? (Send numbers: `0=Monday, 1=Tuesday, ..., 6=Sunday`. Separate multiple days with spaces, e.g., `0 6` for Monday and Sunday)")
+            await ctx.send(f"**Step {i+1}/4:** On which days should I automatically update the schedule? (Send numbers: `0=Monday, 1=Tuesday, ..., 6=Sunday`. Separate multiple days with spaces, e.g., `0 6` for Monday and Sunday)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -869,7 +814,7 @@ class TwitchSchedule(commands.Cog):
         # Update Time
         update_time = None
         for i in range(3):
-            await ctx.send(f"**Step {i+1}/5:** At what time (in London/UK time) should I update the schedule on the chosen days? (Use 24-hour format, e.g., `14:00` for 2 PM)")
+            await ctx.send(f"**Step {i+1}/4:** At what time (in London/UK time) should I update the schedule on the chosen days? (Use 24-hour format, e.g., `14:00` for 2 PM)")
             try:
                 msg = await self.bot.wait_for(
                     "message",
@@ -898,11 +843,9 @@ class TwitchSchedule(commands.Cog):
         )
         days_map = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         update_days_str = ", ".join(days_map[d] for d in days) if days else "None"
-        week_text = "week" if weeks == 1 else "weeks"
 
         confirm_embed.add_field(name="Schedule Channel", value=channel.mention if channel else "Not set", inline=False)
         confirm_embed.add_field(name="Twitch Username", value=username or "Not set", inline=False)
-        confirm_embed.add_field(name="Weeks to Show", value=f"{weeks} {week_text}", inline=False)
         confirm_embed.add_field(name="Update Days (London/UK Time)", value=update_days_str, inline=False)
         confirm_embed.add_field(name="Update Time (London/UK Time)", value=update_time or "Not set", inline=False)
         confirm_embed.set_footer(text="Type 'yes' to confirm or 'no' to cancel.")
@@ -954,9 +897,8 @@ class TwitchSchedule(commands.Cog):
         notify_role_id = await self.config.guild(ctx.guild).notify_role_id()
         event_count = await self.config.guild(ctx.guild).event_count()
         custom_template_url = await self.config.guild(ctx.guild).custom_template_url()
-        custom_font_url = await self.config.guild(ctx.guild).custom_font_url()
+        custom_font_url = await self.config.guild(ctx.guild).custom_font_url() # New
         log_channel_id = await self.config.guild(ctx.guild).log_channel_id()
-        weeks_to_show = await self.config.guild(ctx.guild).weeks_to_show()
         
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         notify_role = ctx.guild.get_role(notify_role_id) if notify_role_id else None
@@ -964,7 +906,6 @@ class TwitchSchedule(commands.Cog):
         
         days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
         update_days_str = ", ".join(days[day] for day in update_days) if update_days else "None"
-        week_text = "week" if weeks_to_show == 1 else "weeks"
         
         embed = discord.Embed(
             title="Twitch Schedule Settings",
@@ -972,13 +913,12 @@ class TwitchSchedule(commands.Cog):
         )
         embed.add_field(name="Schedule Channel", value=channel.mention if channel else "Not set", inline=True)
         embed.add_field(name="Twitch Username", value=twitch_username or "Not set", inline=True)
-        embed.add_field(name="Weeks to Show", value=f"{weeks_to_show} {week_text}", inline=True)
         embed.add_field(name="Update Time (UK)", value=update_time or "Not set", inline=True)
         embed.add_field(name="Update Days (UK)", value=update_days_str, inline=True)
         embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
         embed.add_field(name="Event Count (on image & embeds)", value=str(event_count), inline=True)
         embed.add_field(name="Custom Template URL", value=custom_template_url or "Not set (using default)", inline=True)
-        embed.add_field(name="Custom Font URL", value=custom_font_url or "Not set (using default)", inline=True)
+        embed.add_field(name="Custom Font URL", value=custom_font_url or "Not set (using default)", inline=True) # New
         embed.add_field(name="Error Log Channel", value=log_channel.mention if log_channel else "Not set", inline=True)
         
         await ctx.send(embed=embed)
@@ -997,8 +937,7 @@ class TwitchSchedule(commands.Cog):
         async with ctx.channel.typing():
             await ctx.send("🔄 Testing schedule post... This will post the current schedule.")
             today_london = datetime.datetime.now(london_tz)
-            weeks_to_show = await self.config.guild(ctx.guild).weeks_to_show()
-            end_of_fetch_range = today_london + timedelta(days=max(14, weeks_to_show * 7 + 7))
+            end_of_fetch_range = today_london + timedelta(days=14) # Enough range to find 'next' streams
             all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_fetch_range)
 
             if all_segments is not None:
@@ -1091,8 +1030,7 @@ class TwitchSchedule(commands.Cog):
         async with ctx.channel.typing():
             await ctx.send("🧪 Starting dry run... No messages will be deleted or pinned.")
             today_london = datetime.datetime.now(london_tz)
-            weeks_to_show = await self.config.guild(ctx.guild).weeks_to_show()
-            end_of_fetch_range = today_london + timedelta(days=max(14, weeks_to_show * 7 + 7))
+            end_of_fetch_range = today_london + timedelta(days=14) # Enough range to find 'next' streams
             all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_fetch_range)
 
             if all_segments is not None:
