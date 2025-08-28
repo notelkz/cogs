@@ -84,7 +84,12 @@ class SuggestionView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Submit Suggestion", style=discord.ButtonStyle.primary, emoji="💡")
+    @discord.ui.button(
+        label="Submit Suggestion", 
+        style=discord.ButtonStyle.primary, 
+        emoji="💡",
+        custom_id="suggestion_submit_button"
+    )
     async def submit_suggestion(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = SuggestionModal(self.cog)
         await interaction.response.send_modal(modal)
