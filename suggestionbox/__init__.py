@@ -9,4 +9,5 @@ __red_end_user_data_statement__ = (
 
 async def setup(bot):
     """Load the SuggestionBox cog."""
-    await bot.add_cog(SuggestionBox(bot))
+    cog = SuggestionBox(bot)
+    await bot.add_cog(cog)
