@@ -153,8 +153,8 @@ class ResourceManager:
                             
                             # Write to temporary file first, then move
                             temp_path = f"{save_path}.tmp"
-                            async with aiofiles.open(temp_path, 'wb') as f:
-                                await f.write(content)
+                            with open(temp_path, 'wb') as f:
+                                f.write(content)
                             
                             # Atomic move
                             os.rename(temp_path, save_path)
