@@ -877,7 +877,794 @@ class TwitchSchedule(commands.Cog):
         """Add a new streamer (basic setup required afterward)"""
         username = username.lower().strip()
         
-        if not re.match(r'^[a-zA-Z0-9_]{4,25}, username):
+        if not re.match(r'^[a-zA-Z0-9_]{4,25}
+            await ctx.send("❌ Invalid Twitch username format!")
+            return
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username in streamers:
+            await ctx.send(f"❌ Streamer `{username}` is already configured!")
+            return
+        
+        # Verify username exists on Twitch
+        user_id = await self._get_user_id(username)
+        if not user_id:
+            await ctx.send(f"❌ Twitch user `{username}` not found! Please check the username.")
+            return
+        
+        # Add basic streamer config
+        new_config = StreamerConfig({
+            "twitch_username": username,
+            "enabled": False  # Disabled until setup is complete
+        })
+        
+        streamers[username] = new_config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        await ctx.send(f"✅ Added streamer `{username}`! Now run `{ctx.clean_prefix}ts setup {username}` to configure them.")
+    
+    @twitchschedule.command(name="remove")
+    async def remove_streamer(self, ctx, username: str):
+        """Remove a streamer completely"""
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        # Confirmation
+        embed = discord.Embed(
+            title="Confirm Removal",
+            description=f"Are you sure you want to remove `{username}` and all their configuration?",
+            color=discord.Color.red()
+        )
+        embed.set_footer(text="Type 'yes' to confirm or 'no' to cancel.")
+        
+        await ctx.send(embed=embed)
+        
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ["yes", "no"],
+                timeout=30.0
+            )
+            
+            if msg.content.lower() == "yes":
+                del streamers[username]
+                await self.config.guild(ctx.guild).streamers.set(streamers)
+                
+                # Clean up cache files
+                font_path, template_path = self._get_resource_paths(username)
+                for path in [font_path, template_path]:
+                    if os.path.exists(path):
+                        try:
+                            os.remove(path)
+                        except Exception:
+                            pass
+                
+                await ctx.send(f"✅ Removed streamer `{username}` and cleaned up their files.")
+            else:
+                await ctx.send("❌ Removal cancelled.")
+                
+        except asyncio.TimeoutError:
+            await ctx.send("⌛ Confirmation timed out. Removal cancelled.")
+    
+    @twitchschedule.command(name="setup")
+    async def setup_streamer(self, ctx, username: str):
+        """Interactive setup for a streamer"""
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found! Add them first with `{ctx.clean_prefix}ts add {username}`")
+            return
+        
+        streamer_config = StreamerConfig(streamers[username])
+        
+        await ctx.send(f"Starting setup for **{username}**... You have 30 seconds to respond to each question.")
+        
+        # Schedule Channel
+        for attempt in range(3):
+            await ctx.send(f"**Step 1/6:** Which channel should I post {username}'s schedule in? (Mention the channel)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                if msg.channel_mentions:
+                    streamer_config.schedule_channel_id = msg.channel_mentions[0].id
+                    break
+                else:
+                    await ctx.send("❌ Please mention a channel. Try again.")
+            except asyncio.TimeoutError:
+                await ctx.send("⌛ Setup timed out.")
+                return
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
+        
+        # Notification Channel (Optional)
+        await ctx.send(f"**Step 2/6:** Which channel should I send notifications in? (Mention channel or type 'none')")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            if msg.content.lower() == "none":
+                streamer_config.notification_channel_id = None
+            elif msg.channel_mentions:
+                streamer_config.notification_channel_id = msg.channel_mentions[0].id
+            else:
+                await ctx.send("Using schedule channel for notifications.")
+                streamer_config.notification_channel_id = streamer_config.schedule_channel_id
+        except asyncio.TimeoutError:
+            await ctx.send("⌛ Timeout - using schedule channel for notifications.")
+            streamer_config.notification_channel_id = streamer_config.schedule_channel_id
+        
+        # Notification Role (Optional)
+        await ctx.send(f"**Step 3/6:** Which role should I mention for updates? (Mention role or type 'none')")
+        try:
+            msg = await self.bot.wait_for(
+                "message",
+                check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                timeout=30.0
+            )
+            if msg.content.lower() == "none":
+                streamer_config.notify_role_id = None
+            elif msg.role_mentions:
+                streamer_config.notify_role_id = msg.role_mentions[0].id
+            else:
+                streamer_config.notify_role_id = None
+        except asyncio.TimeoutError:
+            streamer_config.notify_role_id = None
+        
+        # Weeks to show
+        for attempt in range(3):
+            await ctx.send(f"**Step 4/6:** How many weeks should the schedule show? (1 or 2)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                weeks = int(msg.content.strip())
+                if weeks in [1, 2]:
+                    streamer_config.weeks_to_show = weeks
+                    break
+                else:
+                    await ctx.send("❌ Please enter 1 or 2.")
+            except (ValueError, asyncio.TimeoutError):
+                await ctx.send("❌ Invalid input.")
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
+        
+        # Update Days
+        for attempt in range(3):
+            await ctx.send(f"**Step 5/6:** Which days should I update? (0=Monday, 1=Tuesday, ..., 6=Sunday. Separate with spaces)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                days = [int(x) for x in msg.content.split()]
+                if all(0 <= x <= 6 for x in days):
+                    streamer_config.update_days = days
+                    break
+                else:
+                    await ctx.send("❌ All numbers must be 0-6.")
+            except (ValueError, asyncio.TimeoutError):
+                await ctx.send("❌ Invalid input.")
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
+        
+        # Update Time
+        for attempt in range(3):
+            await ctx.send(f"**Step 6/6:** What time should I update? (24-hour format, e.g., 14:00)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                time_input = msg.content.strip()
+                if re.match(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$", time_input):
+                    streamer_config.update_time = time_input
+                    break
+                else:
+                    await ctx.send("❌ Use HH:MM format (e.g., 09:30).")
+            except asyncio.TimeoutError:
+                await ctx.send("❌ Invalid input.")
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
+        
+        # Enable and save
+        streamer_config.enabled = True
+        streamers[username] = streamer_config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        await ctx.send(f"✅ Setup complete for **{username}**! They are now enabled and will update automatically.")
+    
+    @twitchschedule.command(name="list")
+    async def list_streamers(self, ctx):
+        """List all configured streamers"""
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if not streamers:
+            await ctx.send("No streamers configured yet! Add one with `{ctx.clean_prefix}ts add <username>`")
+            return
+        
+        embed = discord.Embed(
+            title="Configured Streamers",
+            color=discord.Color.purple()
+        )
+        
+        for username, data in streamers.items():
+            config = StreamerConfig(data)
+            status = "✅ Enabled" if config.enabled else "❌ Disabled"
+            configured = "✅ Complete" if config.is_configured else "⚠️ Incomplete"
+            
+            schedule_channel = ctx.guild.get_channel(config.schedule_channel_id) if config.schedule_channel_id else None
+            channel_text = schedule_channel.mention if schedule_channel else "Not set"
+            
+            embed.add_field(
+                name=f"{username}",
+                value=f"Status: {status}\nSetup: {configured}\nChannel: {channel_text}",
+                inline=True
+            )
+        
+        await ctx.send(embed=embed)
+    
+    @twitchschedule.command(name="enable")
+    async def enable_streamer(self, ctx, username: str):
+        """Enable a streamer"""
+        username = username.lower().strip()
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        if not config.is_configured:
+            await ctx.send(f"❌ Complete setup for `{username}` first!")
+            return
+        
+        config.enabled = True
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        await ctx.send(f"✅ Enabled `{username}`!")
+    
+    @twitchschedule.command(name="disable")
+    async def disable_streamer(self, ctx, username: str):
+        """Disable a streamer"""
+        username = username.lower().strip()
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        config.enabled = False
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        await ctx.send(f"✅ Disabled `{username}`!")
+    
+    @twitchschedule.command(name="force")
+    async def force_update(self, ctx, username: str):
+        """Force immediate schedule update for a streamer"""
+        username = username.lower().strip()
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        if not config.is_configured:
+            await ctx.send(f"❌ Complete setup for `{username}` first!")
+            return
+        
+        async with ctx.typing():
+            await ctx.send(f"🔄 Forcing update for {username}...")
+            
+            today_london = datetime.datetime.now(london_tz)
+            end_of_range = today_london + timedelta(days=max(14, config.weeks_to_show * 7 + 7))
+            
+            all_segments = await self._get_schedule_for_range(username, today_london, end_of_range)
+            
+            if all_segments is not None:
+                success = await self._post_schedule(ctx.guild, config, all_segments)
+                if success:
+                    await ctx.send(f"✅ Updated schedule for {username}!")
+                else:
+                    await ctx.send(f"❌ Failed to post schedule for {username}!")
+            else:
+                await ctx.send(f"❌ Failed to fetch schedule for {username}!")
+    
+    @twitchschedule.command(name="settings")
+    async def show_settings(self, ctx, username: str = None):
+        """Show settings for a streamer or global settings"""
+        if username:
+            username = username.lower().strip()
+            streamers = await self.config.guild(ctx.guild).streamers()
+            
+            if username not in streamers:
+                await ctx.send(f"❌ Streamer `{username}` not found!")
+                return
+            
+            config = StreamerConfig(streamers[username])
+            
+            schedule_channel = ctx.guild.get_channel(config.schedule_channel_id) if config.schedule_channel_id else None
+            notification_channel = ctx.guild.get_channel(config.notification_channel_id) if config.notification_channel_id else None
+            notify_role = ctx.guild.get_role(config.notify_role_id) if config.notify_role_id else None
+            
+            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            update_days_str = ", ".join(days[day] for day in config.update_days) if config.update_days else "None"
+            
+            embed = discord.Embed(
+                title=f"Settings for {username}",
+                color=discord.Color.purple()
+            )
+            embed.add_field(name="Enabled", value="✅ Yes" if config.enabled else "❌ No", inline=True)
+            embed.add_field(name="Schedule Channel", value=schedule_channel.mention if schedule_channel else "Not set", inline=True)
+            embed.add_field(name="Notification Channel", value=notification_channel.mention if notification_channel else "Not set", inline=True)
+            embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
+            embed.add_field(name="Weeks to Show", value=str(config.weeks_to_show), inline=True)
+            embed.add_field(name="Event Count", value=str(config.event_count), inline=True)
+            embed.add_field(name="Update Days", value=update_days_str, inline=False)
+            embed.add_field(name="Update Time (UK)", value=config.update_time or "Not set", inline=True)
+            embed.add_field(name="Custom Template", value="Yes" if config.custom_template_url else "No", inline=True)
+            embed.add_field(name="Custom Font", value="Yes" if config.custom_font_url else "No", inline=True)
+            
+            await ctx.send(embed=embed)
+        else:
+            # Global settings
+            guild_config = await self.config.guild(ctx.guild).all()
+            log_channel = ctx.guild.get_channel(guild_config.get("log_channel_id")) if guild_config.get("log_channel_id") else None
+            
+            embed = discord.Embed(
+                title="Global Settings",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="Global Enabled", value="✅ Yes" if guild_config.get("global_enabled", True) else "❌ No", inline=True)
+            embed.add_field(name="Log Channel", value=log_channel.mention if log_channel else "Not set", inline=True)
+            embed.add_field(name="Total Streamers", value=str(len(guild_config.get("streamers", {}))), inline=True)
+            
+            await ctx.send(embed=embed)
+    
+    @twitchschedule.command(name="setlogchannel")
+    async def set_log_channel(self, ctx, channel: discord.TextChannel = None):
+        """Set global error log channel"""
+        if channel:
+            await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
+            await ctx.send(f"✅ Error logs will be sent to {channel.mention}")
+        else:
+            await self.config.guild(ctx.guild).log_channel_id.set(None)
+            await ctx.send("✅ Error logging disabled")
+    
+    @twitchschedule.command(name="test")
+    async def test_schedule(self, ctx, username: str, channel: discord.TextChannel = None):
+        """Test schedule posting for a streamer"""
+        username = username.lower().strip()
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        
+        if channel:
+            # Temporarily override schedule channel for testing
+            original_channel = config.schedule_channel_id
+            config.schedule_channel_id = channel.id
+        
+        async with ctx.typing():
+            today_london = datetime.datetime.now(london_tz)
+            end_of_range = today_london + timedelta(days=max(14, config.weeks_to_show * 7 + 7))
+            
+            all_segments = await self._get_schedule_for_range(username, today_london, end_of_range)
+            
+            if all_segments is not None:
+                success = await self._post_schedule(ctx.guild, config, all_segments)
+                if success:
+                    await ctx.send(f"✅ Test complete for {username}!")
+                else:
+                    await ctx.send(f"❌ Test failed for {username}!")
+            else:
+                await ctx.send(f"❌ Failed to fetch schedule for {username}!")
+    
+    @twitchschedule.command(name="dryrun")
+    async def dry_run(self, ctx, username: str, channel: discord.TextChannel = None):
+        """Preview schedule without making changes"""
+        username = username.lower().strip()
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        
+        if channel:
+            config.schedule_channel_id = channel.id
+        elif not config.schedule_channel_id:
+            config.schedule_channel_id = ctx.channel.id
+        
+        async with ctx.typing():
+            await ctx.send(f"🧪 Dry run for {username}...")
+            
+            today_london = datetime.datetime.now(london_tz)
+            end_of_range = today_london + timedelta(days=max(14, config.weeks_to_show * 7 + 7))
+            
+            all_segments = await self._get_schedule_for_range(username, today_london, end_of_range)
+            
+            if all_segments is not None:
+                success = await self._post_schedule(ctx.guild, config, all_segments, dry_run=True)
+                if success:
+                    await ctx.send(f"✅ Dry run complete for {username}!")
+                else:
+                    await ctx.send(f"❌ Dry run failed for {username}!")
+            else:
+                await ctx.send(f"❌ Failed to fetch schedule for {username}!")
+    
+    @twitchschedule.command(name="reload")
+    async def reload_resources(self, ctx, username: str):
+        """Reload cached resources for a streamer"""
+        username = username.lower().strip()
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        
+        async with ctx.typing():
+            await ctx.send(f"🔄 Reloading resources for {username}...")
+            
+            # Remove cached files
+            font_path, template_path = self._get_resource_paths(username)
+            
+            for path in [font_path, template_path]:
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+            
+            # Re-download resources
+            success = await self._ensure_resources(ctx.guild, config)
+            
+            if success:
+                await ctx.send(f"✅ Successfully reloaded resources for {username}!")
+            else:
+                await ctx.send(f"❌ Failed to reload some resources for {username}. Check logs for details.")
+
+    @twitchschedule.group(name="config")
+    async def config_group(self, ctx):
+        """Advanced configuration commands"""
+        pass
+    
+    @config_group.command(name="events")
+    async def set_event_count(self, ctx, username: str, count: int):
+        """Set number of events to show for a streamer (1-10)"""
+        username = username.lower().strip()
+        
+        if not 1 <= count <= 10:
+            await ctx.send("❌ Event count must be between 1 and 10!")
+            return
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        config.event_count = count
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        await ctx.send(f"✅ Set event count to {count} for {username}!")
+    
+    @config_group.command(name="template")
+    async def set_template_url(self, ctx, username: str, url: str = None):
+        """Set custom template URL for a streamer (or 'none' to use default)"""
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        
+        if url and url.lower() == "none":
+            url = None
+        
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            await ctx.send("❌ Invalid URL. Please provide a full HTTP or HTTPS URL.")
+            return
+        
+        config.custom_template_url = url
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        if url:
+            await ctx.send(f"✅ Set custom template URL for {username}!")
+        else:
+            await ctx.send(f"✅ Cleared custom template URL for {username} - using default!")
+    
+    @config_group.command(name="font")
+    async def set_font_url(self, ctx, username: str, url: str = None):
+        """Set custom font URL for a streamer (or 'none' to use default)"""
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        
+        if url and url.lower() == "none":
+            url = None
+        
+        if url and not (url.startswith("http://") or url.startswith("https://")):
+            await ctx.send("❌ Invalid URL. Please provide a full HTTP or HTTPS URL.")
+            return
+        
+        config.custom_font_url = url
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        if url:
+            await ctx.send(f"✅ Set custom font URL for {username}!")
+        else:
+            await ctx.send(f"✅ Cleared custom font URL for {username} - using default!")
+    
+    @config_group.command(name="weeks")
+    async def set_weeks(self, ctx, username: str, weeks: int):
+        """Set number of weeks to show for a streamer (1-2)"""
+        username = username.lower().strip()
+        
+        if not 1 <= weeks <= 2:
+            await ctx.send("❌ Weeks must be 1 or 2!")
+            return
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        config.weeks_to_show = weeks
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        week_text = "week" if weeks == 1 else "weeks"
+        await ctx.send(f"✅ Set {username} to show {weeks} {week_text}!")
+    
+    @config_group.command(name="role")
+    async def set_notify_role(self, ctx, username: str, role: discord.Role = None):
+        """Set notification role for a streamer"""
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        config.notify_role_id = role.id if role else None
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        if role:
+            await ctx.send(f"✅ Set notification role to {role.mention} for {username}!")
+        else:
+            await ctx.send(f"✅ Cleared notification role for {username}!")
+    
+    @config_group.command(name="channels")
+    async def set_channels(self, ctx, username: str, schedule_channel: discord.TextChannel, notification_channel: discord.TextChannel = None):
+        """Set channels for a streamer"""
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        config.schedule_channel_id = schedule_channel.id
+        config.notification_channel_id = notification_channel.id if notification_channel else schedule_channel.id
+        
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        if notification_channel and notification_channel != schedule_channel:
+            await ctx.send(f"✅ Set schedule channel to {schedule_channel.mention} and notification channel to {notification_channel.mention} for {username}!")
+        else:
+            await ctx.send(f"✅ Set schedule and notification channel to {schedule_channel.mention} for {username}!")
+    
+    @config_group.command(name="schedule")
+    async def set_schedule(self, ctx, username: str, days: str, time: str):
+        """Set update schedule for a streamer
+        
+        Days: 0=Monday, 1=Tuesday, ..., 6=Sunday (space-separated)
+        Time: 24-hour format (e.g., 14:00)
+        """
+        username = username.lower().strip()
+        
+        streamers = await self.config.guild(ctx.guild).streamers()
+        
+        if username not in streamers:
+            await ctx.send(f"❌ Streamer `{username}` not found!")
+            return
+        
+        # Validate days
+        try:
+            day_list = [int(x) for x in days.split()]
+            if not all(0 <= x <= 6 for x in day_list):
+                await ctx.send("❌ All day numbers must be between 0 and 6!")
+                return
+        except ValueError:
+            await ctx.send("❌ Invalid day format! Use numbers 0-6 separated by spaces.")
+            return
+        
+        # Validate time
+        if not re.match(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$", time):
+            await ctx.send("❌ Invalid time format! Use HH:MM (24-hour format).")
+            return
+        
+        config = StreamerConfig(streamers[username])
+        config.update_days = day_list
+        config.update_time = time
+        
+        streamers[username] = config.to_dict()
+        await self.config.guild(ctx.guild).streamers.set(streamers)
+        
+        days_map = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_names = ", ".join(days_map[d] for d in day_list)
+        
+        await ctx.send(f"✅ Set update schedule for {username}: {day_names} at {time} (UK time)!")
+    
+    @twitchschedule.command(name="migrate")
+    @commands.is_owner()
+    async def migrate_config(self, ctx):
+        """Migrate from old single-streamer config to new multi-streamer format"""
+        # Check if old config exists
+        try:
+            old_config = await self.config.guild(ctx.guild).all()
+            
+            # Check if this looks like old config format
+            if ("twitch_username" in old_config and 
+                old_config.get("twitch_username") and 
+                not old_config.get("streamers")):
+                
+                username = old_config["twitch_username"].lower()
+                
+                # Convert old config to new format
+                new_streamer_config = StreamerConfig({
+                    "twitch_username": username,
+                    "schedule_channel_id": old_config.get("channel_id"),
+                    "notification_channel_id": old_config.get("channel_id"),  # Same as schedule in old version
+                    "notify_role_id": old_config.get("notify_role_id"),
+                    "update_days": old_config.get("update_days", []),
+                    "update_time": old_config.get("update_time"),
+                    "event_count": old_config.get("event_count", 5),
+                    "weeks_to_show": old_config.get("weeks_to_show", 1),
+                    "custom_template_url": old_config.get("custom_template_url"),
+                    "custom_font_url": old_config.get("custom_font_url"),
+                    "enabled": True
+                })
+                
+                # Save new format
+                streamers = {username: new_streamer_config.to_dict()}
+                await self.config.guild(ctx.guild).streamers.set(streamers)
+                await self.config.guild(ctx.guild).log_channel_id.set(old_config.get("log_channel_id"))
+                
+                # Clear old fields
+                old_fields = ["twitch_username", "channel_id", "update_days", "update_time", 
+                            "schedule_message_id", "notify_role_id", "event_count", "timezone",
+                            "custom_template_url", "custom_font_url", "include_next_week", "weeks_to_show"]
+                
+                for field in old_fields:
+                    try:
+                        await self.config.guild(ctx.guild).clear_raw(field)
+                    except Exception:
+                        pass
+                
+                await ctx.send(f"✅ Successfully migrated configuration for {username} to new multi-streamer format!")
+            else:
+                await ctx.send("No old configuration found to migrate, or migration already completed.")
+                
+        except Exception as e:
+            await ctx.send(f"❌ Migration failed: {e}")
+            await self._log_error(ctx.guild, f"Migration error: {e}\n{traceback.format_exc()}")
+    
+    @twitchschedule.command(name="global")
+    async def global_toggle(self, ctx, enabled: bool = None):
+        """Enable/disable the entire schedule system globally"""
+        if enabled is None:
+            current = await self.config.guild(ctx.guild).global_enabled()
+            status = "enabled" if current else "disabled"
+            await ctx.send(f"Schedule system is currently **{status}**.")
+            return
+        
+        await self.config.guild(ctx.guild).global_enabled.set(enabled)
+        status = "enabled" if enabled else "disabled"
+        await ctx.send(f"✅ Schedule system {status} globally!")
+        
+        if enabled:
+            # Restart background tasks if they're not running
+            self._start_background_tasks()
+    
+    @twitchschedule.command(name="status")
+    async def status(self, ctx):
+        """Show overall system status"""
+        guild_config = await self.config.guild(ctx.guild).all()
+        streamers = guild_config.get("streamers", {})
+        
+        total_streamers = len(streamers)
+        enabled_streamers = sum(1 for s in streamers.values() if StreamerConfig(s).enabled)
+        configured_streamers = sum(1 for s in streamers.values() if StreamerConfig(s).is_configured)
+        
+        embed = discord.Embed(
+            title="Twitch Schedule System Status",
+            color=discord.Color.green() if guild_config.get("global_enabled", True) else discord.Color.red()
+        )
+        
+        embed.add_field(name="Global Status", 
+                       value="🟢 Enabled" if guild_config.get("global_enabled", True) else "🔴 Disabled", 
+                       inline=True)
+        embed.add_field(name="Total Streamers", value=str(total_streamers), inline=True)
+        embed.add_field(name="Enabled", value=str(enabled_streamers), inline=True)
+        embed.add_field(name="Fully Configured", value=str(configured_streamers), inline=True)
+        
+        # Background task status
+        schedule_status = "🟢 Running" if (self.schedule_task and not self.schedule_task.done()) else "🔴 Stopped"
+        cleanup_status = "🟢 Running" if (self.cleanup_task and not self.cleanup_task.done()) else "🔴 Stopped"
+        
+        embed.add_field(name="Schedule Task", value=schedule_status, inline=True)
+        embed.add_field(name="Cleanup Task", value=cleanup_status, inline=True)
+        
+        log_channel = ctx.guild.get_channel(guild_config.get("log_channel_id")) if guild_config.get("log_channel_id") else None
+        embed.add_field(name="Error Logging", 
+                       value=log_channel.mention if log_channel else "Not configured", 
+                       inline=True)
+        
+        # Token status
+        token_valid = await self.token_manager.get_valid_token() is not None
+        embed.add_field(name="Twitch API", 
+                       value="🟢 Connected" if token_valid else "🔴 No valid token", 
+                       inline=True)
+        
+        await ctx.send(embed=embed)
+
+
+async def setup(bot: Red):
+    cog = TwitchSchedule(bot)
+    await bot.add_cog(cog), username):
             await ctx.send("❌ Invalid Twitch username format!")
             return
         
