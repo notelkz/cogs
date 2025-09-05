@@ -875,7 +875,7 @@ class TwitchSchedule(commands.Cog):
         """Add a new streamer (basic setup required afterward)"""
         username = username.lower().strip()
         
-        if not re.match(r'^[a-zA-Z0-9_]{4,25}, username):
+        if not re.match(r'^[a-zA-Z0-9_]{4,25}$', username):
             await ctx.send("❌ Invalid Twitch username format!")
             return
         
