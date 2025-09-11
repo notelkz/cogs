@@ -663,6 +663,120 @@ class BL4ShiftCodes(commands.Cog):
         """Clear the cache of posted codes."""
         await self.config.guild(ctx.guild).posted_codes.set({})
         await ctx.send("✅ Posted codes cache cleared.")
+    
+    @bl4shift.command(name="debug")
+    async def debug_sources(self, ctx, source_name: str = None):
+        """Debug what's being found from each source."""
+        keywords = await self.config.guild(ctx.guild).keywords()
+        enabled_sources = await self.config.guild(ctx.guild).enabled_sources()
+        
+        if source_name:
+            # Debug specific source
+            if source_name not in self.sources:
+                await ctx.send(f"❌ Unknown source: `{source_name}`\nAvailable: {', '.join(self.sources.keys())}")
+                return
+            sources_to_check = {source_name: self.sources[source_name]}
+        else:
+            # Debug all enabled sources
+            sources_to_check = {k: v for k, v in self.sources.items() if enabled_sources.get(k, True)}
+        
+        await ctx.send(f"🔍 Debugging {len(sources_to_check)} source(s)...")
+        
+        for source_id, source_info in sources_to_check.items():
+            await ctx.send(f"\n**🔍 Checking {source_info['name']}**")
+            
+            try:
+                items = await self._fetch_rss_feed(source_info['url'], source_info['name'])
+                
+                if not items:
+                    await ctx.send(f"❌ No items retrieved from {source_info['name']}")
+                    continue
+                
+                await ctx.send(f"✅ Retrieved {len(items)} items")
+                
+                # Check first 3 items in detail
+                for i, item in enumerate(items[:3]):
+                    title = item.get("title", "No title")
+                    description = item.get("description", "No description")
+                    
+                    # Check BL4 relevance
+                    is_bl4 = self._is_bl4_related(title, description, keywords)
+                    
+                    # Extract codes
+                    codes = self._extract_shift_codes(f"{title} {description}")
+                    
+                    status_parts = []
+                    if is_bl4:
+                        status_parts.append("✅ BL4 Related")
+                    else:
+                        status_parts.append("❌ Not BL4")
+                    
+                    if codes:
+                        status_parts.append(f"🔑 {len(codes)} codes")
+                    else:
+                        status_parts.append("❌ No codes")
+                    
+                    status = " | ".join(status_parts)
+                    
+                    # Truncate long text for display
+                    display_title = title[:80] + "..." if len(title) > 80 else title
+                    display_desc = description[:100] + "..." if len(description) > 100 else description
+                    
+                    item_info = f"**Item {i+1}:** {display_title}\n"
+                    item_info += f"**Status:** {status}\n"
+                    
+                    if codes:
+                        item_info += f"**Codes:** {', '.join([f'`{code}`' for code in codes])}\n"
+                    
+                    # Show first bit of description for context
+                    item_info += f"**Preview:** {display_desc}\n"
+                    
+                    await ctx.send(item_info)
+                
+            except Exception as e:
+                await ctx.send(f"❌ Error with {source_info['name']}: {e}")
+        
+        # Show current filter settings
+        await ctx.send(f"\n**Current Keywords:** {', '.join(keywords)}")
+        
+    @bl4shift.command(name="testsource")
+    async def test_source_url(self, ctx, *, url: str):
+        """Test fetching from a specific RSS URL."""
+        await ctx.send(f"🧪 Testing RSS feed: {url}")
+        
+        try:
+            items = await self._fetch_rss_feed(url, "Manual Test")
+            
+            if not items:
+                await ctx.send("❌ No items retrieved or RSS parsing failed")
+                return
+            
+            await ctx.send(f"✅ Successfully parsed {len(items)} items")
+            
+            # Show first item details
+            if items:
+                item = items[0]
+                title = item.get("title", "No title")
+                description = item.get("description", "No description")
+                link = item.get("link", "No link")
+                
+                embed = discord.Embed(title="First Item Found", color=discord.Color.blue())
+                embed.add_field(name="Title", value=title[:1000], inline=False)
+                embed.add_field(name="Description", value=description[:1000], inline=False)
+                if link:
+                    embed.add_field(name="Link", value=link, inline=False)
+                
+                await ctx.send(embed=embed)
+                
+                # Test code extraction
+                codes = self._extract_shift_codes(f"{title} {description}")
+                if codes:
+                    await ctx.send(f"🔑 **Codes found:** {', '.join([f'`{code}`' for code in codes])}")
+                else:
+                    await ctx.send("❌ No SHIFT codes detected in this content")
+        
+        except Exception as e:
+            await ctx.send(f"❌ Error testing RSS feed: {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
