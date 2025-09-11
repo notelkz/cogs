@@ -777,6 +777,44 @@ class BL4ShiftCodes(commands.Cog):
         
         except Exception as e:
             await ctx.send(f"❌ Error testing RSS feed: {e}")
+    
+    @bl4shift.command(name="addsource")
+    async def add_custom_source(self, ctx, source_id: str, *, url: str):
+        """Add a custom RSS source. Format: !bl4shift addsource my_source_name https://example.com/rss"""
+        # Validate URL
+        if not url.startswith(('http://', 'https://')):
+            await ctx.send("❌ URL must start with http:// or https://")
+            return
+        
+        # Test the RSS feed first
+        await ctx.send(f"🧪 Testing RSS feed: {url}")
+        
+        try:
+            items = await self._fetch_rss_feed(url, f"Test - {source_id}")
+            
+            if not items:
+                await ctx.send("❌ Could not retrieve items from this RSS feed")
+                return
+            
+            await ctx.send(f"✅ RSS feed works! Found {len(items)} items")
+            
+            # Add to sources temporarily (this won't persist across bot restarts)
+            self.sources[source_id] = {
+                "name": f"Custom - {source_id}",
+                "url": url,
+                "type": "rss"
+            }
+            
+            # Enable it by default
+            enabled_sources = await self.config.guild(ctx.guild).enabled_sources()
+            enabled_sources[source_id] = True
+            await self.config.guild(ctx.guild).enabled_sources.set(enabled_sources)
+            
+            await ctx.send(f"✅ Added custom source: `{source_id}`\n**URL:** {url}")
+            await ctx.send("⚠️ Note: Custom sources won't persist across bot restarts")
+            
+        except Exception as e:
+            await ctx.send(f"❌ Error testing RSS feed: {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
