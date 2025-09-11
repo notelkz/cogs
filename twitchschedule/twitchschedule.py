@@ -1058,7 +1058,7 @@ class TwitchSchedule(commands.Cog):
                     await ctx.send("❌ Username must be 3-25 characters.")
                     continue
                     
-                if not re.match(r'^[a-zA-Z0-9_]+, username):
+                if not re.match(r'^[a-zA-Z0-9_]+$', username):
                     await ctx.send("❌ Username can only contain letters, numbers, and underscores.")
                     continue
                 
