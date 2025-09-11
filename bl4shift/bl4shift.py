@@ -815,6 +815,81 @@ class BL4ShiftCodes(commands.Cog):
             
         except Exception as e:
             await ctx.send(f"❌ Error testing RSS feed: {e}")
+    
+    @bl4shift.command(name="testpost")
+    async def test_reddit_post(self, ctx, *, url: str):
+        """Test a specific Reddit post for SHIFT codes. Use the .json URL."""
+        await ctx.send(f"🧪 Testing Reddit post: {url}")
+        
+        # Convert regular Reddit URL to JSON if needed
+        if "/comments/" in url and not url.endswith(".json"):
+            url = url.rstrip("/") + ".json"
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+        
+        try:
+            async with self.session.get(url, headers=headers, timeout=30) as response:
+                await ctx.send(f"**Status Code:** {response.status}")
+                
+                if response.status == 200:
+                    try:
+                        data = await response.json()
+                        
+                        # Reddit post JSON structure
+                        if isinstance(data, list) and len(data) > 0:
+                            post_data = data[0].get("data", {}).get("children", [])
+                            if post_data:
+                                post = post_data[0].get("data", {})
+                                title = post.get("title", "")
+                                selftext = post.get("selftext", "")
+                                
+                                await ctx.send(f"**Title:** {title}")
+                                await ctx.send(f"**Content preview:** {selftext[:500]}...")
+                                
+                                # Test code extraction
+                                all_text = f"{title} {selftext}"
+                                codes = self._extract_shift_codes(all_text)
+                                
+                                if codes:
+                                    codes_list = ", ".join([f"`{code}`" for code in codes])
+                                    await ctx.send(f"🔑 **Codes found:** {codes_list}")
+                                else:
+                                    await ctx.send("❌ No SHIFT codes detected")
+                                    
+                                    # Show what patterns we're looking for
+                                    await ctx.send("**Looking for patterns like:**")
+                                    await ctx.send("• `ABCDE-12345-FGHIJ-67890-KLMNO`")
+                                    await ctx.send("• `ABCDEFGHIJKLMNOPQRSTUVWXY` (25 chars)")
+                                    
+                                    # Test BL4 relevance
+                                    keywords = await self.config.guild(ctx.guild).keywords()
+                                    is_bl4 = self._is_bl4_related(title, selftext, keywords)
+                                    await ctx.send(f"**BL4 Related:** {'✅ Yes' if is_bl4 else '❌ No'}")
+                                    await ctx.send(f"**Keywords:** {', '.join(keywords)}")
+                                
+                            else:
+                                await ctx.send("❌ No post data found in JSON")
+                        else:
+                            await ctx.send("❌ Unexpected JSON structure")
+                            
+                    except Exception as json_err:
+                        text = await response.text()
+                        await ctx.send(f"❌ JSON Error: {json_err}")
+                        await ctx.send(f"**Raw response:** ```{text[:500]}```")
+                        
+                elif response.status == 403:
+                    await ctx.send("❌ **403 Forbidden** - Reddit is blocking this request")
+                    
+                else:
+                    text = await response.text()
+                    await ctx.send(f"❌ **Error {response.status}**")
+                    await ctx.send(f"**Response:** ```{text[:300]}```")
+                    
+        except Exception as e:
+            await ctx.send(f"❌ **Connection Error:** {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
