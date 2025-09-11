@@ -322,6 +322,37 @@ class BL4ShiftCodes(commands.Cog):
         """Borderlands 4 SHIFT code monitoring commands."""
         pass
     
+    @bl4shift.command(name="listchannels")
+    async def list_channels(self, ctx):
+        """List all channels the bot can see to help with setup."""
+        text_channels = []
+        forum_channels = []
+        
+        for channel in ctx.guild.channels:
+            if isinstance(channel, discord.TextChannel):
+                text_channels.append(f"• {channel.mention} (ID: {channel.id})")
+            elif isinstance(channel, discord.ForumChannel):
+                forum_channels.append(f"• {channel.mention} (ID: {channel.id})")
+        
+        embed = discord.Embed(title="Available Channels", color=discord.Color.blue())
+        
+        if text_channels:
+            text_list = "\n".join(text_channels[:10])  # Limit to 10 to avoid embed limits
+            if len(text_channels) > 10:
+                text_list += f"\n... and {len(text_channels) - 10} more"
+            embed.add_field(name="Text Channels", value=text_list, inline=False)
+        
+        if forum_channels:
+            forum_list = "\n".join(forum_channels[:10])
+            if len(forum_channels) > 10:
+                forum_list += f"\n... and {len(forum_channels) - 10} more"
+            embed.add_field(name="Forum Channels", value=forum_list, inline=False)
+        
+        if not text_channels and not forum_channels:
+            embed.description = "No text or forum channels found that the bot can access."
+        
+        await ctx.send(embed=embed)
+    
     @bl4shift.command(name="setchannel")
     async def set_channel(self, ctx, *, channel_input: str):
         """Set the channel to post SHIFT codes to. Can be a text channel or forum channel.
