@@ -695,6 +695,100 @@ class BL4ShiftCodes(commands.Cog):
                 
         except Exception as e:
             await ctx.send(f"❌ Error during manual check: {e}")
+    
+    @bl4shift.command(name="debug")
+    async def debug_check(self, ctx, limit: int = 10):
+        """Debug command to see what posts are being found and why they might be filtered out."""
+        if limit > 25:
+            limit = 25
+            
+        guild_config = self.config.guild(ctx.guild)
+        subreddit = await guild_config.subreddit()
+        keywords = await guild_config.keywords()
+        posted_codes = await guild_config.posted_codes()
+        
+        await ctx.send(f"🔍 Debugging r/{subreddit} - checking last {limit} posts...")
+        
+        try:
+            posts = await self._get_reddit_posts(subreddit, limit)
+            
+            if not posts:
+                await ctx.send("❌ No posts retrieved from Reddit. Check subreddit name or Reddit might be down.")
+                return
+            
+            debug_info = []
+            codes_found_total = 0
+            bl4_related_count = 0
+            
+            for i, post_data in enumerate(posts[:limit]):
+                post = post_data.get("data", {})
+                post_id = post.get("id", "")
+                title = post.get("title", "")
+                selftext = post.get("selftext", "")
+                author = post.get("author", "")
+                
+                # Check BL4 relevance
+                is_bl4 = self._is_bl4_related(title, selftext, keywords)
+                if is_bl4:
+                    bl4_related_count += 1
+                
+                # Extract codes
+                codes = self._extract_shift_codes(f"{title} {selftext}")
+                if codes:
+                    codes_found_total += len(codes)
+                
+                # Check if already posted
+                already_posted = post_id in posted_codes
+                
+                debug_info.append({
+                    'title': title[:50] + "..." if len(title) > 50 else title,
+                    'author': author,
+                    'bl4_related': is_bl4,
+                    'codes_found': len(codes),
+                    'codes': list(codes) if codes else [],
+                    'already_posted': already_posted
+                })
+            
+            # Create summary
+            embed = discord.Embed(title=f"Debug Results - r/{subreddit}", color=discord.Color.orange())
+            embed.add_field(name="Posts Checked", value=str(len(debug_info)), inline=True)
+            embed.add_field(name="BL4 Related", value=str(bl4_related_count), inline=True)
+            embed.add_field(name="Total Codes Found", value=str(codes_found_total), inline=True)
+            embed.add_field(name="Keywords", value=", ".join(keywords), inline=False)
+            
+            await ctx.send(embed=embed)
+            
+            # Show detailed breakdown
+            for i, info in enumerate(debug_info[:5]):  # Show first 5 posts
+                status_parts = []
+                if info['bl4_related']:
+                    status_parts.append("✅ BL4")
+                else:
+                    status_parts.append("❌ Not BL4")
+                    
+                if info['codes_found'] > 0:
+                    status_parts.append(f"🔑 {info['codes_found']} codes")
+                else:
+                    status_parts.append("❌ No codes")
+                    
+                if info['already_posted']:
+                    status_parts.append("📝 Already posted")
+                else:
+                    status_parts.append("🆕 New")
+                
+                status = " | ".join(status_parts)
+                
+                post_info = f"**Post {i+1}:** {info['title']}\n"
+                post_info += f"**Author:** u/{info['author']}\n"
+                post_info += f"**Status:** {status}\n"
+                
+                if info['codes']:
+                    post_info += f"**Codes:** {', '.join([f'`{code}`' for code in info['codes']])}\n"
+                
+                await ctx.send(post_info)
+                
+        except Exception as e:
+            await ctx.send(f"❌ Debug error: {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
