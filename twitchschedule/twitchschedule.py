@@ -1,234 +1,4 @@
-except Exception as e:
-                    await ctx.send("❌ An unexpected error occurred. Check logs.")
-                    await self._log_error(ctx.guild, f"Force update error: {str(e)}")
-
-    @twitchschedule.group(name="story")
-    async def story_commands(self, ctx):
-        """Story image commands"""
-        if ctx.invoked_subcommand is None:
-            embed = discord.Embed(
-                title="Story Image Commands",
-                color=discord.Color.blue(),
-                description=(
-                    f"`{ctx.clean_prefix}tsched story enable #channel` - Enable story images in a channel\n"
-                    f"`{ctx.clean_prefix}tsched story disable` - Disable story images\n"
-                    f"`{ctx.clean_prefix}tsched story template [url]` - Set custom story template\n"
-                    f"`{ctx.clean_prefix}tsched story events [1-15]` - Set number of events for story\n"
-                    f"`{ctx.clean_prefix}tsched story test [#channel]` - Test story generation\n"
-                    f"`{ctx.clean_prefix}tsched story force` - Force story update now"
-                )
-            )
-            await ctx.send(embed=embed)
-
-    @story_commands.command(name="enable")
-    async def enable_story(self, ctx, channel: discord.TextChannel):
-        """Enable story images in specified channel"""
-        # Validate permissions
-        perms = channel.permissions_for(ctx.guild.me)
-        if not all([perms.send_messages, perms.attach_files]):
-            await ctx.send(f"❌ Missing permissions in {channel.mention}! Need: Send Messages, Attach Files")
-            return
-        
-        await self.config.guild(ctx.guild).story_enabled.set(True)
-        await self.config.guild(ctx.guild).story_channel_id.set(channel.id)
-        await ctx.send(f"✅ Story images enabled! Will post to {channel.mention}")
-
-    @story_commands.command(name="disable")
-    async def disable_story(self, ctx):
-        """Disable story images"""
-        await self.config.guild(ctx.guild).story_enabled.set(False)
-        await ctx.send("✅ Story images disabled!")
-
-    @story_commands.command(name="template")
-    async def set_story_template(self, ctx, template_url: str = None):
-        """Set custom story template URL"""
-        if template_url:
-            if not (template_url.startswith("http://") or template_url.startswith("https://")):
-                await ctx.send("❌ Invalid URL. Please provide a full HTTP or HTTPS URL.")
-                return
-            await self.config.guild(ctx.guild).story_template_url.set(template_url)
-            await ctx.send(f"✅ Story template URL set to: {template_url}")
-        else:
-            await self.config.guild(ctx.guild).story_template_url.set(None)
-            await ctx.send("✅ Story template URL cleared. Using default.")
-        
-        # Clear existing file to force re-download
-        if os.path.exists(self.story_template_path):
-            try:
-                os.remove(self.story_template_path)
-            except Exception as e:
-                await self._log_error(ctx.guild, f"Failed to remove story template: {e}")
-
-    @story_commands.command(name="events")
-    async def set_story_events(self, ctx, count: int):
-        """Set number of events to show on story image (1-15)"""
-        if not 1 <= count <= 15:
-            await ctx.send("❌ Event count must be between 1 and 15!")
-            return
-        await self.config.guild(ctx.guild).story_event_count.set(count)
-        await ctx.send(f"✅ Story event count set to {count}!")
-
-    @story_commands.command(name="test")
-    async def test_story(self, ctx, channel: discord.TextChannel = None):
-        """Test story image generation"""
-        if channel is None:
-            channel = ctx.channel
-        
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        if not twitch_username:
-            await ctx.send("❌ Please run setup first to configure Twitch username!")
-            return
-        
-        async with ctx.channel.typing():
-            await ctx.send("🔄 Testing story image generation...")
-            
-            try:
-                today_london = datetime.datetime.now(london_tz)
-                end_of_range = today_london + timedelta(days=14)
-                all_segments = await self.get_schedule_for_range(
-                    twitch_username, today_london, end_of_range
-                )
-                
-                if all_segments is not None:
-                    await self.post_story_image(channel, all_segments)
-                    await ctx.send("✅ Story test complete!")
-                else:
-                    await ctx.send("❌ Failed to fetch schedule from Twitch!")
-                    
-            except Exception as e:
-                await ctx.send("❌ Story test failed. Check logs for details.")
-                await self._log_error(ctx.guild, f"Story test error: {str(e)}")
-
-    @story_commands.command(name="force")
-    async def force_story_update(self, ctx):
-        """Force immediate story update"""
-        story_enabled = await self.config.guild(ctx.guild).story_enabled()
-        if not story_enabled:
-            await ctx.send("❌ Story images are not enabled! Use `tsched story enable #channel` first.")
-            return
-        
-        story_channel_id = await self.config.guild(ctx.guild).story_channel_id()
-        if not story_channel_id:
-            await ctx.send("❌ No story channel configured!")
-            return
-        
-        story_channel = ctx.guild.get_channel(story_channel_id)
-        if not story_channel:
-            await ctx.send("❌ Story channel not found!")
-            return
-        
-        twitch_username = await self.config.guild(ctx.guild).twitch_username()
-        if not twitch_username:
-            await ctx.send("❌ Please run setup first!")
-            return
-        
-        async with ctx.channel.typing():
-            await ctx.send("🔄 Forcing story update...")
-            
-            try:
-                today_london = datetime.datetime.now(london_tz)
-                end_of_range = today_london + timedelta(days=14)
-                all_segments = await self.get_schedule_for_range(
-                    twitch_username, today_london, end_of_range
-                )
-                
-                if all_segments is not None:
-                    await self.post_story_image(story_channel, all_segments)
-                    await ctx.send("✅ Story updated!")
-                else:
-                    await ctx.send("❌ Failed to fetch schedule!")
-                    
-            except Exception as e:
-                await ctx.send("❌ Story update failed. Check logs.")
-                await self._log_error(ctx.guild, f"Story force update error: {str(e)}")
-
-    @twitchschedule.command(name="settings")
-    async def show_settings(self, ctx):
-        """Show current settings including story configuration"""
-        config = self.config.guild(ctx.guild)
-        channel_id = await config.channel_id()
-        twitch_username = await config.twitch_username()
-        update_days = await config.update_days()
-        update_time = await config.update_time()
-        notify_role_id = await config.notify_role_id()
-        event_count = await config.event_count()
-        custom_template_url = await config.custom_template_url()
-        custom_font_url = await config.custom_font_url()
-        log_channel_id = await config.log_channel_id()
-        weeks_to_show = await config.weeks_to_show()
-        
-        # Story settings
-        story_enabled = await config.story_enabled()
-        story_channel_id = await config.story_channel_id()
-        story_template_url = await config.story_template_url()
-        story_event_count = await config.story_event_count()
-        
-        channel = ctx.guild.get_channel(channel_id) if channel_id else None
-        notify_role = ctx.guild.get_role(notify_role_id) if notify_role_id else None
-        log_channel = ctx.guild.get_channel(log_channel_id) if log_channel_id else None
-        story_channel = ctx.guild.get_channel(story_channel_id) if story_channel_id else None
-        
-        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        update_days_str = ", ".join(days[day] for day in update_days) if update_days else "None"
-        week_text = "week" if weeks_to_show == 1 else "weeks"
-        
-        embed = discord.Embed(
-            title="Twitch Schedule Settings",
-            color=discord.Color.purple()
-        )
-        
-        # Main settings
-        embed.add_field(name="Schedule Channel", value=channel.mention if channel else "Not set", inline=True)
-        embed.add_field(name="Twitch Username", value=twitch_username or "Not set", inline=True)
-        embed.add_field(name="Weeks to Show", value=f"{weeks_to_show} {week_text}", inline=True)
-        embed.add_field(name="Update Time (UK)", value=update_time or "Not set", inline=True)
-        embed.add_field(name="Update Days (UK)", value=update_days_str, inline=True)
-        embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
-        embed.add_field(name="Event Count", value=str(event_count), inline=True)
-        embed.add_field(name="Error Log Channel", value=log_channel.mention if log_channel else "Not set", inline=True)
-        embed.add_field(name="Custom Template", value=custom_template_url or "Default", inline=True)
-        embed.add_field(name="Custom Font", value=custom_font_url or "Default", inline=True)
-        
-        # Story settings
-        embed.add_field(name="━━━ Story Settings ━━━", value="", inline=False)
-        embed.add_field(name="Story Enabled", value="✅ Yes" if story_enabled else "❌ No", inline=True)
-        embed.add_field(name="Story Channel", value=story_channel.mention if story_channel else "Not set", inline=True)
-        embed.add_field(name="Story Event Count", value=str(story_event_count), inline=True)
-        embed.add_field(name="Story Template", value=story_template_url or "Default", inline=True)
-        
-        await ctx.send(embed=embed)
-
-    # Continue with remaining setup method implementation...
-
-    @twitchschedule.group(name="story")
-    async def story_commands(self, ctx):
-        """Story image commands"""
-        if ctx.invoked_subcommand is None:
-            embed = discord.Embed(
-                title="Story Image Commands",
-                color=discord.Color.blue(),
-                description=(
-                    f"`{ctx.clean_prefix}tsched story enable #channel` - Enable story images in a channel\n"
-                    f"`{ctx.clean_prefix}tsched story disable` - Disable story images\n"
-                    f"`{ctx.clean_prefix}tsched story template [url]` - Set custom story template\n"
-                    f"`{ctx.clean_prefix}tsched story events [1-15]` - Set number of events for story\n"
-                    f"`{ctx.clean_prefix}tsched story test [#channel]` - Test story generation\n"
-                    f"`{ctx.clean_prefix}tsched story force` - Force story update now"
-                )
-            )
-            await ctx.send(embed=embed)
-
-    @story_commands.command(name="enable")
-    async def enable_story(self, ctx, channel: discord.TextChannel):
-        """Enable story images in specified channel"""
-        # Validate permissions
-        perms = channel.permissions_for(ctx.guild.me)
-        if not all([perms.send_messages, perms.attach_files]):
-            await ctx.send(f"❌ Missing permissions in {channel.mention}! Need: Send Messages, Attach Files")
-            return
-        
-        await self.config.guild(ctx.guild).story_enabled.set(True)
-        await self.config.import discord
+import discord
 from redbot.core import commands, Config
 from redbot.core.bot import Red
 import aiohttp
@@ -242,10 +12,7 @@ import os
 import pytz
 import re
 import dateutil.parser
-import json
-import hashlib
 from typing import Optional, List, Dict, Any
-import logging
 
 london_tz = pytz.timezone("Europe/London")
 
@@ -255,13 +22,12 @@ class TwitchAPIError(Exception):
 
 class RateLimiter:
     """Simple rate limiter for API calls"""
-    def __init__(self, calls_per_minute: int = 800):  # Twitch allows 800 calls/minute
+    def __init__(self, calls_per_minute: int = 800):
         self.calls_per_minute = calls_per_minute
         self.calls = []
     
     async def wait_if_needed(self):
         now = datetime.datetime.now()
-        # Remove calls older than 1 minute
         self.calls = [call_time for call_time in self.calls if now - call_time < timedelta(minutes=1)]
         
         if len(self.calls) >= self.calls_per_minute:
@@ -290,7 +56,11 @@ class TwitchSchedule(commands.Cog):
             "custom_font_url": None,
             "log_channel_id": None,
             "include_next_week": False,
-            "weeks_to_show": 1
+            "weeks_to_show": 1,
+            "story_enabled": False,
+            "story_channel_id": None,
+            "story_template_url": None,
+            "story_event_count": 7
         }
         self.config.register_guild(**default_guild)
         
@@ -298,19 +68,18 @@ class TwitchSchedule(commands.Cog):
         self.access_token = None
         self.token_expires_at = None
         self.rate_limiter = RateLimiter()
-        self._update_lock = asyncio.Lock()  # Prevent concurrent updates
+        self._update_lock = asyncio.Lock()
         
         self.cache_dir = os.path.join(os.path.dirname(__file__), "cache")
         self.font_path = os.path.join(self.cache_dir, "P22.ttf")
         self.template_path = os.path.join(self.cache_dir, "schedule.png")
+        self.story_template_path = os.path.join(self.cache_dir, "story_schedule.png")
         
-        # File size limits (10MB for safety)
-        self.max_file_size = 10 * 1024 * 1024
+        self.max_file_size = 10 * 1024 * 1024  # 10MB limit
         
         if not os.path.exists(self.cache_dir):
             os.makedirs(self.cache_dir, exist_ok=True)
         
-        # Start the task after bot is ready
         self.bot.loop.create_task(self._start_when_ready())
 
     async def _start_when_ready(self):
@@ -322,18 +91,6 @@ class TwitchSchedule(commands.Cog):
         if self.task:
             self.task.cancel()
 
-    def get_next_sunday(self):
-        today = datetime.datetime.now(london_tz)
-        days_until_sunday = (6 - today.weekday()) % 7
-        next_sunday = today + timedelta(days=days_until_sunday)
-        return next_sunday.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    def get_end_of_week(self):
-        today = datetime.datetime.now(london_tz)
-        days_until_saturday = (5 - today.weekday()) % 7
-        end_of_week = today + timedelta(days=days_until_saturday)
-        return end_of_week.replace(hour=23, minute=59, second=59, microsecond=0)
-
     async def get_credentials(self) -> Optional[tuple]:
         """Get Twitch API credentials with validation"""
         try:
@@ -343,10 +100,6 @@ class TwitchSchedule(commands.Cog):
             
             if not client_id or not client_secret:
                 return None
-            
-            # Basic validation
-            if len(client_id) < 10 or len(client_secret) < 10:
-                return None
                 
             return client_id, client_secret
         except Exception:
@@ -355,7 +108,6 @@ class TwitchSchedule(commands.Cog):
     async def get_twitch_token(self) -> Optional[str]:
         """Get or refresh Twitch access token with proper error handling"""
         try:
-            # Check if we have a valid token
             if self.access_token and self.token_expires_at:
                 if datetime.datetime.now() < self.token_expires_at - timedelta(minutes=5):
                     return self.access_token
@@ -395,7 +147,6 @@ class TwitchSchedule(commands.Cog):
     async def download_file(self, url: str, save_path: str) -> bool:
         """Download file with proper validation and size limits"""
         try:
-            # Validate URL
             if not (url.startswith("http://") or url.startswith("https://")):
                 return False
             
@@ -404,34 +155,27 @@ class TwitchSchedule(commands.Cog):
                     if resp.status != 200:
                         return False
                     
-                    # Check content length
                     content_length = resp.headers.get('content-length')
                     if content_length and int(content_length) > self.max_file_size:
                         return False
                     
-                    # Read with size limit
                     data = b""
                     async for chunk in resp.content.iter_chunked(8192):
                         data += chunk
                         if len(data) > self.max_file_size:
                             return False
                     
-                    # Validate file type by checking header
-                    if save_path.endswith('.ttf') and not data.startswith(b'\x00\x01\x00\x00'):
-                        if not (data.startswith(b'OTTO') or data.startswith(b'true') or data.startswith(b'typ1')):
-                            return False
-                    elif save_path.endswith('.png') and not data.startswith(b'\x89PNG'):
+                    # Basic file validation
+                    if save_path.endswith('.png') and not data.startswith(b'\x89PNG'):
                         return False
                     
-                    # Ensure directory exists and write file
                     os.makedirs(os.path.dirname(save_path), exist_ok=True)
                     with open(save_path, 'wb') as f:
                         f.write(data)
                     
                     return True
                     
-        except Exception as e:
-            # Clean up partial file if it exists
+        except Exception:
             if os.path.exists(save_path):
                 try:
                     os.remove(save_path)
@@ -440,7 +184,7 @@ class TwitchSchedule(commands.Cog):
             return False
 
     async def ensure_resources(self, guild: discord.Guild) -> bool:
-        """Ensure font and template files are available with validation"""
+        """Ensure font and template files are available"""
         try:
             custom_font_url = await self.config.guild(guild).custom_font_url()
             font_url_to_use = custom_font_url if custom_font_url else "https://zerolivesleft.net/notelkz/P22.ttf"
@@ -451,43 +195,36 @@ class TwitchSchedule(commands.Cog):
             font_ok = True
             template_ok = True
 
-            # Check and download font
-            if not os.path.exists(self.font_path) or not self._validate_font_file(self.font_path):
+            if not os.path.exists(self.font_path):
                 font_ok = await self.download_file(font_url_to_use, self.font_path)
                 if not font_ok:
                     await self._log_error(guild, f"Failed to download font file from {font_url_to_use}")
 
-            # Check and download template
-            if not os.path.exists(self.template_path) or not self._validate_image_file(self.template_path):
+            if not os.path.exists(self.template_path):
                 template_ok = await self.download_file(template_url_to_use, self.template_path)
                 if not template_ok:
                     await self._log_error(guild, f"Failed to download template from {template_url_to_use}")
 
-            return font_ok and template_ok
+            # Story template (only if story feature is enabled)
+            story_enabled = await self.config.guild(guild).story_enabled()
+            story_template_ok = True
+            if story_enabled:
+                story_template_url = await self.config.guild(guild).story_template_url()
+                story_url_to_use = story_template_url if story_template_url else "https://zerolivesleft.net/notelkz/story_schedule.png"
+                
+                if not os.path.exists(self.story_template_path):
+                    story_template_ok = await self.download_file(story_url_to_use, self.story_template_path)
+                    if not story_template_ok:
+                        await self._log_error(guild, f"Failed to download story template from {story_url_to_use}")
+
+            return font_ok and template_ok and (story_template_ok or not story_enabled)
             
         except Exception as e:
             await self._log_error(guild, f"Error ensuring resources: {str(e)}")
             return False
 
-    def _validate_font_file(self, path: str) -> bool:
-        """Validate font file can be loaded"""
-        try:
-            ImageFont.truetype(path, 12)
-            return True
-        except:
-            return False
-
-    def _validate_image_file(self, path: str) -> bool:
-        """Validate image file can be loaded"""
-        try:
-            with Image.open(path) as img:
-                img.verify()
-            return True
-        except:
-            return False
-
     async def _make_twitch_request(self, url: str, headers: Dict[str, str]) -> Optional[Dict[str, Any]]:
-        """Make Twitch API request with proper error handling and retries"""
+        """Make Twitch API request with proper error handling"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -496,7 +233,6 @@ class TwitchSchedule(commands.Cog):
                 async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status == 401:
-                            # Token expired, clear it and retry once
                             if attempt == 0:
                                 self.access_token = None
                                 self.token_expires_at = None
@@ -507,19 +243,18 @@ class TwitchSchedule(commands.Cog):
                             raise TwitchAPIError("Authentication failed")
                         
                         elif resp.status == 429:
-                            # Rate limited
                             retry_after = int(resp.headers.get('Retry-After', 60))
-                            await asyncio.sleep(min(retry_after, 300))  # Cap at 5 minutes
+                            await asyncio.sleep(min(retry_after, 300))
                             continue
                         
                         elif resp.status == 404:
-                            return {"data": {"segments": []}}  # Empty schedule
+                            return {"data": {"segments": []}}
                         
                         elif resp.status != 200:
                             error_text = await resp.text()
                             if attempt == max_retries - 1:
                                 raise TwitchAPIError(f"API request failed: {resp.status} - {error_text}")
-                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                            await asyncio.sleep(2 ** attempt)
                             continue
                         
                         return await resp.json()
@@ -536,7 +271,7 @@ class TwitchSchedule(commands.Cog):
         return None
 
     async def get_schedule_for_range(self, username: str, start_date: datetime.datetime, end_date: datetime.datetime) -> Optional[List[Dict]]:
-        """Get schedule with improved error handling and validation"""
+        """Get schedule with improved error handling"""
         try:
             if not username or len(username.strip()) == 0:
                 raise TwitchAPIError("Invalid username provided")
@@ -587,8 +322,7 @@ class TwitchSchedule(commands.Cog):
                     if start_date <= start_time_local <= end_date:
                         seg["broadcaster_name"] = broadcaster_name
                         filtered_segments.append(seg)
-                except (ValueError, KeyError) as e:
-                    # Skip malformed segments
+                except (ValueError, KeyError):
                     continue
                         
             return filtered_segments
@@ -645,7 +379,6 @@ class TwitchSchedule(commands.Cog):
                 "Authorization": f"Bearer {token}"
             }
             
-            # Get user ID
             user_url = f"https://api.twitch.tv/helix/users?login={username}"
             user_data = await self._make_twitch_request(user_url, headers)
             
@@ -654,7 +387,6 @@ class TwitchSchedule(commands.Cog):
             
             broadcaster_id = user_data["data"][0]["id"]
             
-            # Get VODs
             vods_url = f"https://api.twitch.tv/helix/videos?user_id={broadcaster_id}&type=archive&first=5&period=month"
             vod_data = await self._make_twitch_request(vods_url, headers)
             
@@ -665,7 +397,6 @@ class TwitchSchedule(commands.Cog):
             for vod in vod_data.get("data", []):
                 try:
                     vod_created_at = dateutil.parser.isoparse(vod["created_at"])
-                    # More precise matching - within 1 hour of stream start
                     if abs((vod_created_at - start_time.astimezone(datetime.timezone.utc)).total_seconds()) <= 3600:
                         vods.append(vod)
                 except (ValueError, KeyError):
@@ -682,7 +413,6 @@ class TwitchSchedule(commands.Cog):
             if not await self.ensure_resources(guild):
                 return None
             
-            # Validate inputs
             if not isinstance(schedule_for_image, list):
                 return None
             
@@ -692,15 +422,14 @@ class TwitchSchedule(commands.Cog):
             event_count = await self.config.guild(guild).event_count()
             actual_events = min(len(schedule_for_image), event_count)
             
-            # Adjust image height if fewer events than expected
+            # Adjust image height if fewer events
             if actual_events < event_count:
                 width, height = img.size
                 row_height = 150
                 height_to_remove = (event_count - actual_events) * row_height
-                new_height = max(height - height_to_remove, 400)  # Minimum height
+                new_height = max(height - height_to_remove, 400)
                 new_img = Image.new(img.mode, (width, new_height), color=(0, 0, 0))
                 
-                # Copy sections safely
                 header_height = min(350, height)
                 new_img.paste(img.crop((0, 0, width, header_height)), (0, 0))
                 
@@ -723,7 +452,6 @@ class TwitchSchedule(commands.Cog):
                 date_font = ImageFont.truetype(self.font_path, 40)
                 schedule_font = ImageFont.truetype(self.font_path, 42)
             except Exception:
-                # Fallback to default font
                 title_font = ImageFont.load_default()
                 date_font = ImageFont.load_default()
                 schedule_font = ImageFont.load_default()
@@ -751,26 +479,20 @@ class TwitchSchedule(commands.Cog):
             
             week_of_text = "Week of" if weeks_to_show == 1 else "Weeks of"
             
-            # Calculate text positions safely
+            # Draw header text
             try:
                 week_of_bbox = title_font.getbbox(week_of_text)
                 date_bbox = date_font.getbbox(date_text)
                 week_of_width = week_of_bbox[2] - week_of_bbox[0]
                 date_width = date_bbox[2] - date_bbox[0]
-            except:
-                # Fallback calculation
-                week_of_width = len(week_of_text) * 20
-                date_width = len(date_text) * 12
-            
-            week_of_x = max(0, width - right_margin - week_of_width)
-            date_x = max(0, width - right_margin - date_width)
-            
-            # Draw text safely
-            try:
+                
+                week_of_x = max(0, width - right_margin - week_of_width)
+                date_x = max(0, width - right_margin - date_width)
+                
                 draw.text((week_of_x, 100), week_of_text, font=title_font, fill=(255, 255, 255))
                 draw.text((date_x, 180), date_text, font=date_font, fill=(255, 255, 255))
             except Exception:
-                pass  # Skip text if drawing fails
+                pass
             
             # Draw schedule items
             day_x = 125
@@ -801,15 +523,14 @@ class TwitchSchedule(commands.Cog):
                         category = segment.get("category", {})
                         title = category.get("name", "Untitled Stream")
                     
-                    title = str(title)[:50]  # Limit length
+                    title = str(title)[:50]
                     
                     draw.text((day_x, day_y), day_time, font=schedule_font, fill=(255, 255, 255))
                     draw.text((game_x, game_y), title, font=schedule_font, fill=(255, 255, 255))
                     
                 except Exception:
-                    continue  # Skip problematic segments
+                    continue
             
-            # Save to buffer
             buf = io.BytesIO()
             img.save(buf, format="PNG", optimize=True)
             buf.seek(0)
@@ -820,7 +541,7 @@ class TwitchSchedule(commands.Cog):
             return None
 
     async def schedule_update_loop(self):
-        """Main update loop with better error handling and concurrency protection"""
+        """Main update loop with better error handling"""
         await self.bot.wait_until_ready()
         
         while True:
@@ -832,13 +553,11 @@ class TwitchSchedule(commands.Cog):
                         except Exception as e:
                             await self._log_error(guild, f"Error processing guild {guild.id}: {str(e)}")
                 
-                await asyncio.sleep(60)  # Check every minute
+                await asyncio.sleep(60)
                 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                # Log error but continue loop
-                logging.error(f"Error in schedule_update_loop: {str(e)}")
+            except Exception:
                 await asyncio.sleep(60)
 
     async def _process_guild_update(self, guild: discord.Guild):
@@ -852,7 +571,6 @@ class TwitchSchedule(commands.Cog):
         if not all([channel_id, twitch_username, update_days, update_time]):
             return
 
-        # Validate channel exists and we have permissions
         channel = guild.get_channel(channel_id)
         if not channel:
             await self._log_error(guild, f"Channel {channel_id} not found")
@@ -886,14 +604,13 @@ class TwitchSchedule(commands.Cog):
                 await self._log_error(guild, f"Error in automated update: {str(e)}")
 
     async def _log_error(self, guild: discord.Guild, error_message: str):
-        """Enhanced error logging with better formatting"""
+        """Enhanced error logging"""
         try:
             log_channel_id = await self.config.guild(guild).log_channel_id()
             if log_channel_id:
                 log_channel = guild.get_channel(log_channel_id)
                 if log_channel and log_channel.permissions_for(guild.me).send_messages:
                     
-                    # Truncate very long error messages
                     if len(error_message) > 1900:
                         error_message = error_message[:1900] + "... (truncated)"
                     
@@ -907,13 +624,11 @@ class TwitchSchedule(commands.Cog):
                     
                     await log_channel.send(embed=embed)
         except Exception:
-            # If logging fails, don't raise - just continue
             pass
 
     async def post_schedule(self, channel: discord.TextChannel, all_segments: list, dry_run: bool = False, start_date_for_image=None):
-        """Post schedule with improved error handling and validation"""
+        """Post schedule with improved error handling"""
         try:
-            # Validate inputs
             if not isinstance(all_segments, list):
                 raise ValueError("Invalid segments data")
             
@@ -924,7 +639,6 @@ class TwitchSchedule(commands.Cog):
             event_count = await config.event_count()
             weeks_to_show = await config.weeks_to_show()
 
-            # Validate and filter segments
             now_utc = datetime.datetime.now(datetime.timezone.utc)
             future_segments = []
             
@@ -934,17 +648,16 @@ class TwitchSchedule(commands.Cog):
                     if start_time_utc >= now_utc - timedelta(minutes=5):
                         future_segments.append(seg)
                 except (ValueError, KeyError, TypeError):
-                    continue  # Skip invalid segments
+                    continue
             
             future_segments.sort(key=lambda x: dateutil.parser.isoparse(x["start_time"]))
 
-            # Check permissions before proceeding
             permissions = channel.permissions_for(guild.me)
             if not dry_run and not permissions.manage_messages:
                 await self._log_error(guild, f"Missing manage_messages permission in {channel.name}")
                 return
 
-            # Delete previous messages (with rate limiting)
+            # Delete previous messages
             if not dry_run:
                 notify_role_id = await config.notify_role_id()
                 notify_role = guild.get_role(notify_role_id) if notify_role_id else None
@@ -961,31 +674,20 @@ class TwitchSchedule(commands.Cog):
                     await self._log_error(guild, f"Cannot send/delete messages in {channel.name}")
                     return
                 
-                # Delete bot messages with proper rate limiting
-                bot_messages = []
+                # Delete bot messages
                 try:
                     async for message in channel.history(limit=50):
                         if message.author == self.bot.user and message.id != warning_msg.id:
-                            bot_messages.append(message)
-                
-                    for message in bot_messages:
-                        try:
-                            await message.delete()
-                            await asyncio.sleep(1.5)  # Rate limit protection
-                        except discord.errors.NotFound:
-                            pass
-                        except discord.errors.Forbidden:
-                            await self._log_error(guild, f"Cannot delete messages in {channel.name}")
-                            break
-                        except Exception as e:
-                            await self._log_error(guild, f"Error deleting message: {str(e)}")
-                            break
+                            try:
+                                await message.delete()
+                                await asyncio.sleep(1.5)
+                            except:
+                                break
                 except Exception as e:
                     await self._log_error(guild, f"Error during message cleanup: {str(e)}")
 
-            # Generate content with typing indicator
+            # Generate content
             async with channel.typing():
-                # Determine starting week
                 if start_date_for_image is None:
                     today_london = datetime.datetime.now(london_tz)
                     days_since_sunday = today_london.weekday() + 1
@@ -1004,7 +706,6 @@ class TwitchSchedule(commands.Cog):
                     week_start = start_of_first_week + timedelta(days=week_num * 7)
                     week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
                     
-                    # Filter streams for this week
                     week_streams = []
                     for stream in future_segments:
                         try:
@@ -1032,7 +733,6 @@ class TwitchSchedule(commands.Cog):
                             except discord.errors.HTTPException as e:
                                 await self._log_error(guild, f"Failed to send image: {str(e)}")
                         else:
-                            # Fallback if image generation fails
                             embed_fallback = discord.Embed(
                                 title=f"Week {week_num + 1} Schedule",
                                 description="Image generation failed, but streams are listed below.",
@@ -1044,7 +744,6 @@ class TwitchSchedule(commands.Cog):
                             if first_message_for_pinning is None:
                                 first_message_for_pinning = week_message
                     else:
-                        # No streams for this week
                         week_title = f"Week of {week_start.strftime('%B %d')}"
                         embed_no_streams = discord.Embed(
                             title=f"No Streams Scheduled - {week_title}",
@@ -1070,7 +769,7 @@ class TwitchSchedule(commands.Cog):
                                 await channel.send(embed=embed)
                                 if not next_stream_posted and stream == future_segments[0] if future_segments else False:
                                     next_stream_posted = True
-                                await asyncio.sleep(0.5)  # Small delay between embeds
+                                await asyncio.sleep(0.5)
                         except Exception as e:
                             await self._log_error(guild, f"Error posting stream embed: {str(e)}")
                             continue
@@ -1114,9 +813,9 @@ class TwitchSchedule(commands.Cog):
         """Create embed for individual stream with validation"""
         try:
             start_time = dateutil.parser.isoparse(stream["start_time"].replace("Z", "+00:00"))
-            title = str(stream.get("title", "Untitled Stream"))[:256]  # Discord embed title limit
+            title = str(stream.get("title", "Untitled Stream"))[:256]
             category = stream.get("category", {})
-            game_name = str(category.get("name", "No Category"))[:1024]  # Field value limit
+            game_name = str(category.get("name", "No Category"))[:1024]
             
             # Get category artwork
             boxart_url = None
@@ -1126,7 +825,7 @@ class TwitchSchedule(commands.Cog):
                     if cat_info and cat_info.get("box_art_url"):
                         boxart_url = cat_info["box_art_url"].replace("{width}", "285").replace("{height}", "380")
                 except:
-                    pass  # Skip if category fetch fails
+                    pass
 
             unix_ts = int(start_time.timestamp())
             time_str_relative = f"<t:{unix_ts}:R>"
@@ -1199,11 +898,10 @@ class TwitchSchedule(commands.Cog):
                 
             return embed
             
-        except Exception as e:
-            # Return None if embed creation fails
+        except Exception:
             return None
 
-    # Command group and commands with enhanced validation
+    # Command group and commands
     @commands.group(aliases=["tsched"])
     @commands.admin_or_permissions(manage_guild=True)
     async def twitchschedule(self, ctx):
@@ -1244,7 +942,7 @@ class TwitchSchedule(commands.Cog):
     @twitchschedule.command(name="force")
     async def force_update(self, ctx, option: str = None):
         """Force immediate schedule update"""
-        async with self._update_lock:  # Prevent concurrent updates
+        async with self._update_lock:
             config = self.config.guild(ctx.guild)
             channel_id = await config.channel_id()
             twitch_username = await config.twitch_username()
@@ -1258,7 +956,6 @@ class TwitchSchedule(commands.Cog):
                 await ctx.send("❌ Configured channel not found!")
                 return
                 
-            # Validate permissions
             perms = channel.permissions_for(ctx.guild.me)
             if not all([perms.send_messages, perms.embed_links]):
                 await ctx.send("❌ Missing required permissions in target channel!")
@@ -1303,7 +1000,7 @@ class TwitchSchedule(commands.Cog):
         """Interactive setup with enhanced validation"""
         await ctx.send("Starting setup process. You have 30 seconds for each response.")
         
-        # Channel setup with validation
+        # Channel setup
         channel = None
         for attempt in range(3):
             await ctx.send(f"**Step 1/5:** Which channel for schedule posts? (Mention: #channel)")
@@ -1319,8 +1016,6 @@ class TwitchSchedule(commands.Cog):
                     continue
                     
                 channel = msg.channel_mentions[0]
-                
-                # Validate permissions
                 perms = channel.permissions_for(ctx.guild.me)
                 missing_perms = []
                 if not perms.send_messages:
@@ -1346,7 +1041,7 @@ class TwitchSchedule(commands.Cog):
             await ctx.send("❌ Too many failed attempts.")
             return
         
-        # Username validation
+        # Username setup
         username = None
         for attempt in range(3):
             await ctx.send("**Step 2/5:** Twitch username to track? (e.g., notelkz)")
@@ -1359,27 +1054,13 @@ class TwitchSchedule(commands.Cog):
                 
                 username = msg.content.strip().lower()
                 
-                # Basic validation
                 if not username or len(username) < 3 or len(username) > 25:
                     await ctx.send("❌ Username must be 3-25 characters.")
                     continue
                     
-                if not re.match(r'^[a-zA-Z0-9_]+
-                        , username):
+                if not re.match(r'^[a-zA-Z0-9_]+, username):
                     await ctx.send("❌ Username can only contain letters, numbers, and underscores.")
                     continue
-                
-                # Test if user exists (optional validation)
-                try:
-                    test_segments = await self.get_schedule_for_range(
-                        username, 
-                        datetime.datetime.now(london_tz),
-                        datetime.datetime.now(london_tz) + timedelta(days=1)
-                    )
-                    if test_segments is None:
-                        await ctx.send("⚠️ Warning: Could not verify username exists on Twitch, but continuing...")
-                except:
-                    await ctx.send("⚠️ Warning: Could not verify username, but continuing...")
                 
                 await self.config.guild(ctx.guild).twitch_username.set(username)
                 break
@@ -1391,10 +1072,281 @@ class TwitchSchedule(commands.Cog):
             await ctx.send("❌ Too many failed attempts.")
             return
 
-        # Continue with remaining setup steps (weeks, days, time) with similar validation...
-        # [Rest of setup method with enhanced validation continues...]
+        # Weeks setup
+        weeks = None
+        for attempt in range(3):
+            await ctx.send("**Step 3/5:** How many weeks to show? (1 or 2)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                try:
+                    weeks = int(msg.content.strip())
+                    if weeks not in [1, 2]:
+                        await ctx.send("❌ Please enter 1 or 2.")
+                        continue
+                    await self.config.guild(ctx.guild).weeks_to_show.set(weeks)
+                    await self.config.guild(ctx.guild).include_next_week.set(weeks > 1)
+                    break
+                except ValueError:
+                    await ctx.send("❌ Please enter a number.")
+                    continue
+            except asyncio.TimeoutError:
+                await ctx.send("⌛ Setup timed out.")
+                return
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
 
-    # [Additional command methods with enhanced error handling...]
+        # Update days
+        days = []
+        for attempt in range(3):
+            await ctx.send("**Step 4/5:** Update days? (0=Mon, 1=Tue...6=Sun, space-separated: `0 6`)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                try:
+                    days = [int(x) for x in msg.content.split()]
+                    if not all(0 <= x <= 6 for x in days):
+                        await ctx.send("❌ Numbers must be 0-6.")
+                        continue
+                    await self.config.guild(ctx.guild).update_days.set(days)
+                    break
+                except ValueError:
+                    await ctx.send("❌ Invalid format. Example: `0 6`")
+                    continue
+            except asyncio.TimeoutError:
+                await ctx.send("⌛ Setup timed out.")
+                return
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
+
+        # Update time
+        update_time = None
+        for attempt in range(3):
+            await ctx.send("**Step 5/5:** Update time (UK time, 24h format: `14:30`)")
+            try:
+                msg = await self.bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == ctx.author and m.channel == ctx.channel,
+                    timeout=30.0
+                )
+                time_input = msg.content.strip()
+                if not re.match(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$", time_input):
+                    await ctx.send("❌ Invalid format. Use HH:MM like `14:30`")
+                    continue
+                update_time = time_input
+                await self.config.guild(ctx.guild).update_time.set(update_time)
+                break
+            except asyncio.TimeoutError:
+                await ctx.send("⌛ Setup timed out.")
+                return
+        else:
+            await ctx.send("❌ Too many failed attempts.")
+            return
+        
+        # Confirmation
+        embed = discord.Embed(
+            title="Setup Complete!",
+            description="Configuration saved successfully.",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Channel", value=channel.mention, inline=True)
+        embed.add_field(name="Username", value=username, inline=True)
+        embed.add_field(name="Weeks", value=str(weeks), inline=True)
+        
+        await ctx.send(embed=embed)
+
+    @twitchschedule.command(name="notify")
+    async def set_notify_role(self, ctx, role: discord.Role = None):
+        """Set or clear notification role"""
+        if role is None:
+            await self.config.guild(ctx.guild).notify_role_id.set(None)
+            await ctx.send("✅ Notification role cleared!")
+        else:
+            await self.config.guild(ctx.guild).notify_role_id.set(role.id)
+            await ctx.send(f"✅ Notification role set to {role.mention}!")
+
+    @twitchschedule.command(name="events")
+    async def set_event_count(self, ctx, count: int):
+        """Set number of events to show (1-10)"""
+        if not 1 <= count <= 10:
+            await ctx.send("❌ Event count must be 1-10!")
+            return
+        await self.config.guild(ctx.guild).event_count.set(count)
+        await ctx.send(f"✅ Event count set to {count}!")
+
+    @twitchschedule.command(name="settings")
+    async def show_settings(self, ctx):
+        """Show current settings"""
+        config = self.config.guild(ctx.guild)
+        
+        channel_id = await config.channel_id()
+        twitch_username = await config.twitch_username()
+        update_days = await config.update_days()
+        update_time = await config.update_time()
+        notify_role_id = await config.notify_role_id()
+        event_count = await config.event_count()
+        custom_template_url = await config.custom_template_url()
+        custom_font_url = await config.custom_font_url()
+        log_channel_id = await config.log_channel_id()
+        weeks_to_show = await config.weeks_to_show()
+        
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        notify_role = ctx.guild.get_role(notify_role_id) if notify_role_id else None
+        log_channel = ctx.guild.get_channel(log_channel_id) if log_channel_id else None
+        
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        update_days_str = ", ".join(days[day] for day in update_days) if update_days else "None"
+        week_text = "week" if weeks_to_show == 1 else "weeks"
+        
+        embed = discord.Embed(
+            title="Twitch Schedule Settings",
+            color=discord.Color.purple()
+        )
+        
+        embed.add_field(name="Schedule Channel", value=channel.mention if channel else "Not set", inline=True)
+        embed.add_field(name="Twitch Username", value=twitch_username or "Not set", inline=True)
+        embed.add_field(name="Weeks to Show", value=f"{weeks_to_show} {week_text}", inline=True)
+        embed.add_field(name="Update Time (UK)", value=update_time or "Not set", inline=True)
+        embed.add_field(name="Update Days (UK)", value=update_days_str, inline=True)
+        embed.add_field(name="Notify Role", value=notify_role.mention if notify_role else "Not set", inline=True)
+        embed.add_field(name="Event Count", value=str(event_count), inline=True)
+        embed.add_field(name="Error Log Channel", value=log_channel.mention if log_channel else "Not set", inline=True)
+        embed.add_field(name="Custom Template", value=custom_template_url or "Default", inline=True)
+        embed.add_field(name="Custom Font", value=custom_font_url or "Default", inline=True)
+        
+        await ctx.send(embed=embed)
+
+    @twitchschedule.command(name="test")
+    async def test_post(self, ctx, channel: discord.TextChannel = None):
+        """Test post schedule to a channel"""
+        if channel is None:
+            channel = ctx.channel
+            
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        if not twitch_username:
+            await ctx.send("❌ Please run setup first!")
+            return
+            
+        async with ctx.channel.typing():
+            await ctx.send("🔄 Testing schedule post...")
+            try:
+                today_london = datetime.datetime.now(london_tz)
+                weeks_to_show = await self.config.guild(ctx.guild).weeks_to_show()
+                end_of_range = today_london + timedelta(days=max(14, weeks_to_show * 7 + 7))
+                all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_range)
+
+                if all_segments is not None:
+                    await self.post_schedule(channel, all_segments)
+                    await ctx.send("✅ Test complete!")
+                else:
+                    await ctx.send("❌ Failed to fetch schedule!")
+            except Exception as e:
+                await ctx.send("❌ Test failed. Check logs.")
+                await self._log_error(ctx.guild, f"Test error: {str(e)}")
+
+    @twitchschedule.command(name="reload")
+    async def reload_resources(self, ctx, template_url: str = None):
+        """Force redownload of resources"""
+        async with ctx.channel.typing():
+            await ctx.send("🔄 Redownloading resources...")
+            
+            # Clear existing files
+            for path in [self.font_path, self.template_path, self.story_template_path]:
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception as e:
+                        await self._log_error(ctx.guild, f"Failed to remove {path}: {e}")
+            
+            if template_url:
+                await self.config.guild(ctx.guild).custom_template_url.set(template_url)
+                await ctx.send(f"Set custom template URL to: {template_url}")
+            else:
+                await self.config.guild(ctx.guild).custom_template_url.set(None)
+                await ctx.send("Reverting to default template URL.")
+            
+            resources_ready = await self.ensure_resources(ctx.guild)
+            
+            if resources_ready:
+                await ctx.send("✅ Successfully redownloaded resources!")
+            else:
+                await ctx.send("❌ Failed to redownload some resources. Check logs.")
+
+    @twitchschedule.command(name="setfont")
+    async def set_font_url(self, ctx, font_url: str = None):
+        """Set or clear custom font URL"""
+        async with ctx.channel.typing():
+            if font_url and font_url.lower() == "none":
+                font_url = None
+
+            if font_url:
+                if not (font_url.startswith("http://") or font_url.startswith("https://")):
+                    await ctx.send("❌ Invalid URL. Please provide full HTTP/HTTPS URL.")
+                    return
+                await self.config.guild(ctx.guild).custom_font_url.set(font_url)
+                await ctx.send(f"✅ Font URL set to: {font_url}")
+            else:
+                await self.config.guild(ctx.guild).custom_font_url.set(None)
+                await ctx.send("✅ Font URL cleared. Using default.")
+            
+            if os.path.exists(self.font_path):
+                try:
+                    os.remove(self.font_path)
+                except Exception as e:
+                    await self._log_error(ctx.guild, f"Failed to remove font: {e}")
+
+            resources_ready = await self.ensure_resources(ctx.guild)
+            if resources_ready:
+                await ctx.send("✅ Font updated successfully!")
+            else:
+                await ctx.send("❌ Failed to download font. Check URL and logs.")
+
+    @twitchschedule.command(name="dryrun")
+    async def dry_run_schedule(self, ctx, channel: discord.TextChannel = None):
+        """Test schedule post without changes"""
+        if channel is None:
+            channel = ctx.channel
+        
+        twitch_username = await self.config.guild(ctx.guild).twitch_username()
+        if not twitch_username:
+            await ctx.send("❌ Please run setup first!")
+            return
+        
+        async with ctx.channel.typing():
+            await ctx.send("🧪 Starting dry run...")
+            try:
+                today_london = datetime.datetime.now(london_tz)
+                weeks_to_show = await self.config.guild(ctx.guild).weeks_to_show()
+                end_of_range = today_london + timedelta(days=max(14, weeks_to_show * 7 + 7))
+                all_segments = await self.get_schedule_for_range(twitch_username, today_london, end_of_range)
+
+                if all_segments is not None:
+                    await self.post_schedule(channel, all_segments, dry_run=True)
+                    await ctx.send("✅ Dry run complete!")
+                else:
+                    await ctx.send("❌ Failed to fetch schedule!")
+            except Exception as e:
+                await ctx.send("❌ Dry run failed. Check logs.")
+                await self._log_error(ctx.guild, f"Dry run error: {str(e)}")
+
+    @twitchschedule.command(name="setlogchannel")
+    async def set_log_channel(self, ctx, channel: discord.TextChannel = None):
+        """Set log channel for errors"""
+        if channel:
+            await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
+            await ctx.send(f"✅ Error logs will now be sent to {channel.mention}.")
+        else:
+            await self.config.guild(ctx.guild).log_channel_id.set(None)
+            await ctx.send("✅ Error log channel cleared.")
+
 
 async def setup(bot: Red):
     await bot.add_cog(TwitchSchedule(bot))
