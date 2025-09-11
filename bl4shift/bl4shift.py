@@ -323,12 +323,49 @@ class BL4ShiftCodes(commands.Cog):
         pass
     
     @bl4shift.command(name="setchannel")
-    async def set_channel(self, ctx, channel: discord.abc.GuildChannel):
-        """Set the channel to post SHIFT codes to. Can be a text channel or forum channel."""
+    async def set_channel(self, ctx, *, channel_input: str):
+        """Set the channel to post SHIFT codes to. Can be a text channel or forum channel.
+        Use channel mention (#channel), channel ID, or channel name."""
+        
+        channel = None
+        
+        # Try to find the channel by various methods
+        try:
+            # Remove # if present and clean the input
+            channel_input = channel_input.strip().lstrip('#')
+            
+            # Try by ID first (if it's all digits)
+            if channel_input.isdigit():
+                channel = ctx.guild.get_channel(int(channel_input))
+            
+            # If not found, try by name
+            if not channel:
+                for ch in ctx.guild.channels:
+                    if ch.name.lower() == channel_input.lower():
+                        channel = ch
+                        break
+            
+            # If still not found, try by mention format <#1234567890>
+            if not channel and channel_input.startswith('<#') and channel_input.endswith('>'):
+                channel_id = channel_input[2:-1]
+                if channel_id.isdigit():
+                    channel = ctx.guild.get_channel(int(channel_id))
+                    
+        except (ValueError, AttributeError):
+            pass
+        
+        if not channel:
+            await ctx.send(f"❌ Could not find channel: `{channel_input}`\n"
+                          f"Try using:\n"
+                          f"• Channel mention: `#channel-name`\n"
+                          f"• Channel ID: `1234567890123456789`\n"
+                          f"• Channel name: `channel-name`")
+            return
         
         # Check if it's a valid channel type
         if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
-            await ctx.send("❌ Please provide either a text channel or forum channel.")
+            await ctx.send(f"❌ `{channel.name}` is not a text channel or forum channel.\n"
+                          f"Channel type: {type(channel).__name__}")
             return
             
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
