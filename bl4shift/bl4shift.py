@@ -909,6 +909,24 @@ class BL4ShiftCodes(commands.Cog):
                 
         except Exception as e:
             await ctx.send(f"❌ Error posting manual code: {e}")
+    
+    @bl4shift.command(name="notifications")
+    async def toggle_notifications(self, ctx, enabled: bool = None):
+        """Enable/disable notifications when Reddit monitoring fails."""
+        if enabled is None:
+            # Show current status
+            notify_failures = await self.config.guild(ctx.guild).notify_on_failure()
+            status = "✅ Enabled" if notify_failures else "❌ Disabled"
+            await ctx.send(f"**Reddit failure notifications:** {status}")
+        else:
+            await self.config.guild(ctx.guild).notify_on_failure.set(enabled)
+            status = "enabled" if enabled else "disabled"
+            await ctx.send(f"✅ Reddit failure notifications {status}")
+            
+            if enabled:
+                await ctx.send("ℹ️ You'll be notified every 4 hours when Reddit monitoring fails.")
+            else:
+                await ctx.send("ℹ️ No notifications will be sent when Reddit is down.")
 
 async def setup(bot: Red):
     """Set up the cog."""
