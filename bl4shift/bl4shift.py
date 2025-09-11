@@ -323,24 +323,24 @@ class BL4ShiftCodes(commands.Cog):
         pass
     
     @bl4shift.command(name="setchannel")
-    async def set_channel(self, ctx, channel: discord.TextChannel = None, *, forum_channel: discord.ForumChannel = None):
+    async def set_channel(self, ctx, channel: discord.abc.GuildChannel):
         """Set the channel to post SHIFT codes to. Can be a text channel or forum channel."""
-        target_channel = channel or forum_channel
         
-        if not target_channel:
+        # Check if it's a valid channel type
+        if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
             await ctx.send("❌ Please provide either a text channel or forum channel.")
             return
             
-        await self.config.guild(ctx.guild).channel_id.set(target_channel.id)
+        await self.config.guild(ctx.guild).channel_id.set(channel.id)
         
         # Set forum mode based on channel type
-        is_forum = isinstance(target_channel, discord.ForumChannel)
+        is_forum = isinstance(channel, discord.ForumChannel)
         await self.config.guild(ctx.guild).use_forum.set(is_forum)
         
         if is_forum:
-            await ctx.send(f"✅ SHIFT codes will now be posted to forum {target_channel.mention}")
+            await ctx.send(f"✅ SHIFT codes will now be posted to forum {channel.mention}")
         else:
-            await ctx.send(f"✅ SHIFT codes will now be posted to {target_channel.mention}")
+            await ctx.send(f"✅ SHIFT codes will now be posted to {channel.mention}")
         
         # Restart monitoring with new config
         await self._start_monitoring_tasks()
