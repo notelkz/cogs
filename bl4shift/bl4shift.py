@@ -1,8 +1,4 @@
-@bl4shift.command(name="clearcache")
-    async def clear_cache(self, ctx):
-        """Clear the cache of posted codes."""
-        await self.config.guild(ctx.guild).posted_codes.set({})
-        await ctx.send("✅ Posted codes cache cleared.")import asyncio
+import asyncio
 import re
 import logging
 from datetime import datetime, timezone
@@ -29,7 +25,11 @@ class BL4ShiftCodes(commands.Cog):
             "subreddit": "borderlands",
             "check_interval": 300,  # 5 minutes
             "keywords": ["shift", "code", "borderlands 4", "bl4", "golden key"],
-            "posted_codes": {}  # Track posted codes to avoid duplicates
+            "posted_codes": {},  # Track posted codes to avoid duplicates
+            "use_forum": False,  # Whether to use forum channels
+            "thread_name_template": "SHIFT Codes - {date}",  # Template for thread names
+            "create_new_thread_daily": True,  # Create new thread each day
+            "active_thread_id": None  # Current active thread
         }
         
         self.config.register_guild(**default_guild)
@@ -113,6 +113,100 @@ class BL4ShiftCodes(commands.Cog):
         
         return has_bl4 and has_shift
     
+    async def _get_or_create_thread(self, guild, channel, guild_config) -> Optional[discord.Thread]:
+        """Get existing thread or create new one for posting codes."""
+        use_forum = await guild_config.use_forum()
+        if not use_forum:
+            return None
+            
+        # Check if channel is a forum
+        if not isinstance(channel, discord.ForumChannel):
+            log.warning(f"Channel {channel.id} is not a forum channel but forum mode is enabled")
+            return None
+            
+        active_thread_id = await guild_config.active_thread_id()
+        create_new_daily = await guild_config.create_new_thread_daily()
+        thread_template = await guild_config.thread_name_template()
+        
+        # Try to get existing active thread
+        if active_thread_id:
+            try:
+                thread = channel.get_thread(active_thread_id)
+                if thread and not thread.archived:
+                    # Check if we should create a new thread (daily option)
+                    if create_new_daily:
+                        # Get thread creation date
+                        thread_date = thread.created_at.date()
+                        today = datetime.now(timezone.utc).date()
+                        
+                        if thread_date < today:
+                            # Archive old thread and create new one
+                            try:
+                                await thread.edit(archived=True)
+                            except:
+                                pass  # Might not have permissions
+                            thread = None
+                        else:
+                            return thread
+                    else:
+                        return thread
+            except:
+                # Thread might not exist anymore
+                pass
+        
+        # Create new thread
+        try:
+            current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            thread_name = thread_template.format(date=current_date)
+            
+            # Create initial embed for the thread
+            embed = discord.Embed(
+                title="🔑 Borderlands 4 SHIFT Codes",
+                description="This thread will be updated with new SHIFT codes as they're found!",
+                color=discord.Color.gold()
+            )
+            embed.add_field(
+                name="How to Redeem",
+                value="Visit [shift.gearboxsoftware.com](https://shift.gearboxsoftware.com) or use the in-game menu",
+                inline=False
+            )
+            embed.set_footer(text="Auto-managed by BL4 SHIFT Monitor")
+            
+            # Create thread with initial message
+            thread = await channel.create_thread(
+                name=thread_name,
+                embed=embed,
+                reason="Auto-created for SHIFT code monitoring"
+            )
+            
+            # Update config with new thread ID
+            await guild_config.active_thread_id.set(thread.id)
+            
+            log.info(f"Created new SHIFT codes thread: {thread.name} ({thread.id})")
+            return thread
+            
+        except Exception as e:
+            log.error(f"Failed to create thread in forum {channel.id}: {e}")
+            return None
+    
+    async def _post_to_channel_or_thread(self, guild, channel, embed: discord.Embed, guild_config):
+        """Post embed to either regular channel or forum thread."""
+        use_forum = await guild_config.use_forum()
+        
+        if use_forum and isinstance(channel, discord.ForumChannel):
+            # Post to forum thread
+            thread = await self._get_or_create_thread(guild, channel, guild_config)
+            if thread:
+                await thread.send(embed=embed)
+                return thread
+            else:
+                log.error(f"Could not get or create thread in forum {channel.id}")
+                return None
+        else:
+            # Post to regular channel
+            await channel.send(embed=embed)
+            return channel
+    
     async def _create_embed(self, post_data: dict, codes: Set[str]) -> discord.Embed:
         """Create a Discord embed for the SHIFT code post."""
         post = post_data.get("data", {})
@@ -192,16 +286,17 @@ class BL4ShiftCodes(commands.Cog):
                             if new_codes:
                                 try:
                                     embed = await self._create_embed(post_data, codes)
-                                    await channel.send(embed=embed)
+                                    result = await self._post_to_channel_or_thread(guild, channel, embed, guild_config)
                                     
-                                    # Mark as posted
-                                    posted_codes[post_id] = {
-                                        "codes": list(codes),
-                                        "timestamp": datetime.now(timezone.utc).isoformat()
-                                    }
-                                    await guild_config.posted_codes.set(posted_codes)
-                                    
-                                    log.info(f"Posted SHIFT codes to {guild.name}: {codes}")
+                                    if result:  # Successfully posted
+                                        # Mark as posted
+                                        posted_codes[post_id] = {
+                                            "codes": list(codes),
+                                            "timestamp": datetime.now(timezone.utc).isoformat()
+                                        }
+                                        await guild_config.posted_codes.set(posted_codes)
+                                        
+                                        log.info(f"Posted SHIFT codes to {guild.name}: {codes}")
                                     
                                 except Exception as e:
                                     log.error(f"Error posting to channel {channel_id}: {e}")
@@ -228,10 +323,24 @@ class BL4ShiftCodes(commands.Cog):
         pass
     
     @bl4shift.command(name="setchannel")
-    async def set_channel(self, ctx, channel: discord.TextChannel):
-        """Set the channel to post SHIFT codes to."""
-        await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"✅ SHIFT codes will now be posted to {channel.mention}")
+    async def set_channel(self, ctx, channel: discord.TextChannel = None, *, forum_channel: discord.ForumChannel = None):
+        """Set the channel to post SHIFT codes to. Can be a text channel or forum channel."""
+        target_channel = channel or forum_channel
+        
+        if not target_channel:
+            await ctx.send("❌ Please provide either a text channel or forum channel.")
+            return
+            
+        await self.config.guild(ctx.guild).channel_id.set(target_channel.id)
+        
+        # Set forum mode based on channel type
+        is_forum = isinstance(target_channel, discord.ForumChannel)
+        await self.config.guild(ctx.guild).use_forum.set(is_forum)
+        
+        if is_forum:
+            await ctx.send(f"✅ SHIFT codes will now be posted to forum {target_channel.mention}")
+        else:
+            await ctx.send(f"✅ SHIFT codes will now be posted to {target_channel.mention}")
         
         # Restart monitoring with new config
         await self._start_monitoring_tasks()
@@ -278,6 +387,108 @@ class BL4ShiftCodes(commands.Cog):
         await self.config.guild(ctx.guild).keywords.set(keywords)
         await ctx.send(f"✅ Removed keyword: {keyword}")
     
+    @bl4shift.command(name="forum")
+    async def forum_settings(self, ctx, enabled: bool = None):
+        """Enable/disable forum mode or show current status."""
+        if enabled is None:
+            # Show current status
+            use_forum = await self.config.guild(ctx.guild).use_forum()
+            channel_id = await self.config.guild(ctx.guild).channel_id()
+            channel = ctx.guild.get_channel(channel_id) if channel_id else None
+            
+            status = "✅ Enabled" if use_forum else "❌ Disabled"
+            channel_type = "Forum" if isinstance(channel, discord.ForumChannel) else "Text"
+            
+            embed = discord.Embed(title="Forum Mode Status", color=discord.Color.blue())
+            embed.add_field(name="Forum Mode", value=status, inline=True)
+            embed.add_field(name="Channel Type", value=channel_type, inline=True)
+            embed.add_field(name="Channel", value=channel.mention if channel else "Not set", inline=True)
+            
+            if use_forum:
+                thread_template = await self.config.guild(ctx.guild).thread_name_template()
+                create_daily = await self.config.guild(ctx.guild).create_new_thread_daily()
+                active_thread_id = await self.config.guild(ctx.guild).active_thread_id()
+                
+                embed.add_field(name="Thread Template", value=f"`{thread_template}`", inline=False)
+                embed.add_field(name="Daily Threads", value="✅ Yes" if create_daily else "❌ No", inline=True)
+                
+                if active_thread_id and isinstance(channel, discord.ForumChannel):
+                    thread = channel.get_thread(active_thread_id)
+                    embed.add_field(
+                        name="Active Thread", 
+                        value=thread.mention if thread else "None/Archived", 
+                        inline=True
+                    )
+            
+            await ctx.send(embed=embed)
+        else:
+            # Set forum mode
+            await self.config.guild(ctx.guild).use_forum.set(enabled)
+            status = "enabled" if enabled else "disabled"
+            await ctx.send(f"✅ Forum mode {status}")
+            
+            if enabled:
+                channel_id = await self.config.guild(ctx.guild).channel_id()
+                channel = ctx.guild.get_channel(channel_id) if channel_id else None
+                if channel and not isinstance(channel, discord.ForumChannel):
+                    await ctx.send("⚠️ Warning: Current channel is not a forum channel. Use `setchannel` with a forum channel.")
+    
+    @bl4shift.command(name="threadtemplate")
+    async def set_thread_template(self, ctx, *, template: str):
+        """Set the template for thread names. Use {date} for current date."""
+        await self.config.guild(ctx.guild).thread_name_template.set(template)
+        await ctx.send(f"✅ Thread name template set to: `{template}`")
+        
+        # Show example
+        example_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        example_name = template.format(date=example_date)
+        await ctx.send(f"Example thread name: `{example_name}`")
+    
+    @bl4shift.command(name="dailythreads")
+    async def toggle_daily_threads(self, ctx, enabled: bool):
+        """Enable/disable creating new threads daily."""
+        await self.config.guild(ctx.guild).create_new_thread_daily.set(enabled)
+        status = "enabled" if enabled else "disabled"
+        await ctx.send(f"✅ Daily thread creation {status}")
+        
+        if not enabled:
+            await ctx.send("ℹ️ SHIFT codes will continue using the same thread until manually changed.")
+    
+    @bl4shift.command(name="newthread")
+    async def create_new_thread(self, ctx):
+        """Manually create a new thread (forum mode only)."""
+        use_forum = await self.config.guild(ctx.guild).use_forum()
+        if not use_forum:
+            await ctx.send("❌ Forum mode is not enabled. Use `[p]bl4shift forum true` first.")
+            return
+            
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        
+        if not channel or not isinstance(channel, discord.ForumChannel):
+            await ctx.send("❌ No forum channel configured. Use `[p]bl4shift setchannel` with a forum channel.")
+            return
+        
+        guild_config = self.config.guild(ctx.guild)
+        
+        # Archive current thread if exists
+        active_thread_id = await guild_config.active_thread_id()
+        if active_thread_id:
+            try:
+                old_thread = channel.get_thread(active_thread_id)
+                if old_thread and not old_thread.archived:
+                    await old_thread.edit(archived=True)
+                    await ctx.send(f"📁 Archived old thread: {old_thread.name}")
+            except:
+                pass
+        
+        # Create new thread
+        thread = await self._get_or_create_thread(ctx.guild, channel, guild_config)
+        if thread:
+            await ctx.send(f"✅ Created new thread: {thread.mention}")
+        else:
+            await ctx.send("❌ Failed to create new thread.")
+    
     @bl4shift.command(name="settings")
     async def show_settings(self, ctx):
         """Show current configuration."""
@@ -288,12 +499,37 @@ class BL4ShiftCodes(commands.Cog):
         subreddit = await guild_config.subreddit()
         interval = await guild_config.check_interval()
         keywords = await guild_config.keywords()
+        use_forum = await guild_config.use_forum()
         
         embed = discord.Embed(title="BL4 SHIFT Monitor Settings", color=discord.Color.blue())
-        embed.add_field(name="Channel", value=channel.mention if channel else "Not set", inline=True)
+        
+        # Basic settings
+        channel_type = "Forum" if isinstance(channel, discord.ForumChannel) else "Text"
+        embed.add_field(name="Channel", value=f"{channel.mention} ({channel_type})" if channel else "Not set", inline=True)
         embed.add_field(name="Subreddit", value=f"r/{subreddit}", inline=True)
         embed.add_field(name="Check Interval", value=f"{interval // 60} minute(s)", inline=True)
         embed.add_field(name="Keywords", value=", ".join(keywords), inline=False)
+        
+        # Forum settings
+        if use_forum:
+            thread_template = await guild_config.thread_name_template()
+            create_daily = await guild_config.create_new_thread_daily()
+            active_thread_id = await guild_config.active_thread_id()
+            
+            embed.add_field(name="Forum Mode", value="✅ Enabled", inline=True)
+            embed.add_field(name="Thread Template", value=f"`{thread_template}`", inline=True)
+            embed.add_field(name="Daily Threads", value="✅ Yes" if create_daily else "❌ No", inline=True)
+            
+            if active_thread_id and isinstance(channel, discord.ForumChannel):
+                thread = channel.get_thread(active_thread_id)
+                embed.add_field(
+                    name="Active Thread", 
+                    value=thread.mention if thread else "None/Archived", 
+                    inline=False
+                )
+        else:
+            embed.add_field(name="Forum Mode", value="❌ Disabled", inline=True)
+        
         embed.add_field(name="Status", value="✅ Active" if channel else "❌ Inactive", inline=True)
         
         await ctx.send(embed=embed)
