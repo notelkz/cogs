@@ -1,8 +1,10 @@
 import asyncio
 import re
 import logging
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from typing import Optional, Set, Dict, Any
+from typing import Optional, Set, Dict, Any, List
+import hashlib
 
 import aiohttp
 import discord
@@ -13,7 +15,7 @@ from redbot.core.utils.chat_formatting import box, pagify
 log = logging.getLogger("red.bl4shift")
 
 class BL4ShiftCodes(commands.Cog):
-    """Monitor subreddit for Borderlands 4 SHIFT codes and post to Discord."""
+    """Monitor multiple sources for Borderlands 4 SHIFT codes and post to Discord."""
     
     def __init__(self, bot: Red):
         self.bot = bot
@@ -22,25 +24,61 @@ class BL4ShiftCodes(commands.Cog):
         # Default settings
         default_guild = {
             "channel_id": None,
-            "subreddit": "borderlands",
             "check_interval": 300,  # 5 minutes
             "keywords": ["shift", "code", "borderlands 4", "bl4", "golden key"],
             "posted_codes": {},  # Track posted codes to avoid duplicates
             "use_forum": False,  # Whether to use forum channels
             "thread_name_template": "SHIFT Codes - {date}",  # Template for thread names
-            "create_new_thread_daily": True,  # Create new thread each day
-            "active_thread_id": None  # Current active thread
+            "create_new_thread_daily": False,  # Create new thread each day
+            "active_thread_id": None,  # Current active thread
+            "enabled_sources": {
+                "gearbox_rss": True,
+                "borderlands_rss": True,
+                "shift_codes_rss": True,
+                "gaming_news_rss": True,
+                "twitter_rss": True
+            },
+            "last_check_times": {}  # Track last check time per source
         }
         
         self.config.register_guild(**default_guild)
         
-        # SHIFT code patterns (common formats)
+        # SHIFT code patterns (improved)
         self.shift_patterns = [
             r'[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}',  # Standard format
-            r'[A-Z0-9]{25}',  # No dashes
             r'(?:SHIFT|CODE)[\s:]*([A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5})',
-            r'(?:SHIFT|CODE)[\s:]*([A-Z0-9]{25})'
+            r'(?:SHIFT|CODE)[\s:]*([A-Z0-9]{25})',  # No dashes
+            r'\b[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}\b'  # Word boundary
         ]
+        
+        # Sources to monitor
+        self.sources = {
+            "gearbox_rss": {
+                "name": "Gearbox Official Blog",
+                "url": "https://gearboxsoftware.com/feed/",
+                "type": "rss"
+            },
+            "borderlands_rss": {
+                "name": "Borderlands Reddit RSS",
+                "url": "https://www.reddit.com/r/borderlands.rss",
+                "type": "rss"
+            },
+            "shift_codes_rss": {
+                "name": "BorderlandsShiftCodes Reddit RSS", 
+                "url": "https://www.reddit.com/r/BorderlandsShiftCodes.rss",
+                "type": "rss"
+            },
+            "gaming_news_rss": {
+                "name": "PC Gamer RSS",
+                "url": "https://www.pcgamer.com/rss/",
+                "type": "rss"
+            },
+            "twitter_rss": {
+                "name": "Gearbox Twitter RSS",
+                "url": "https://rsshub.app/twitter/user/GearboxOfficial",
+                "type": "rss"
+            }
+        }
         
         self.session: Optional[aiohttp.ClientSession] = None
         self.monitor_task: Optional[asyncio.Task] = None
@@ -48,7 +86,6 @@ class BL4ShiftCodes(commands.Cog):
     async def cog_load(self):
         """Initialize the cog."""
         self.session = aiohttp.ClientSession()
-        # Start monitoring for all guilds that have it configured
         await self._start_monitoring_tasks()
         
     async def cog_unload(self):
@@ -63,23 +100,68 @@ class BL4ShiftCodes(commands.Cog):
         if self.monitor_task and not self.monitor_task.done():
             self.monitor_task.cancel()
         
-        self.monitor_task = asyncio.create_task(self._monitor_reddit())
+        self.monitor_task = asyncio.create_task(self._monitor_sources())
         
-    async def _get_reddit_posts(self, subreddit: str, limit: int = 25) -> list:
-        """Fetch recent posts from subreddit using Reddit JSON API."""
-        url = f"https://www.reddit.com/r/{subreddit}/new.json?limit={limit}"
-        headers = {"User-Agent": "RedBot SHIFT Code Monitor 1.0"}
+    async def _fetch_rss_feed(self, url: str, source_name: str) -> List[Dict[str, Any]]:
+        """Fetch and parse RSS feed."""
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/rss+xml, application/xml, text/xml, text/plain, */*"
+        }
         
         try:
-            async with self.session.get(url, headers=headers) as response:
+            async with self.session.get(url, headers=headers, timeout=30) as response:
                 if response.status == 200:
-                    data = await response.json()
-                    return data.get("data", {}).get("children", [])
+                    content = await response.text()
+                    return self._parse_rss(content, source_name)
                 else:
-                    log.warning(f"Reddit API returned status {response.status}")
+                    log.warning(f"RSS fetch failed for {source_name}: HTTP {response.status}")
                     return []
+        except asyncio.TimeoutError:
+            log.warning(f"RSS fetch timeout for {source_name}")
+            return []
         except Exception as e:
-            log.error(f"Error fetching Reddit posts: {e}")
+            log.error(f"RSS fetch error for {source_name}: {e}")
+            return []
+    
+    def _parse_rss(self, content: str, source_name: str) -> List[Dict[str, Any]]:
+        """Parse RSS XML content."""
+        try:
+            root = ET.fromstring(content)
+            items = []
+            
+            # Handle different RSS formats
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                description_elem = item.find('description')
+                link_elem = item.find('link')
+                pubdate_elem = item.find('pubDate')
+                
+                title = title_elem.text if title_elem is not None else ""
+                description = description_elem.text if description_elem is not None else ""
+                link = link_elem.text if link_elem is not None else ""
+                pubdate = pubdate_elem.text if pubdate_elem is not None else ""
+                
+                # Create unique ID for this item
+                item_id = hashlib.md5(f"{title}{link}{source_name}".encode()).hexdigest()
+                
+                items.append({
+                    "id": item_id,
+                    "title": title,
+                    "description": description,
+                    "link": link,
+                    "pubdate": pubdate,
+                    "source": source_name
+                })
+            
+            log.info(f"Parsed {len(items)} items from {source_name}")
+            return items
+            
+        except ET.ParseError as e:
+            log.error(f"XML parse error for {source_name}: {e}")
+            return []
+        except Exception as e:
+            log.error(f"RSS parse error for {source_name}: {e}")
             return []
     
     def _extract_shift_codes(self, text: str) -> Set[str]:
@@ -90,7 +172,7 @@ class BL4ShiftCodes(commands.Cog):
         for pattern in self.shift_patterns:
             matches = re.findall(pattern, text_upper, re.IGNORECASE)
             for match in matches:
-                # Normalize code format (add dashes if missing)
+                # Handle tuple results from capture groups
                 if isinstance(match, tuple):
                     match = match[0] if match else ""
                 
@@ -103,7 +185,7 @@ class BL4ShiftCodes(commands.Cog):
         return codes
     
     def _is_bl4_related(self, title: str, text: str, keywords: list) -> bool:
-        """Check if post is related to Borderlands 4."""
+        """Check if content is related to Borderlands 4."""
         combined_text = f"{title} {text}".lower()
         bl4_keywords = ["borderlands 4", "bl4", "borderlands4"]
         
@@ -119,7 +201,6 @@ class BL4ShiftCodes(commands.Cog):
         if not use_forum:
             return None
             
-        # Check if channel is a forum
         if not isinstance(channel, discord.ForumChannel):
             log.warning(f"Channel {channel.id} is not a forum channel but forum mode is enabled")
             return None
@@ -133,25 +214,21 @@ class BL4ShiftCodes(commands.Cog):
             try:
                 thread = channel.get_thread(active_thread_id)
                 if thread and not thread.archived:
-                    # Check if we should create a new thread (daily option)
                     if create_new_daily:
-                        # Get thread creation date
                         thread_date = thread.created_at.date()
                         today = datetime.now(timezone.utc).date()
                         
                         if thread_date < today:
-                            # Archive old thread and create new one
                             try:
                                 await thread.edit(archived=True)
                             except:
-                                pass  # Might not have permissions
+                                pass
                             thread = None
                         else:
                             return thread
                     else:
                         return thread
             except:
-                # Thread might not exist anymore
                 pass
         
         # Create new thread
@@ -159,11 +236,15 @@ class BL4ShiftCodes(commands.Cog):
             current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             thread_name = thread_template.format(date=current_date)
             
-            # Create initial embed for the thread
             embed = discord.Embed(
                 title="🔑 Borderlands 4 SHIFT Codes",
-                description="This thread will be updated with new SHIFT codes as they're found!",
+                description="This thread will be updated with new SHIFT codes as they're found from multiple sources!",
                 color=discord.Color.gold()
+            )
+            embed.add_field(
+                name="Monitored Sources",
+                value="• Gearbox Official Blog\n• Reddit Communities\n• Gaming News Sites\n• Official Twitter",
+                inline=False
             )
             embed.add_field(
                 name="How to Redeem",
@@ -172,16 +253,13 @@ class BL4ShiftCodes(commands.Cog):
             )
             embed.set_footer(text="Auto-managed by BL4 SHIFT Monitor")
             
-            # Create thread with initial message
             thread = await channel.create_thread(
                 name=thread_name,
                 embed=embed,
                 reason="Auto-created for SHIFT code monitoring"
             )
             
-            # Update config with new thread ID
             await guild_config.active_thread_id.set(thread.id)
-            
             log.info(f"Created new SHIFT codes thread: {thread.name} ({thread.id})")
             return thread
             
@@ -194,7 +272,6 @@ class BL4ShiftCodes(commands.Cog):
         use_forum = await guild_config.use_forum()
         
         if use_forum and isinstance(channel, discord.ForumChannel):
-            # Post to forum thread
             thread = await self._get_or_create_thread(guild, channel, guild_config)
             if thread:
                 await thread.send(embed=embed)
@@ -203,26 +280,22 @@ class BL4ShiftCodes(commands.Cog):
                 log.error(f"Could not get or create thread in forum {channel.id}")
                 return None
         else:
-            # Post to regular channel
             await channel.send(embed=embed)
             return channel
     
-    async def _create_embed(self, post_data: dict, codes: Set[str]) -> discord.Embed:
+    async def _create_embed(self, item_data: dict, codes: Set[str], source_name: str) -> discord.Embed:
         """Create a Discord embed for the SHIFT code post."""
-        post = post_data.get("data", {})
-        title = post.get("title", "SHIFT Code Found")
-        author = post.get("author", "Unknown")
-        url = f"https://reddit.com{post.get('permalink', '')}"
-        created_utc = post.get("created_utc", 0)
+        title = item_data.get("title", "SHIFT Code Found")
+        link = item_data.get("link", "")
         
         embed = discord.Embed(
             title="🔑 Borderlands 4 SHIFT Code(s) Found!",
             color=discord.Color.gold(),
-            timestamp=datetime.fromtimestamp(created_utc, timezone.utc)
+            timestamp=datetime.now(timezone.utc)
         )
         
-        embed.add_field(name="Reddit Post", value=f"[{title}]({url})", inline=False)
-        embed.add_field(name="Author", value=f"u/{author}", inline=True)
+        embed.add_field(name="Source", value=f"[{title}]({link})" if link else title, inline=False)
+        embed.add_field(name="Found via", value=source_name, inline=True)
         
         # Add codes
         codes_text = "\n".join(f"`{code}`" for code in sorted(codes))
@@ -237,13 +310,12 @@ class BL4ShiftCodes(commands.Cog):
         embed.set_footer(text="Auto-posted by BL4 SHIFT Monitor")
         return embed
     
-    async def _monitor_reddit(self):
-        """Main monitoring loop."""
+    async def _monitor_sources(self):
+        """Main monitoring loop for all sources."""
         await self.bot.wait_until_ready()
         
         while not self.bot.is_closed():
             try:
-                # Check all configured guilds
                 for guild in self.bot.guilds:
                     guild_config = self.config.guild(guild)
                     
@@ -255,66 +327,75 @@ class BL4ShiftCodes(commands.Cog):
                     if not channel:
                         continue
                     
-                    subreddit = await guild_config.subreddit()
                     keywords = await guild_config.keywords()
                     posted_codes = await guild_config.posted_codes()
+                    enabled_sources = await guild_config.enabled_sources()
+                    last_check_times = await guild_config.last_check_times()
                     
-                    # Fetch recent posts
-                    posts = await self._get_reddit_posts(subreddit)
-                    
-                    for post_data in posts:
-                        post = post_data.get("data", {})
-                        post_id = post.get("id", "")
-                        title = post.get("title", "")
-                        selftext = post.get("selftext", "")
-                        
-                        # Skip if already processed
-                        if post_id in posted_codes:
+                    # Check each enabled source
+                    for source_id, source_info in self.sources.items():
+                        if not enabled_sources.get(source_id, True):
                             continue
                         
-                        # Check if BL4 related
-                        if not self._is_bl4_related(title, selftext, keywords):
-                            continue
-                        
-                        # Extract SHIFT codes
-                        codes = self._extract_shift_codes(f"{title} {selftext}")
-                        
-                        if codes:
-                            # Check if we've already posted these specific codes
-                            new_codes = codes - set(posted_codes.get(post_id, {}).get("codes", []))
+                        try:
+                            log.info(f"Checking {source_info['name']} for guild {guild.name}")
+                            items = await self._fetch_rss_feed(source_info['url'], source_info['name'])
                             
-                            if new_codes:
-                                try:
-                                    embed = await self._create_embed(post_data, codes)
-                                    result = await self._post_to_channel_or_thread(guild, channel, embed, guild_config)
-                                    
-                                    if result:  # Successfully posted
-                                        # Mark as posted
-                                        posted_codes[post_id] = {
-                                            "codes": list(codes),
-                                            "timestamp": datetime.now(timezone.utc).isoformat()
-                                        }
-                                        await guild_config.posted_codes.set(posted_codes)
+                            for item in items:
+                                item_id = item.get("id", "")
+                                title = item.get("title", "")
+                                description = item.get("description", "")
+                                
+                                # Skip if already processed
+                                if item_id in posted_codes:
+                                    continue
+                                
+                                # Check if BL4 related
+                                if not self._is_bl4_related(title, description, keywords):
+                                    continue
+                                
+                                # Extract SHIFT codes
+                                codes = self._extract_shift_codes(f"{title} {description}")
+                                
+                                if codes:
+                                    try:
+                                        embed = await self._create_embed(item, codes, source_info['name'])
+                                        result = await self._post_to_channel_or_thread(guild, channel, embed, guild_config)
                                         
-                                        log.info(f"Posted SHIFT codes to {guild.name}: {codes}")
-                                    
-                                except Exception as e:
-                                    log.error(f"Error posting to channel {channel_id}: {e}")
+                                        if result:
+                                            # Mark as posted
+                                            posted_codes[item_id] = {
+                                                "codes": list(codes),
+                                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                                "source": source_info['name']
+                                            }
+                                            await guild_config.posted_codes.set(posted_codes)
+                                            
+                                            log.info(f"Posted SHIFT codes from {source_info['name']} to {guild.name}: {codes}")
+                                            
+                                    except Exception as e:
+                                        log.error(f"Error posting codes from {source_info['name']}: {e}")
+                        
+                        except Exception as e:
+                            log.error(f"Error checking {source_info['name']}: {e}")
+                        
+                        # Small delay between sources
+                        await asyncio.sleep(2)
                 
-                # Wait before next check
+                # Wait before next check cycle
                 interval = 300  # Default 5 minutes
                 if self.bot.guilds:
-                    # Use the first configured guild's interval
                     for guild in self.bot.guilds:
                         interval = await self.config.guild(guild).check_interval()
                         if interval:
                             break
                 
+                log.info(f"Completed check cycle, waiting {interval} seconds")
                 await asyncio.sleep(interval)
                 
             except Exception as e:
                 log.error(f"Error in monitoring loop: {e}")
-                await asyncio.sleep(60)  # Wait 1 minute on error
+                await asyncio.sleep(60)
     
     @commands.group(name="bl4shift")
     @checks.admin_or_permissions(manage_guild=True)
@@ -322,61 +403,24 @@ class BL4ShiftCodes(commands.Cog):
         """Borderlands 4 SHIFT code monitoring commands."""
         pass
     
-    @bl4shift.command(name="listchannels")
-    async def list_channels(self, ctx):
-        """List all channels the bot can see to help with setup."""
-        text_channels = []
-        forum_channels = []
-        
-        for channel in ctx.guild.channels:
-            if isinstance(channel, discord.TextChannel):
-                text_channels.append(f"• {channel.mention} (ID: {channel.id})")
-            elif isinstance(channel, discord.ForumChannel):
-                forum_channels.append(f"• {channel.mention} (ID: {channel.id})")
-        
-        embed = discord.Embed(title="Available Channels", color=discord.Color.blue())
-        
-        if text_channels:
-            text_list = "\n".join(text_channels[:10])  # Limit to 10 to avoid embed limits
-            if len(text_channels) > 10:
-                text_list += f"\n... and {len(text_channels) - 10} more"
-            embed.add_field(name="Text Channels", value=text_list, inline=False)
-        
-        if forum_channels:
-            forum_list = "\n".join(forum_channels[:10])
-            if len(forum_channels) > 10:
-                forum_list += f"\n... and {len(forum_channels) - 10} more"
-            embed.add_field(name="Forum Channels", value=forum_list, inline=False)
-        
-        if not text_channels and not forum_channels:
-            embed.description = "No text or forum channels found that the bot can access."
-        
-        await ctx.send(embed=embed)
-    
     @bl4shift.command(name="setchannel")
     async def set_channel(self, ctx, *, channel_input: str):
-        """Set the channel to post SHIFT codes to. Can be a text channel or forum channel.
-        Use channel mention (#channel), channel ID, or channel name."""
+        """Set the channel to post SHIFT codes to. Can be a text channel or forum channel."""
         
         channel = None
         
-        # Try to find the channel by various methods
         try:
-            # Remove # if present and clean the input
             channel_input = channel_input.strip().lstrip('#')
             
-            # Try by ID first (if it's all digits)
             if channel_input.isdigit():
                 channel = ctx.guild.get_channel(int(channel_input))
             
-            # If not found, try by name
             if not channel:
                 for ch in ctx.guild.channels:
                     if ch.name.lower() == channel_input.lower():
                         channel = ch
                         break
             
-            # If still not found, try by mention format <#1234567890>
             if not channel and channel_input.startswith('<#') and channel_input.endswith('>'):
                 channel_id = channel_input[2:-1]
                 if channel_id.isdigit():
@@ -386,22 +430,15 @@ class BL4ShiftCodes(commands.Cog):
             pass
         
         if not channel:
-            await ctx.send(f"❌ Could not find channel: `{channel_input}`\n"
-                          f"Try using:\n"
-                          f"• Channel mention: `#channel-name`\n"
-                          f"• Channel ID: `1234567890123456789`\n"
-                          f"• Channel name: `channel-name`")
+            await ctx.send(f"❌ Could not find channel: `{channel_input}`")
             return
         
-        # Check if it's a valid channel type
         if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
-            await ctx.send(f"❌ `{channel.name}` is not a text channel or forum channel.\n"
-                          f"Channel type: {type(channel).__name__}")
+            await ctx.send(f"❌ `{channel.name}` is not a text channel or forum channel.")
             return
             
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
         
-        # Set forum mode based on channel type
         is_forum = isinstance(channel, discord.ForumChannel)
         await self.config.guild(ctx.guild).use_forum.set(is_forum)
         
@@ -410,17 +447,46 @@ class BL4ShiftCodes(commands.Cog):
         else:
             await ctx.send(f"✅ SHIFT codes will now be posted to {channel.mention}")
         
-        # Restart monitoring with new config
         await self._start_monitoring_tasks()
     
-    @bl4shift.command(name="setsubreddit")
-    async def set_subreddit(self, ctx, subreddit: str):
-        """Set the subreddit to monitor (without r/)."""
-        subreddit = subreddit.replace("r/", "").replace("/", "")
-        await self.config.guild(ctx.guild).subreddit.set(subreddit)
-        await ctx.send(f"✅ Now monitoring r/{subreddit}")
+    @bl4shift.command(name="sources")
+    async def manage_sources(self, ctx, source_name: str = None, enabled: bool = None):
+        """Enable/disable monitoring sources or show current status."""
+        enabled_sources = await self.config.guild(ctx.guild).enabled_sources()
         
-        # Restart monitoring
+        if source_name is None:
+            # Show all sources
+            embed = discord.Embed(title="Monitoring Sources", color=discord.Color.blue())
+            
+            for source_id, source_info in self.sources.items():
+                status = "✅ Enabled" if enabled_sources.get(source_id, True) else "❌ Disabled"
+                embed.add_field(
+                    name=source_info['name'],
+                    value=f"{status}\n`{source_id}`",
+                    inline=True
+                )
+            
+            embed.set_footer(text="Use: !bl4shift sources <source_id> <true/false> to toggle")
+            await ctx.send(embed=embed)
+            return
+        
+        if source_name not in self.sources:
+            await ctx.send(f"❌ Unknown source: `{source_name}`\nAvailable: {', '.join(self.sources.keys())}")
+            return
+        
+        if enabled is None:
+            # Show specific source status
+            status = "✅ Enabled" if enabled_sources.get(source_name, True) else "❌ Disabled"
+            await ctx.send(f"**{self.sources[source_name]['name']}:** {status}")
+            return
+        
+        # Toggle source
+        enabled_sources[source_name] = enabled
+        await self.config.guild(ctx.guild).enabled_sources.set(enabled_sources)
+        
+        status = "enabled" if enabled else "disabled"
+        await ctx.send(f"✅ {self.sources[source_name]['name']} {status}")
+        
         await self._start_monitoring_tasks()
     
     @bl4shift.command(name="setinterval")
@@ -433,7 +499,6 @@ class BL4ShiftCodes(commands.Cog):
         await self.config.guild(ctx.guild).check_interval.set(minutes * 60)
         await ctx.send(f"✅ Check interval set to {minutes} minute(s)")
         
-        # Restart monitoring
         await self._start_monitoring_tasks()
     
     @bl4shift.command(name="addkeyword")
@@ -459,7 +524,6 @@ class BL4ShiftCodes(commands.Cog):
     async def forum_settings(self, ctx, enabled: bool = None):
         """Enable/disable forum mode or show current status."""
         if enabled is None:
-            # Show current status
             use_forum = await self.config.guild(ctx.guild).use_forum()
             channel_id = await self.config.guild(ctx.guild).channel_id()
             channel = ctx.guild.get_channel(channel_id) if channel_id else None
@@ -472,45 +536,11 @@ class BL4ShiftCodes(commands.Cog):
             embed.add_field(name="Channel Type", value=channel_type, inline=True)
             embed.add_field(name="Channel", value=channel.mention if channel else "Not set", inline=True)
             
-            if use_forum:
-                thread_template = await self.config.guild(ctx.guild).thread_name_template()
-                create_daily = await self.config.guild(ctx.guild).create_new_thread_daily()
-                active_thread_id = await self.config.guild(ctx.guild).active_thread_id()
-                
-                embed.add_field(name="Thread Template", value=f"`{thread_template}`", inline=False)
-                embed.add_field(name="Daily Threads", value="✅ Yes" if create_daily else "❌ No", inline=True)
-                
-                if active_thread_id and isinstance(channel, discord.ForumChannel):
-                    thread = channel.get_thread(active_thread_id)
-                    embed.add_field(
-                        name="Active Thread", 
-                        value=thread.mention if thread else "None/Archived", 
-                        inline=True
-                    )
-            
             await ctx.send(embed=embed)
         else:
-            # Set forum mode
             await self.config.guild(ctx.guild).use_forum.set(enabled)
             status = "enabled" if enabled else "disabled"
             await ctx.send(f"✅ Forum mode {status}")
-            
-            if enabled:
-                channel_id = await self.config.guild(ctx.guild).channel_id()
-                channel = ctx.guild.get_channel(channel_id) if channel_id else None
-                if channel and not isinstance(channel, discord.ForumChannel):
-                    await ctx.send("⚠️ Warning: Current channel is not a forum channel. Use `setchannel` with a forum channel.")
-    
-    @bl4shift.command(name="threadtemplate")
-    async def set_thread_template(self, ctx, *, template: str):
-        """Set the template for thread names. Use {date} for current date."""
-        await self.config.guild(ctx.guild).thread_name_template.set(template)
-        await ctx.send(f"✅ Thread name template set to: `{template}`")
-        
-        # Show example
-        example_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        example_name = template.format(date=example_date)
-        await ctx.send(f"Example thread name: `{example_name}`")
     
     @bl4shift.command(name="dailythreads")
     async def toggle_daily_threads(self, ctx, enabled: bool):
@@ -518,44 +548,6 @@ class BL4ShiftCodes(commands.Cog):
         await self.config.guild(ctx.guild).create_new_thread_daily.set(enabled)
         status = "enabled" if enabled else "disabled"
         await ctx.send(f"✅ Daily thread creation {status}")
-        
-        if not enabled:
-            await ctx.send("ℹ️ SHIFT codes will continue using the same thread until manually changed.")
-    
-    @bl4shift.command(name="newthread")
-    async def create_new_thread(self, ctx):
-        """Manually create a new thread (forum mode only)."""
-        use_forum = await self.config.guild(ctx.guild).use_forum()
-        if not use_forum:
-            await ctx.send("❌ Forum mode is not enabled. Use `[p]bl4shift forum true` first.")
-            return
-            
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        channel = ctx.guild.get_channel(channel_id) if channel_id else None
-        
-        if not channel or not isinstance(channel, discord.ForumChannel):
-            await ctx.send("❌ No forum channel configured. Use `[p]bl4shift setchannel` with a forum channel.")
-            return
-        
-        guild_config = self.config.guild(ctx.guild)
-        
-        # Archive current thread if exists
-        active_thread_id = await guild_config.active_thread_id()
-        if active_thread_id:
-            try:
-                old_thread = channel.get_thread(active_thread_id)
-                if old_thread and not old_thread.archived:
-                    await old_thread.edit(archived=True)
-                    await ctx.send(f"📁 Archived old thread: {old_thread.name}")
-            except:
-                pass
-        
-        # Create new thread
-        thread = await self._get_or_create_thread(ctx.guild, channel, guild_config)
-        if thread:
-            await ctx.send(f"✅ Created new thread: {thread.mention}")
-        else:
-            await ctx.send("❌ Failed to create new thread.")
     
     @bl4shift.command(name="settings")
     async def show_settings(self, ctx):
@@ -564,43 +556,96 @@ class BL4ShiftCodes(commands.Cog):
         
         channel_id = await guild_config.channel_id()
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
-        subreddit = await guild_config.subreddit()
         interval = await guild_config.check_interval()
         keywords = await guild_config.keywords()
         use_forum = await guild_config.use_forum()
+        enabled_sources = await guild_config.enabled_sources()
         
         embed = discord.Embed(title="BL4 SHIFT Monitor Settings", color=discord.Color.blue())
         
-        # Basic settings
         channel_type = "Forum" if isinstance(channel, discord.ForumChannel) else "Text"
         embed.add_field(name="Channel", value=f"{channel.mention} ({channel_type})" if channel else "Not set", inline=True)
-        embed.add_field(name="Subreddit", value=f"r/{subreddit}", inline=True)
         embed.add_field(name="Check Interval", value=f"{interval // 60} minute(s)", inline=True)
+        embed.add_field(name="Forum Mode", value="✅ Yes" if use_forum else "❌ No", inline=True)
         embed.add_field(name="Keywords", value=", ".join(keywords), inline=False)
         
-        # Forum settings
-        if use_forum:
-            thread_template = await guild_config.thread_name_template()
-            create_daily = await guild_config.create_new_thread_daily()
-            active_thread_id = await guild_config.active_thread_id()
-            
-            embed.add_field(name="Forum Mode", value="✅ Enabled", inline=True)
-            embed.add_field(name="Thread Template", value=f"`{thread_template}`", inline=True)
-            embed.add_field(name="Daily Threads", value="✅ Yes" if create_daily else "❌ No", inline=True)
-            
-            if active_thread_id and isinstance(channel, discord.ForumChannel):
-                thread = channel.get_thread(active_thread_id)
-                embed.add_field(
-                    name="Active Thread", 
-                    value=thread.mention if thread else "None/Archived", 
-                    inline=False
-                )
-        else:
-            embed.add_field(name="Forum Mode", value="❌ Disabled", inline=True)
-        
+        # Show enabled sources
+        enabled_count = sum(1 for enabled in enabled_sources.values() if enabled)
+        total_count = len(self.sources)
+        embed.add_field(name="Active Sources", value=f"{enabled_count}/{total_count}", inline=True)
         embed.add_field(name="Status", value="✅ Active" if channel else "❌ Inactive", inline=True)
         
         await ctx.send(embed=embed)
+    
+    @bl4shift.command(name="check")
+    async def manual_check(self, ctx):
+        """Manually trigger a check for new SHIFT codes from all sources."""
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        if not channel_id:
+            await ctx.send("❌ No channel configured. Use `setchannel` first.")
+            return
+            
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("❌ Configured channel not found.")
+            return
+        
+        await ctx.send("🔍 Checking all sources for new SHIFT codes...")
+        
+        guild_config = self.config.guild(ctx.guild)
+        keywords = await guild_config.keywords()
+        posted_codes = await guild_config.posted_codes()
+        enabled_sources = await guild_config.enabled_sources()
+        
+        found_new = False
+        total_codes = set()
+        sources_checked = 0
+        
+        for source_id, source_info in self.sources.items():
+            if not enabled_sources.get(source_id, True):
+                continue
+                
+            sources_checked += 1
+            
+            try:
+                items = await self._fetch_rss_feed(source_info['url'], source_info['name'])
+                
+                for item in items[:5]:  # Check recent 5 items per source
+                    item_id = item.get("id", "")
+                    title = item.get("title", "")
+                    description = item.get("description", "")
+                    
+                    if item_id in posted_codes:
+                        continue
+                    
+                    if not self._is_bl4_related(title, description, keywords):
+                        continue
+                    
+                    codes = self._extract_shift_codes(f"{title} {description}")
+                    
+                    if codes:
+                        embed = await self._create_embed(item, codes, source_info['name'])
+                        result = await self._post_to_channel_or_thread(ctx.guild, channel, embed, guild_config)
+                        
+                        if result:
+                            posted_codes[item_id] = {
+                                "codes": list(codes),
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                                "source": source_info['name']
+                            }
+                            await guild_config.posted_codes.set(posted_codes)
+                            
+                            found_new = True
+                            total_codes.update(codes)
+            
+            except Exception as e:
+                await ctx.send(f"❌ Error checking {source_info['name']}: {e}")
+        
+        if found_new:
+            codes_list = ", ".join(f"`{code}`" for code in sorted(total_codes))
+            await ctx.send(f"✅ Found and posted new SHIFT codes: {codes_list}")
+        else:
+            await ctx.send(f"ℹ️ No new SHIFT codes found across {sources_checked} sources.")
     
     @bl4shift.command(name="test")
     async def test_extraction(self, ctx, *, text: str):
@@ -618,315 +663,6 @@ class BL4ShiftCodes(commands.Cog):
         """Clear the cache of posted codes."""
         await self.config.guild(ctx.guild).posted_codes.set({})
         await ctx.send("✅ Posted codes cache cleared.")
-    
-    @bl4shift.command(name="check")
-    async def manual_check(self, ctx):
-        """Manually trigger a check for new SHIFT codes."""
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        if not channel_id:
-            await ctx.send("❌ No channel configured. Use `setchannel` first.")
-            return
-            
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel:
-            await ctx.send("❌ Configured channel not found.")
-            return
-        
-        await ctx.send("🔍 Checking for new SHIFT codes...")
-        
-        try:
-            guild_config = self.config.guild(ctx.guild)
-            subreddit = await guild_config.subreddit()
-            keywords = await guild_config.keywords()
-            posted_codes = await guild_config.posted_codes()
-            
-            # Fetch recent posts
-            posts = await self._get_reddit_posts(subreddit)
-            
-            found_new = False
-            codes_found = set()
-            
-            for post_data in posts:
-                post = post_data.get("data", {})
-                post_id = post.get("id", "")
-                title = post.get("title", "")
-                selftext = post.get("selftext", "")
-                
-                # Skip if already processed
-                if post_id in posted_codes:
-                    continue
-                
-                # Check if BL4 related
-                if not self._is_bl4_related(title, selftext, keywords):
-                    continue
-                
-                # Extract SHIFT codes
-                codes = self._extract_shift_codes(f"{title} {selftext}")
-                
-                if codes:
-                    # Check if we've already posted these specific codes
-                    new_codes = codes - set(posted_codes.get(post_id, {}).get("codes", []))
-                    
-                    if new_codes:
-                        try:
-                            embed = await self._create_embed(post_data, codes)
-                            result = await self._post_to_channel_or_thread(ctx.guild, channel, embed, guild_config)
-                            
-                            if result:  # Successfully posted
-                                # Mark as posted
-                                posted_codes[post_id] = {
-                                    "codes": list(codes),
-                                    "timestamp": datetime.now(timezone.utc).isoformat()
-                                }
-                                await guild_config.posted_codes.set(posted_codes)
-                                
-                                found_new = True
-                                codes_found.update(codes)
-                                
-                        except Exception as e:
-                            await ctx.send(f"❌ Error posting codes: {e}")
-                            return
-            
-            if found_new:
-                codes_list = ", ".join(f"`{code}`" for code in sorted(codes_found))
-                await ctx.send(f"✅ Found and posted new SHIFT codes: {codes_list}")
-            else:
-                await ctx.send("ℹ️ No new SHIFT codes found.")
-                
-        except Exception as e:
-            await ctx.send(f"❌ Error during manual check: {e}")
-    
-    @bl4shift.command(name="debug")
-    async def debug_check(self, ctx, limit: int = 10):
-        """Debug command to see what posts are being found and why they might be filtered out."""
-        if limit > 25:
-            limit = 25
-            
-        guild_config = self.config.guild(ctx.guild)
-        subreddit = await guild_config.subreddit()
-        keywords = await guild_config.keywords()
-        posted_codes = await guild_config.posted_codes()
-        
-        await ctx.send(f"🔍 Debugging r/{subreddit} - checking last {limit} posts...")
-        
-        try:
-            posts = await self._get_reddit_posts(subreddit, limit)
-            
-            if not posts:
-                await ctx.send("❌ No posts retrieved from Reddit. Check subreddit name or Reddit might be down.")
-                return
-            
-            debug_info = []
-            codes_found_total = 0
-            bl4_related_count = 0
-            
-            for i, post_data in enumerate(posts[:limit]):
-                post = post_data.get("data", {})
-                post_id = post.get("id", "")
-                title = post.get("title", "")
-                selftext = post.get("selftext", "")
-                author = post.get("author", "")
-                
-                # Check BL4 relevance
-                is_bl4 = self._is_bl4_related(title, selftext, keywords)
-                if is_bl4:
-                    bl4_related_count += 1
-                
-                # Extract codes
-                codes = self._extract_shift_codes(f"{title} {selftext}")
-                if codes:
-                    codes_found_total += len(codes)
-                
-                # Check if already posted
-                already_posted = post_id in posted_codes
-                
-                debug_info.append({
-                    'title': title[:50] + "..." if len(title) > 50 else title,
-                    'author': author,
-                    'bl4_related': is_bl4,
-                    'codes_found': len(codes),
-                    'codes': list(codes) if codes else [],
-                    'already_posted': already_posted
-                })
-            
-            # Create summary
-            embed = discord.Embed(title=f"Debug Results - r/{subreddit}", color=discord.Color.orange())
-            embed.add_field(name="Posts Checked", value=str(len(debug_info)), inline=True)
-            embed.add_field(name="BL4 Related", value=str(bl4_related_count), inline=True)
-            embed.add_field(name="Total Codes Found", value=str(codes_found_total), inline=True)
-            embed.add_field(name="Keywords", value=", ".join(keywords), inline=False)
-            
-            await ctx.send(embed=embed)
-            
-            # Show detailed breakdown
-            for i, info in enumerate(debug_info[:5]):  # Show first 5 posts
-                status_parts = []
-                if info['bl4_related']:
-                    status_parts.append("✅ BL4")
-                else:
-                    status_parts.append("❌ Not BL4")
-                    
-                if info['codes_found'] > 0:
-                    status_parts.append(f"🔑 {info['codes_found']} codes")
-                else:
-                    status_parts.append("❌ No codes")
-                    
-                if info['already_posted']:
-                    status_parts.append("📝 Already posted")
-                else:
-                    status_parts.append("🆕 New")
-                
-                status = " | ".join(status_parts)
-                
-                post_info = f"**Post {i+1}:** {info['title']}\n"
-                post_info += f"**Author:** u/{info['author']}\n"
-                post_info += f"**Status:** {status}\n"
-                
-                if info['codes']:
-                    post_info += f"**Codes:** {', '.join([f'`{code}`' for code in info['codes']])}\n"
-                
-                await ctx.send(post_info)
-                
-        except Exception as e:
-            await ctx.send(f"❌ Debug error: {e}")
-    
-    @bl4shift.command(name="testreddit")
-    async def test_reddit(self, ctx, subreddit: str = None):
-        """Test Reddit connection and see what's being returned."""
-        if not subreddit:
-            subreddit = await self.config.guild(ctx.guild).subreddit()
-        
-        await ctx.send(f"🧪 Testing Reddit connection to r/{subreddit}...")
-        
-        url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=3"
-        
-        try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-            }
-            
-            async with self.session.get(url, headers=headers, timeout=15) as response:
-                await ctx.send(f"**Status Code:** {response.status}")
-                await ctx.send(f"**URL:** {url}")
-                
-                if response.status == 200:
-                    try:
-                        data = await response.json()
-                        posts = data.get("data", {}).get("children", [])
-                        await ctx.send(f"✅ **Success!** Retrieved {len(posts)} posts")
-                        
-                        if posts:
-                            first_post = posts[0].get("data", {})
-                            title = first_post.get("title", "No title")
-                            author = first_post.get("author", "No author")
-                            await ctx.send(f"**First post:** {title[:100]} by u/{author}")
-                        
-                    except Exception as json_err:
-                        text = await response.text()
-                        await ctx.send(f"❌ **JSON Error:** {json_err}")
-                        await ctx.send(f"**Response text (first 300 chars):** ```{text[:300]}```")
-                        
-                elif response.status == 403:
-                    await ctx.send("❌ **403 Forbidden** - Reddit is blocking our requests")
-                    await ctx.send("Try using a different subreddit like `testreddit BorderlandsShiftCodes`")
-                    
-                elif response.status == 404:
-                    await ctx.send(f"❌ **404 Not Found** - r/{subreddit} doesn't exist")
-                    
-                elif response.status == 429:
-                    await ctx.send("❌ **429 Rate Limited** - Too many requests")
-                    
-                else:
-                    text = await response.text()
-                    await ctx.send(f"❌ **Error {response.status}**")
-                    await ctx.send(f"**Response:** ```{text[:300]}```")
-                    
-        except Exception as e:
-            await ctx.send(f"❌ **Connection Error:** {e}")
-    
-    @bl4shift.command(name="addcode")
-    async def manual_add_code(self, ctx, *, code_info: str):
-        """Manually add a SHIFT code when Reddit is down. Format: 'ABCDE-12345-FGHIJ-67890-KLMNO Description here'"""
-        channel_id = await self.config.guild(ctx.guild).channel_id()
-        if not channel_id:
-            await ctx.send("❌ No channel configured. Use `setchannel` first.")
-            return
-            
-        channel = ctx.guild.get_channel(channel_id)
-        if not channel:
-            await ctx.send("❌ Configured channel not found.")
-            return
-        
-        # Extract codes from the input
-        codes = self._extract_shift_codes(code_info)
-        
-        if not codes:
-            await ctx.send("❌ No valid SHIFT codes found in your input.")
-            await ctx.send("**Format:** `!bl4shift addcode ABCDE-12345-FGHIJ-67890-KLMNO For Borderlands 4 Golden Keys`")
-            return
-        
-        try:
-            # Create a manual embed
-            embed = discord.Embed(
-                title="🔑 Borderlands 4 SHIFT Code(s) - Manually Added",
-                color=discord.Color.blue(),
-                timestamp=datetime.now(timezone.utc)
-            )
-            
-            embed.add_field(name="Added by", value=ctx.author.mention, inline=True)
-            
-            # Add codes
-            codes_text = "\n".join(f"`{code}`" for code in sorted(codes))
-            embed.add_field(name="SHIFT Codes", value=codes_text, inline=False)
-            
-            # Add description if provided
-            description = code_info
-            for code in codes:
-                description = description.replace(code, "").replace("-", "")
-            description = description.strip()
-            
-            if description:
-                embed.add_field(name="Description", value=description, inline=False)
-            
-            embed.add_field(
-                name="How to Redeem", 
-                value="Go to [shift.gearboxsoftware.com](https://shift.gearboxsoftware.com) or use the in-game menu",
-                inline=False
-            )
-            
-            embed.set_footer(text="Manually added via BL4 SHIFT Monitor")
-            
-            # Post to channel or forum
-            guild_config = self.config.guild(ctx.guild)
-            result = await self._post_to_channel_or_thread(ctx.guild, channel, embed, guild_config)
-            
-            if result:
-                codes_list = ", ".join(f"`{code}`" for code in sorted(codes))
-                await ctx.send(f"✅ Posted SHIFT codes: {codes_list}")
-            else:
-                await ctx.send("❌ Failed to post codes.")
-                
-        except Exception as e:
-            await ctx.send(f"❌ Error posting manual code: {e}")
-    
-    @bl4shift.command(name="notifications")
-    async def toggle_notifications(self, ctx, enabled: bool = None):
-        """Enable/disable notifications when Reddit monitoring fails."""
-        if enabled is None:
-            # Show current status
-            notify_failures = await self.config.guild(ctx.guild).notify_on_failure()
-            status = "✅ Enabled" if notify_failures else "❌ Disabled"
-            await ctx.send(f"**Reddit failure notifications:** {status}")
-        else:
-            await self.config.guild(ctx.guild).notify_on_failure.set(enabled)
-            status = "enabled" if enabled else "disabled"
-            await ctx.send(f"✅ Reddit failure notifications {status}")
-            
-            if enabled:
-                await ctx.send("ℹ️ You'll be notified every 4 hours when Reddit monitoring fails.")
-            else:
-                await ctx.send("ℹ️ No notifications will be sent when Reddit is down.")
 
 async def setup(bot: Red):
     """Set up the cog."""
