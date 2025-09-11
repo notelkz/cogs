@@ -618,6 +618,83 @@ class BL4ShiftCodes(commands.Cog):
         """Clear the cache of posted codes."""
         await self.config.guild(ctx.guild).posted_codes.set({})
         await ctx.send("✅ Posted codes cache cleared.")
+    
+    @bl4shift.command(name="check")
+    async def manual_check(self, ctx):
+        """Manually trigger a check for new SHIFT codes."""
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        if not channel_id:
+            await ctx.send("❌ No channel configured. Use `setchannel` first.")
+            return
+            
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("❌ Configured channel not found.")
+            return
+        
+        await ctx.send("🔍 Checking for new SHIFT codes...")
+        
+        try:
+            guild_config = self.config.guild(ctx.guild)
+            subreddit = await guild_config.subreddit()
+            keywords = await guild_config.keywords()
+            posted_codes = await guild_config.posted_codes()
+            
+            # Fetch recent posts
+            posts = await self._get_reddit_posts(subreddit)
+            
+            found_new = False
+            codes_found = set()
+            
+            for post_data in posts:
+                post = post_data.get("data", {})
+                post_id = post.get("id", "")
+                title = post.get("title", "")
+                selftext = post.get("selftext", "")
+                
+                # Skip if already processed
+                if post_id in posted_codes:
+                    continue
+                
+                # Check if BL4 related
+                if not self._is_bl4_related(title, selftext, keywords):
+                    continue
+                
+                # Extract SHIFT codes
+                codes = self._extract_shift_codes(f"{title} {selftext}")
+                
+                if codes:
+                    # Check if we've already posted these specific codes
+                    new_codes = codes - set(posted_codes.get(post_id, {}).get("codes", []))
+                    
+                    if new_codes:
+                        try:
+                            embed = await self._create_embed(post_data, codes)
+                            result = await self._post_to_channel_or_thread(ctx.guild, channel, embed, guild_config)
+                            
+                            if result:  # Successfully posted
+                                # Mark as posted
+                                posted_codes[post_id] = {
+                                    "codes": list(codes),
+                                    "timestamp": datetime.now(timezone.utc).isoformat()
+                                }
+                                await guild_config.posted_codes.set(posted_codes)
+                                
+                                found_new = True
+                                codes_found.update(codes)
+                                
+                        except Exception as e:
+                            await ctx.send(f"❌ Error posting codes: {e}")
+                            return
+            
+            if found_new:
+                codes_list = ", ".join(f"`{code}`" for code in sorted(codes_found))
+                await ctx.send(f"✅ Found and posted new SHIFT codes: {codes_list}")
+            else:
+                await ctx.send("ℹ️ No new SHIFT codes found.")
+                
+        except Exception as e:
+            await ctx.send(f"❌ Error during manual check: {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
