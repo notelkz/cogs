@@ -789,6 +789,61 @@ class BL4ShiftCodes(commands.Cog):
                 
         except Exception as e:
             await ctx.send(f"❌ Debug error: {e}")
+    
+    @bl4shift.command(name="testreddit")
+    async def test_reddit(self, ctx, subreddit: str = None):
+        """Test Reddit connection and see what's being returned."""
+        if not subreddit:
+            subreddit = await self.config.guild(ctx.guild).subreddit()
+        
+        await ctx.send(f"🧪 Testing Reddit connection to r/{subreddit}...")
+        
+        url = f"https://www.reddit.com/r/{subreddit}/new.json?limit=3"
+        
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+            }
+            
+            async with self.session.get(url, headers=headers, timeout=15) as response:
+                await ctx.send(f"**Status Code:** {response.status}")
+                await ctx.send(f"**URL:** {url}")
+                
+                if response.status == 200:
+                    try:
+                        data = await response.json()
+                        posts = data.get("data", {}).get("children", [])
+                        await ctx.send(f"✅ **Success!** Retrieved {len(posts)} posts")
+                        
+                        if posts:
+                            first_post = posts[0].get("data", {})
+                            title = first_post.get("title", "No title")
+                            author = first_post.get("author", "No author")
+                            await ctx.send(f"**First post:** {title[:100]} by u/{author}")
+                        
+                    except Exception as json_err:
+                        text = await response.text()
+                        await ctx.send(f"❌ **JSON Error:** {json_err}")
+                        await ctx.send(f"**Response text (first 300 chars):** ```{text[:300]}```")
+                        
+                elif response.status == 403:
+                    await ctx.send("❌ **403 Forbidden** - Reddit is blocking our requests")
+                    await ctx.send("Try using a different subreddit like `testreddit BorderlandsShiftCodes`")
+                    
+                elif response.status == 404:
+                    await ctx.send(f"❌ **404 Not Found** - r/{subreddit} doesn't exist")
+                    
+                elif response.status == 429:
+                    await ctx.send("❌ **429 Rate Limited** - Too many requests")
+                    
+                else:
+                    text = await response.text()
+                    await ctx.send(f"❌ **Error {response.status}**")
+                    await ctx.send(f"**Response:** ```{text[:300]}```")
+                    
+        except Exception as e:
+            await ctx.send(f"❌ **Connection Error:** {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
