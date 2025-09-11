@@ -844,6 +844,71 @@ class BL4ShiftCodes(commands.Cog):
                     
         except Exception as e:
             await ctx.send(f"❌ **Connection Error:** {e}")
+    
+    @bl4shift.command(name="addcode")
+    async def manual_add_code(self, ctx, *, code_info: str):
+        """Manually add a SHIFT code when Reddit is down. Format: 'ABCDE-12345-FGHIJ-67890-KLMNO Description here'"""
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        if not channel_id:
+            await ctx.send("❌ No channel configured. Use `setchannel` first.")
+            return
+            
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            await ctx.send("❌ Configured channel not found.")
+            return
+        
+        # Extract codes from the input
+        codes = self._extract_shift_codes(code_info)
+        
+        if not codes:
+            await ctx.send("❌ No valid SHIFT codes found in your input.")
+            await ctx.send("**Format:** `!bl4shift addcode ABCDE-12345-FGHIJ-67890-KLMNO For Borderlands 4 Golden Keys`")
+            return
+        
+        try:
+            # Create a manual embed
+            embed = discord.Embed(
+                title="🔑 Borderlands 4 SHIFT Code(s) - Manually Added",
+                color=discord.Color.blue(),
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            embed.add_field(name="Added by", value=ctx.author.mention, inline=True)
+            
+            # Add codes
+            codes_text = "\n".join(f"`{code}`" for code in sorted(codes))
+            embed.add_field(name="SHIFT Codes", value=codes_text, inline=False)
+            
+            # Add description if provided
+            description = code_info
+            for code in codes:
+                description = description.replace(code, "").replace("-", "")
+            description = description.strip()
+            
+            if description:
+                embed.add_field(name="Description", value=description, inline=False)
+            
+            embed.add_field(
+                name="How to Redeem", 
+                value="Go to [shift.gearboxsoftware.com](https://shift.gearboxsoftware.com) or use the in-game menu",
+                inline=False
+            )
+            
+            embed.set_footer(text="Manually added via BL4 SHIFT Monitor")
+            
+            # Post to channel or forum
+            guild_config = self.config.guild(ctx.guild)
+            result = await self._post_to_channel_or_thread(ctx.guild, channel, embed, guild_config)
+            
+            if result:
+                codes_list = ", ".join(f"`{code}`" for code in sorted(codes))
+                await ctx.send(f"✅ Posted SHIFT codes: {codes_list}")
+            else:
+                await ctx.send("❌ Failed to post codes.")
+                
+        except Exception as e:
+            await ctx.send(f"❌ Error posting manual code: {e}")
 
 async def setup(bot: Red):
     """Set up the cog."""
