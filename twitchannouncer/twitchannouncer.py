@@ -62,6 +62,196 @@ class TwitchAnnouncer(commands.Cog):
                             return None
                         
                         data = await resp.json()
+                    access_token = data["access_token"]
+                    expires_in = data["expires_in"]
+                    now = datetime.utcnow().timestamp()
+                    
+                    await self.config.guild(ctx.guild).client_id.set(client_id)
+                    await self.config.guild(ctx.guild).client_secret.set(client_secret)
+                    await self.config.guild(ctx.guild).access_token.set(access_token)
+                    await self.config.guild(ctx.guild).token_expires.set(now + expires_in)
+                    
+                    await ctx.author.send("✅ Twitch API authentication successfully set and verified!")
+                    if ctx.channel.type != discord.ChannelType.private:
+                        await ctx.send("✅ Twitch API authentication has been set up via DM.")
+
+        except asyncio.TimeoutError:
+            await ctx.author.send("Setup timed out. Please try again.")
+        except discord.Forbidden:
+            await ctx.send("I couldn't send you a DM. Please enable DMs and try again.")
+        except Exception as e:
+            await ctx.author.send(f"An error occurred: {str(e)}")
+
+    @twitchannouncer.command(name="checkauth")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def check_auth(self, ctx):
+        """Check the status of Twitch API authentication."""
+        client_id = await self.config.guild(ctx.guild).client_id()
+        client_secret = await self.config.guild(ctx.guild).client_secret()
+        access_token = await self.config.guild(ctx.guild).access_token()
+        token_expires = await self.config.guild(ctx.guild).token_expires()
+        
+        if not client_id or not client_secret:
+            await ctx.send("❌ Client ID or Client Secret not set. Please use `setauth` to configure them.")
+            return
+
+        # If we don't have a token, try to get one
+        if not access_token:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        "https://id.twitch.tv/oauth2/token",
+                        params={
+                            "client_id": client_id,
+                            "client_secret": client_secret,
+                            "grant_type": "client_credentials"
+                        }
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            access_token = data["access_token"]
+                            expires_in = data["expires_in"]
+                            now = datetime.utcnow().timestamp()
+                            
+                            await self.config.guild(ctx.guild).access_token.set(access_token)
+                            await self.config.guild(ctx.guild).token_expires.set(now + expires_in)
+                            
+                            token_expires = now + expires_in
+                            await ctx.send("✅ Successfully generated new access token!")
+                        else:
+                            error_text = await resp.text()
+                            await ctx.send(f"❌ Failed to generate token. Status: {resp.status}, Error: {error_text}")
+            except Exception as e:
+                await ctx.send(f"❌ Error generating token: {str(e)}")
+            
+        now = datetime.utcnow().timestamp()
+        
+        embed = discord.Embed(
+            title="Twitch API Authentication Status",
+            color=discord.Color.purple()
+        )
+        
+        embed.add_field(
+            name="Client ID",
+            value="✅ Set" if client_id else "❌ Not Set",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Client Secret",
+            value="✅ Set" if client_secret else "❌ Not Set",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="Access Token",
+            value="✅ Set" if access_token else "❌ Not Set",
+            inline=True
+        )
+        
+        if token_expires:
+            if now >= token_expires:
+                status = "❌ Expired"
+            else:
+                remaining = int(token_expires - now)
+                status = f"✅ Valid for {remaining} seconds"
+        else:
+            status = "❌ Not Set"
+            
+        embed.add_field(
+            name="Token Status",
+            value=status,
+            inline=False
+        )
+
+        # Test the current token if we have one
+        if access_token:
+            try:
+                headers = {
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {access_token}"
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        "https://api.twitch.tv/helix/users",
+                        headers=headers
+                    ) as resp:
+                        if resp.status == 200:
+                            embed.add_field(
+                                name="Token Test",
+                                value="✅ Token working correctly",
+                                inline=False
+                            )
+                        else:
+                            error_text = await resp.text()
+                            embed.add_field(
+                                name="Token Test",
+                                value=f"❌ Token not working (Status {resp.status}): {error_text}",
+                                inline=False
+                            )
+            except Exception as e:
+                embed.add_field(
+                    name="Token Test",
+                    value=f"❌ Error testing token: {str(e)}",
+                    inline=False
+                )
+        
+        await ctx.send(embed=embed)
+
+    @twitchannouncer.command(name="test")
+    async def test_announcement(self, ctx, twitch_name: str):
+        """Test stream announcement for a specific streamer."""
+        headers = await self.get_twitch_headers(ctx.guild)
+        if not headers:
+            await ctx.send("Twitch API authentication not set up!")
+            return
+
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                print(f"[DEBUG] Twitch API status: {resp.status}")
+                print(f"[DEBUG] Twitch API response: {text}")
+                if resp.status != 200:
+                    await ctx.send(f"Failed to fetch stream data. Twitch API returned {resp.status}: {text}")
+                    return
+                    
+                data = await resp.json()
+                if not data["data"]:
+                    await ctx.send(f"{twitch_name} is not live. Creating test announcement anyway...")
+                    test_data = {
+                        "title": "Test Stream",
+                        "game_name": "Just Chatting",
+                        "viewer_count": 0,
+                        "started_at": datetime.utcnow().isoformat(),
+                        "thumbnail_url": None
+                    }
+                    await self.announce_stream(ctx.guild, twitch_name, test_data)
+                else:
+                    await self.announce_stream(ctx.guild, twitch_name, data["data"][0])
+
+class StreamView(discord.ui.View):
+    def __init__(self, twitch_name):
+        super().__init__(timeout=None)
+        self.twitch_name = twitch_name
+        
+        self.watch_button = discord.ui.Button(
+            label="Watch Stream",
+            url=f"https://twitch.tv/{twitch_name}",
+            style=discord.ButtonStyle.url
+        )
+        self.subscribe_button = discord.ui.Button(
+            label="Subscribe",
+            url=f"https://twitch.tv/{twitch_name}/subscribe",
+            style=discord.ButtonStyle.url
+        )
+        self.add_item(self.watch_button)
+        self.add_item(self.subscribe_button)
+
+
+async def setup(bot):
+    await bot.add_cog(TwitchAnnouncer(bot))json()
                         access_token = data["access_token"]
                         expires_in = data["expires_in"]
                         
@@ -290,7 +480,17 @@ class TwitchAnnouncer(commands.Cog):
             role = guild.get_role(role_id)
             if role:
                 print(f"[DEBUG] Found role {role.name} (ID: {role_id})")
-                if role.mentionable:
+                # Special handling for @everyone role
+                if role.id == guild.id:  # @everyone role has the same ID as the guild
+                    # Check if bot has mention_everyone permission
+                    bot_member = guild.get_member(self.bot.user.id)
+                    channel_perms = channel.permissions_for(bot_member)
+                    if channel_perms.mention_everyone:
+                        print(f"[DEBUG] Bot can mention @everyone")
+                        valid_roles.append(role_id)
+                    else:
+                        print(f"[DEBUG] Bot cannot mention @everyone - missing mention_everyone permission")
+                elif role.mentionable:
                     print(f"[DEBUG] Role {role.name} is mentionable")
                     valid_roles.append(role_id)
                 else:
@@ -378,7 +578,12 @@ class TwitchAnnouncer(commands.Cog):
     async def twitchannouncer(self, ctx):
         """Twitch announcer settings."""
         if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+            embed = discord.Embed(
+                title="Twitch Announcer Commands",
+                description="Use `!help tann` to see all available commands.",
+                color=discord.Color.purple()
+            )
+            await ctx.send(embed=embed)
 
     @twitchannouncer.command(name="setup")
     async def setup_announcer(self, ctx, channel: discord.TextChannel):
@@ -486,11 +691,19 @@ class TwitchAnnouncer(commands.Cog):
                 inline=True
             )
             
-            embed.add_field(
-                name="Mention Permissions",
-                value="✅ Yes" if permissions.mention_everyone else "❌ No - Bot cannot mention roles",
-                inline=True
-            )
+            # Special check for @everyone role
+            if role.id == ctx.guild.id:  # @everyone role
+                embed.add_field(
+                    name="Mention Permissions",
+                    value="✅ Yes" if permissions.mention_everyone else "❌ No - Bot cannot mention @everyone",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="Mention Permissions",
+                    value="✅ Yes" if permissions.mention_everyone else "❌ No - Bot cannot mention roles",
+                    inline=True
+                )
         else:
             embed.add_field(
                 name="Announcement Channel",
@@ -677,194 +890,4 @@ class TwitchAnnouncer(commands.Cog):
                         await ctx.author.send("❌ Invalid credentials! Please check your Client ID and Secret.")
                         return
                     
-                    data = await resp.json()
-                    access_token = data["access_token"]
-                    expires_in = data["expires_in"]
-                    now = datetime.utcnow().timestamp()
-                    
-                    await self.config.guild(ctx.guild).client_id.set(client_id)
-                    await self.config.guild(ctx.guild).client_secret.set(client_secret)
-                    await self.config.guild(ctx.guild).access_token.set(access_token)
-                    await self.config.guild(ctx.guild).token_expires.set(now + expires_in)
-                    
-                    await ctx.author.send("✅ Twitch API authentication successfully set and verified!")
-                    if ctx.channel.type != discord.ChannelType.private:
-                        await ctx.send("✅ Twitch API authentication has been set up via DM.")
-
-        except asyncio.TimeoutError:
-            await ctx.author.send("Setup timed out. Please try again.")
-        except discord.Forbidden:
-            await ctx.send("I couldn't send you a DM. Please enable DMs and try again.")
-        except Exception as e:
-            await ctx.author.send(f"An error occurred: {str(e)}")
-
-    @twitchannouncer.command(name="checkauth")
-    @commands.guild_only()
-    @checks.admin_or_permissions(manage_guild=True)
-    async def check_auth(self, ctx):
-        """Check the status of Twitch API authentication."""
-        client_id = await self.config.guild(ctx.guild).client_id()
-        client_secret = await self.config.guild(ctx.guild).client_secret()
-        access_token = await self.config.guild(ctx.guild).access_token()
-        token_expires = await self.config.guild(ctx.guild).token_expires()
-        
-        if not client_id or not client_secret:
-            await ctx.send("❌ Client ID or Client Secret not set. Please use `setauth` to configure them.")
-            return
-
-        # If we don't have a token, try to get one
-        if not access_token:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "https://id.twitch.tv/oauth2/token",
-                        params={
-                            "client_id": client_id,
-                            "client_secret": client_secret,
-                            "grant_type": "client_credentials"
-                        }
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            access_token = data["access_token"]
-                            expires_in = data["expires_in"]
-                            now = datetime.utcnow().timestamp()
-                            
-                            await self.config.guild(ctx.guild).access_token.set(access_token)
-                            await self.config.guild(ctx.guild).token_expires.set(now + expires_in)
-                            
-                            token_expires = now + expires_in
-                            await ctx.send("✅ Successfully generated new access token!")
-                        else:
-                            error_text = await resp.text()
-                            await ctx.send(f"❌ Failed to generate token. Status: {resp.status}, Error: {error_text}")
-            except Exception as e:
-                await ctx.send(f"❌ Error generating token: {str(e)}")
-            
-        now = datetime.utcnow().timestamp()
-        
-        embed = discord.Embed(
-            title="Twitch API Authentication Status",
-            color=discord.Color.purple()
-        )
-        
-        embed.add_field(
-            name="Client ID",
-            value="✅ Set" if client_id else "❌ Not Set",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Client Secret",
-            value="✅ Set" if client_secret else "❌ Not Set",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="Access Token",
-            value="✅ Set" if access_token else "❌ Not Set",
-            inline=True
-        )
-        
-        if token_expires:
-            if now >= token_expires:
-                status = "❌ Expired"
-            else:
-                remaining = int(token_expires - now)
-                status = f"✅ Valid for {remaining} seconds"
-        else:
-            status = "❌ Not Set"
-            
-        embed.add_field(
-            name="Token Status",
-            value=status,
-            inline=False
-        )
-
-        # Test the current token if we have one
-        if access_token:
-            try:
-                headers = {
-                    "Client-ID": client_id,
-                    "Authorization": f"Bearer {access_token}"
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        "https://api.twitch.tv/helix/users",
-                        headers=headers
-                    ) as resp:
-                        if resp.status == 200:
-                            embed.add_field(
-                                name="Token Test",
-                                value="✅ Token working correctly",
-                                inline=False
-                            )
-                        else:
-                            error_text = await resp.text()
-                            embed.add_field(
-                                name="Token Test",
-                                value=f"❌ Token not working (Status {resp.status}): {error_text}",
-                                inline=False
-                            )
-            except Exception as e:
-                embed.add_field(
-                    name="Token Test",
-                    value=f"❌ Error testing token: {str(e)}",
-                    inline=False
-                )
-        
-        await ctx.send(embed=embed)
-
-    @twitchannouncer.command(name="test")
-    async def test_announcement(self, ctx, twitch_name: str):
-        """Test stream announcement for a specific streamer."""
-        headers = await self.get_twitch_headers(ctx.guild)
-        if not headers:
-            await ctx.send("Twitch API authentication not set up!")
-            return
-
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.twitch.tv/helix/streams?user_login={twitch_name}"
-            async with session.get(url, headers=headers) as resp:
-                text = await resp.text()
-                print(f"[DEBUG] Twitch API status: {resp.status}")
-                print(f"[DEBUG] Twitch API response: {text}")
-                if resp.status != 200:
-                    await ctx.send(f"Failed to fetch stream data. Twitch API returned {resp.status}: {text}")
-                    return
-                    
-                data = await resp.json()
-                if not data["data"]:
-                    await ctx.send(f"{twitch_name} is not live. Creating test announcement anyway...")
-                    test_data = {
-                        "title": "Test Stream",
-                        "game_name": "Just Chatting",
-                        "viewer_count": 0,
-                        "started_at": datetime.utcnow().isoformat(),
-                        "thumbnail_url": None
-                    }
-                    await self.announce_stream(ctx.guild, twitch_name, test_data)
-                else:
-                    await self.announce_stream(ctx.guild, twitch_name, data["data"][0])
-
-class StreamView(discord.ui.View):
-    def __init__(self, twitch_name):
-        super().__init__(timeout=None)
-        self.twitch_name = twitch_name
-        
-        self.watch_button = discord.ui.Button(
-            label="Watch Stream",
-            url=f"https://twitch.tv/{twitch_name}",
-            style=discord.ButtonStyle.url
-        )
-        self.subscribe_button = discord.ui.Button(
-            label="Subscribe",
-            url=f"https://twitch.tv/{twitch_name}/subscribe",
-            style=discord.ButtonStyle.url
-        )
-        self.add_item(self.watch_button)
-        self.add_item(self.subscribe_button)
-
-
-async def setup(bot):
-    await bot.add_cog(TwitchAnnouncer(bot))
+                    data = await resp.
