@@ -664,7 +664,11 @@ class TwitchSchedule(commands.Cog):
                 
                 warning_content = "⚠️ Updating schedule - Previous messages will be deleted in 10 seconds..."
                 if notify_role:
-                    warning_content = f"{notify_role.mention}\n{warning_content}"
+                    # Special handling for @everyone role to prevent double @
+                    if notify_role.id == guild.default_role.id:  # @everyone role
+                        warning_content = f"@everyone\n{warning_content}"
+                    else:
+                        warning_content = f"{notify_role.mention}\n{warning_content}"
                 
                 try:
                     warning_msg = await channel.send(warning_content)
