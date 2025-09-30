@@ -755,30 +755,6 @@ class TwitchSchedule(commands.Cog):
                         await self._log_error(guild, f"Missing permissions to pin messages in {schedule_channel.name}", streamer_config.twitch_username)
                     except Exception as e:
                         await self._log_error(guild, f"Error pinning message: {e}", streamer_config.twitch_username)
-                
-                # Send notification if configured
-                if not dry_run and streamer_config.notification_channel_id and future_segments:
-                    notification_channel = guild.get_channel(streamer_config.notification_channel_id)
-                    if notification_channel:
-                        try:
-                            next_stream = future_segments[0]
-                            start_time = datetime.datetime.fromisoformat(next_stream["start_time"].replace("Z", "+00:00"))
-                            unix_ts = int(start_time.timestamp())
-                            
-                            notify_role = guild.get_role(streamer_config.notify_role_id) if streamer_config.notify_role_id else None
-                            mention_text = notify_role.mention if notify_role else ""
-                            
-                            notification_embed = discord.Embed(
-                                title=f"📅 Schedule Updated: {streamer_config.twitch_username}",
-                                description=f"**Next stream:** {next_stream.get('title', 'Untitled Stream')}\n**Starting:** <t:{unix_ts}:R>",
-                                color=discord.Color.blue(),
-                                url=f"https://twitch.tv/{streamer_config.twitch_username}"
-                            )
-                            
-                            content = f"{mention_text}\n" if mention_text else ""
-                            await notification_channel.send(content=content, embed=notification_embed)
-                        except Exception as e:
-                            await self._log_error(guild, f"Failed to send notification: {e}", streamer_config.twitch_username)
             
             return True
             
