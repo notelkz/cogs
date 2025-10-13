@@ -22,10 +22,12 @@ class TwitchClips(commands.Cog):
         
         default_guild = {
             "forum_channel_id": None,
-            "tracked_users": {},  # {username: {last_clip_id: str, last_check: timestamp}}
+            "tracked_users": {},  # {username: {last_clip_id: str, last_check: timestamp, user_id: str, was_live: bool}}
             "scan_interval": 3600,  # 1 hour in seconds
             "clips_per_scan": 5,
             "auto_scan_enabled": False,
+            "scan_on_stream_end": False,
+            "stream_check_interval": 300,  # 5 minutes in seconds
         }
         
         default_global = {
@@ -39,6 +41,7 @@ class TwitchClips(commands.Cog):
         self.config.register_global(**default_global)
         
         self.scan_tasks = {}
+        self.stream_monitor_tasks = {}
         self.session: Optional[aiohttp.ClientSession] = None
         
     async def cog_load(self):
@@ -48,10 +51,14 @@ class TwitchClips(commands.Cog):
         for guild in self.bot.guilds:
             if await self.config.guild(guild).auto_scan_enabled():
                 self.start_scan_task(guild)
+            if await self.config.guild(guild).scan_on_stream_end():
+                self.start_stream_monitor_task(guild)
     
     async def cog_unload(self):
         """Clean up when cog is unloaded."""
         for task in self.scan_tasks.values():
+            task.cancel()
+        for task in self.stream_monitor_tasks.values():
             task.cancel()
         if self.session:
             await self.session.close()
@@ -73,6 +80,23 @@ class TwitchClips(commands.Cog):
             del self.scan_tasks[guild.id]
             log.info(f"Stopped scan task for guild {guild.id}")
     
+    def start_stream_monitor_task(self, guild: discord.Guild):
+        """Start the stream monitoring task for a guild."""
+        if guild.id in self.stream_monitor_tasks:
+            self.stream_monitor_tasks[guild.id].cancel()
+        
+        self.stream_monitor_tasks[guild.id] = self.bot.loop.create_task(
+            self.stream_monitor_loop(guild)
+        )
+        log.info(f"Started stream monitor task for guild {guild.id}")
+    
+    def stop_stream_monitor_task(self, guild: discord.Guild):
+        """Stop the stream monitoring task for a guild."""
+        if guild.id in self.stream_monitor_tasks:
+            self.stream_monitor_tasks[guild.id].cancel()
+            del self.stream_monitor_tasks[guild.id]
+            log.info(f"Stopped stream monitor task for guild {guild.id}")
+    
     async def scan_loop(self, guild: discord.Guild):
         """Continuously scan for clips at the configured interval."""
         await self.bot.wait_until_ready()
@@ -92,6 +116,105 @@ class TwitchClips(commands.Cog):
             except Exception as e:
                 log.error(f"Error in scan loop for guild {guild.id}: {e}", exc_info=True)
                 await asyncio.sleep(300)  # Wait 5 minutes on error
+    
+    async def stream_monitor_loop(self, guild: discord.Guild):
+        """Monitor streams and scan when they end."""
+        await self.bot.wait_until_ready()
+        
+        while True:
+            try:
+                interval = await self.config.guild(guild).stream_check_interval()
+                await asyncio.sleep(interval)
+                
+                if not await self.config.guild(guild).scan_on_stream_end():
+                    break
+                
+                # Check stream status for all tracked users
+                tracked_users = await self.config.guild(guild).tracked_users()
+                
+                for username, user_data in tracked_users.items():
+                    try:
+                        user_id = user_data.get("user_id")
+                        if not user_id:
+                            # Get user_id if we don't have it
+                            user_id = await self.get_user_id(username)
+                            if user_id:
+                                user_data["user_id"] = user_id
+                            else:
+                                continue
+                        
+                        is_live = await self.get_stream_status(user_id)
+                        was_live = user_data.get("was_live", False)
+                        
+                        # Detect stream end (was live, now offline)
+                        if was_live and not is_live:
+                            log.info(f"Stream ended for {username}, scanning for clips")
+                            
+                            # Scan for clips from this specific user
+                            clips_per_scan = await self.config.guild(guild).clips_per_scan()
+                            clips = await self.get_clips(user_id, clips_per_scan)
+                            last_clip_id = user_data.get("last_clip_id")
+                            
+                            new_clips = []
+                            for clip in clips:
+                                if clip["id"] == last_clip_id:
+                                    break
+                                new_clips.append(clip)
+                            
+                            if new_clips:
+                                # Post clips in order (oldest to newest)
+                                for clip in reversed(new_clips):
+                                    await self.post_clip_to_forum(guild, clip, username)
+                                    await asyncio.sleep(2)
+                                
+                                # Update last clip ID
+                                user_data["last_clip_id"] = new_clips[0]["id"]
+                            elif clips and not last_clip_id:
+                                # First time checking, just save the latest clip ID
+                                user_data["last_clip_id"] = clips[0]["id"]
+                        
+                        # Update live status
+                        user_data["was_live"] = is_live
+                        user_data["last_check"] = datetime.now().timestamp()
+                        
+                        # Save updated data
+                        async with self.config.guild(guild).tracked_users() as users:
+                            users[username] = user_data
+                        
+                    except Exception as e:
+                        log.error(f"Error monitoring stream for {username}: {e}", exc_info=True)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.error(f"Error in stream monitor loop for guild {guild.id}: {e}", exc_info=True)
+                await asyncio.sleep(300)  # Wait 5 minutes on error
+    
+    async def get_stream_status(self, user_id: str) -> bool:
+        """Check if a user is currently live. Returns True if live, False otherwise."""
+        access_token = await self.get_access_token()
+        client_id = await self.config.client_id()
+        
+        if not access_token or not client_id:
+            return False
+        
+        url = "https://api.twitch.tv/helix/streams"
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {access_token}"
+        }
+        params = {"user_id": user_id}
+        
+        try:
+            async with self.session.get(url, headers=headers, params=params) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # If data array is not empty, user is live
+                    return len(data.get("data", [])) > 0
+                return False
+        except Exception as e:
+            log.error(f"Error checking stream status for user {user_id}: {e}")
+            return False
     
     async def get_access_token(self) -> Optional[str]:
         """Get a valid Twitch API access token."""
@@ -295,7 +418,8 @@ class TwitchClips(commands.Cog):
                 if new_clips:
                     stats["new_clips"] += len(new_clips)
                     
-                    # Post clips in reverse order (oldest first)
+                    # Post clips in order (oldest to newest)
+                    # This way the newest clip appears at the top of the forum
                     for clip in reversed(new_clips):
                         success = await self.post_clip_to_forum(guild, clip, username)
                         if success:
@@ -387,7 +511,9 @@ class TwitchClips(commands.Cog):
             
             users[username] = {
                 "last_clip_id": None,
-                "last_check": 0
+                "last_check": 0,
+                "user_id": user_id,
+                "was_live": False
             }
         
         await ctx.send(f"✅ Now tracking clips for: {username}")
@@ -473,6 +599,37 @@ class TwitchClips(commands.Cog):
             self.stop_scan_task(ctx.guild)
             await ctx.send("✅ Automatic scanning disabled.")
     
+    @twitchclips.command(name="scanonstreamend", aliases=["streamend"])
+    @checks.admin_or_permissions(manage_guild=True)
+    async def toggle_stream_end_scan(self, ctx: commands.Context, enabled: bool):
+        """Enable or disable scanning when tracked streams go offline."""
+        await self.config.guild(ctx.guild).scan_on_stream_end.set(enabled)
+        
+        if enabled:
+            self.start_stream_monitor_task(ctx.guild)
+            interval = await self.config.guild(ctx.guild).stream_check_interval()
+            await ctx.send(f"✅ Stream-end scanning enabled! Checking stream status every {interval // 60} minutes.")
+        else:
+            self.stop_stream_monitor_task(ctx.guild)
+            await ctx.send("✅ Stream-end scanning disabled.")
+    
+    @twitchclips.command(name="streamcheckinterval")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_stream_check_interval(self, ctx: commands.Context, minutes: int):
+        """Set how often to check stream status in minutes (minimum 1)."""
+        if minutes < 1:
+            await ctx.send("❌ Interval must be at least 1 minute.")
+            return
+        
+        seconds = minutes * 60
+        await self.config.guild(ctx.guild).stream_check_interval.set(seconds)
+        
+        # Restart stream monitor task if it's running
+        if await self.config.guild(ctx.guild).scan_on_stream_end():
+            self.start_stream_monitor_task(ctx.guild)
+        
+        await ctx.send(f"✅ Stream check interval set to {minutes} minutes.")
+    
     @twitchclips.command(name="interval")
     @checks.admin_or_permissions(manage_guild=True)
     async def set_interval(self, ctx: commands.Context, minutes: int):
@@ -508,6 +665,8 @@ class TwitchClips(commands.Cog):
         interval = await self.config.guild(ctx.guild).scan_interval()
         clips_per = await self.config.guild(ctx.guild).clips_per_scan()
         auto_enabled = await self.config.guild(ctx.guild).auto_scan_enabled()
+        stream_end_enabled = await self.config.guild(ctx.guild).scan_on_stream_end()
+        stream_check_interval = await self.config.guild(ctx.guild).stream_check_interval()
         tracked_users = await self.config.guild(ctx.guild).tracked_users()
         
         forum_channel = ctx.guild.get_channel(forum_id) if forum_id else None
@@ -535,6 +694,16 @@ class TwitchClips(commands.Cog):
         embed.add_field(
             name="Clips per User",
             value=str(clips_per),
+            inline=True
+        )
+        embed.add_field(
+            name="Scan on Stream End",
+            value="✅ Enabled" if stream_end_enabled else "❌ Disabled",
+            inline=True
+        )
+        embed.add_field(
+            name="Stream Check Interval",
+            value=f"{stream_check_interval // 60} minutes",
             inline=True
         )
         embed.add_field(
