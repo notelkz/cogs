@@ -410,10 +410,16 @@ class TwitchClips(commands.Cog):
                 last_clip_id = user_data.get("last_clip_id")
                 
                 new_clips = []
-                for clip in clips:
-                    if clip["id"] == last_clip_id:
-                        break
-                    new_clips.append(clip)
+                
+                if last_clip_id:
+                    # We have a last clip ID, only get clips newer than it
+                    for clip in clips:
+                        if clip["id"] == last_clip_id:
+                            break
+                        new_clips.append(clip)
+                elif clips:
+                    # First time scanning or reset - post all recent clips
+                    new_clips = clips
                 
                 if new_clips:
                     stats["new_clips"] += len(new_clips)
@@ -431,13 +437,6 @@ class TwitchClips(commands.Cog):
                         await asyncio.sleep(2)
                     
                     # Update last clip ID
-                    user_data["last_clip_id"] = new_clips[0]["id"]
-                    user_data["last_check"] = datetime.now().timestamp()
-                    
-                    async with self.config.guild(guild).tracked_users() as users:
-                        users[username] = user_data
-                elif clips and not last_clip_id:
-                    # First time checking this user, just save the latest clip ID
                     user_data["last_clip_id"] = clips[0]["id"]
                     user_data["last_check"] = datetime.now().timestamp()
                     
@@ -530,6 +529,40 @@ class TwitchClips(commands.Cog):
                 await ctx.send(f"✅ Stopped tracking: {username}")
             else:
                 await ctx.send(f"❌ {username} is not being tracked.")
+    
+    @twitchclips.command(name="resetuser")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def reset_user(self, ctx: commands.Context, username: str):
+        """Reset tracking data for a user (clears last clip ID to allow re-scanning)."""
+        username = username.lower().strip()
+        
+        async with self.config.guild(ctx.guild).tracked_users() as users:
+            if username not in users:
+                await ctx.send(f"❌ {username} is not being tracked.")
+                return
+            
+            # Reset the last clip ID but keep other data
+            users[username]["last_clip_id"] = None
+            users[username]["last_check"] = 0
+        
+        await ctx.send(f"✅ Reset tracking data for {username}. Next scan will post recent clips.")
+    
+    @twitchclips.command(name="resetall")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def reset_all(self, ctx: commands.Context):
+        """Reset tracking data for ALL users (clears all last clip IDs)."""
+        async with self.config.guild(ctx.guild).tracked_users() as users:
+            if not users:
+                await ctx.send("❌ No users are being tracked.")
+                return
+            
+            count = 0
+            for username in users:
+                users[username]["last_clip_id"] = None
+                users[username]["last_check"] = 0
+                count += 1
+        
+        await ctx.send(f"✅ Reset tracking data for {count} users. Next scan will post recent clips for all.")
     
     @twitchclips.command(name="listusers", aliases=["list"])
     async def list_users(self, ctx: commands.Context):
