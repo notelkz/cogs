@@ -7,7 +7,7 @@ import asyncio
 # --- VIEWS ---
 
 class MultiRoleView(View):
-    """Generic View for all three categories with Emojis and Clear button"""
+    """Generic View for all three categories with Emojis"""
     def __init__(self, roles: dict, category: str):
         super().__init__(timeout=None)
         
@@ -34,7 +34,6 @@ class MultiRoleView(View):
             ]
         }
 
-        # Add specific role buttons
         for key, label, style, emoji in layouts.get(category, []):
             if roles.get(key):
                 self.add_item(Button(
@@ -43,19 +42,11 @@ class MultiRoleView(View):
                     emoji=emoji,
                     custom_id=f"selfrole_{category}_{key}"
                 ))
-        
-        # Add a Clear button at the end
-        self.add_item(Button(
-            style=discord.ButtonStyle.gray,
-            label="Clear My Roles",
-            emoji="🗑️",
-            custom_id=f"selfrole_{category}_clear"
-        ))
 
 # --- COG ---
 
 class SelfRoles(commands.Cog):
-    """Combined Role Selection with Quit option and Other/Ask"""
+    """Combined Role Selection with Quit option and fixed Other/Ask label"""
 
     def __init__(self, bot):
         self.bot = bot
@@ -88,16 +79,6 @@ class SelfRoles(commands.Cog):
 
         data = await self.config.guild(interaction.guild).get_attr(target_config)()
 
-        # Handle Clear Button
-        if role_key == "clear":
-            roles_to_remove = [interaction.guild.get_role(rid) for rid in data.values() if rid]
-            existing_roles = [r for r in roles_to_remove if r and r in interaction.user.roles]
-            if existing_roles:
-                await interaction.user.remove_roles(*existing_roles)
-                return await interaction.response.send_message(f"Cleared your {category} roles.", ephemeral=True)
-            return await interaction.response.send_message("You don't have any of these roles assigned.", ephemeral=True)
-
-        # Handle Role Assignment
         role_id = data.get(role_key)
         if not role_id:
             return await interaction.response.send_message("Role not configured.", ephemeral=True)
@@ -143,9 +124,11 @@ class SelfRoles(commands.Cog):
                     if content == "quit":
                         return await ctx.send("❌ Setup cancelled.")
                     
+                    # Normalizing keys for storage
                     key = label.lower().split("/")[0].split(" ")[0]
                     if "north" in label.lower(): key = "na"
                     if "south" in label.lower(): key = "sa"
+                    if "other" in label.lower(): key = "ask"
 
                     if content == "skip":
                         roles_to_save[key] = None
