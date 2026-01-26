@@ -1,0 +1,11 @@
+{
+    "author": ["elkz"],
+    "description": "Combined role selection for platforms, locations, and pronouns.",
+    "disabled": false,
+    "end_user_data_statement": "This cog stores Discord Role IDs and Message IDs provided by the administrator to facilitate role self-assignment. No personal user data is stored.",
+    "install_msg": "Thanks for installing SelfRoles! Use `!selfroles setup` to begin.",
+    "name": "SelfRoles",
+    "short": "Self-assignable roles with buttons.",
+    "tags": ["roles", "buttons", "utility"],
+    "version": "1.0.0"
+}
