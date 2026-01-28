@@ -1,90 +1,178 @@
 import discord
 from redbot.core import commands, Config
 from discord.ui import Button, View
-from typing import Optional
+from typing import Optional, Union
 import asyncio
+import re
 
-class SelfRoleButton(Button):
-    def __init__(self, role_id: str, label: str, style: discord.ButtonStyle, emoji: Optional[str] = None):
-        super().__init__(label=label, style=style, emoji=emoji)
-        self.role_id = role_id
+# --- VIEWS ---
 
-    async def callback(self, interaction: discord.Interaction):
-        try:
-            member = interaction.user
-            role = interaction.guild.get_role(int(self.role_id))
-            
-            if not role:
-                await interaction.response.send_message("Role not found!", ephemeral=True)
-                return
-                
-            if role in member.roles:
-                await member.remove_roles(role, reason="Self-role removed")
-                await interaction.response.send_message(f"Removed role: {role.name}", ephemeral=True)
-            else:
-                await member.add_roles(role, reason="Self-role added")
-                await interaction.response.send_message(f"Added role: {role.name}", ephemeral=True)
-                
-        except Exception as e:
-            await interaction.response.send_message(f"Error: {e}", ephemeral=True)
-
-class SelfRoleView(View):
-    def __init__(self, roles_config: dict):
+class MultiRoleView(View):
+    def __init__(self, roles: dict, category: str, custom_emojis: dict = None):
         super().__init__(timeout=None)
-        # Add buttons for each role
-        for role_key, role_id in roles_config.items():
-            # Create a button for each role
-            button = SelfRoleButton(
-                role_id=role_id,
-                label=role_key.title(),
-                style=discord.ButtonStyle.secondary
-            )
-            self.add_item(button)
+        custom_emojis = custom_emojis or {}
+        
+        layouts = {
+            "platform": [
+                ("pc", "PC", discord.ButtonStyle.secondary, "💻"),
+                ("nintendo", "Nintendo", discord.ButtonStyle.danger, "🎮"),
+                ("playstation", "PlayStation", discord.ButtonStyle.primary, "🟦"),
+                ("xbox", "Xbox", discord.ButtonStyle.success, "🟩")
+            ],
+            "location": [
+                ("europe", "Europe", discord.ButtonStyle.primary, "🇪🇺"),
+                ("na", "North America", discord.ButtonStyle.success, "🇺🇸"),
+                ("sa", "South America", discord.ButtonStyle.success, "🇧🇷"),
+                ("asia", "Asia", discord.ButtonStyle.danger, "🏮"),
+                ("oceania", "Oceania", discord.ButtonStyle.primary, "🌊"),
+                ("africa", "Africa", discord.ButtonStyle.secondary, "🐘")
+            ],
+            "pronoun": [
+                ("he", "He/Him", discord.ButtonStyle.secondary, "🔹"),
+                ("she", "She/Her", discord.ButtonStyle.secondary, "🔸"),
+                ("they", "They/Them", discord.ButtonStyle.secondary, "▫️"),
+                ("ask", "Other/Ask", discord.ButtonStyle.secondary, "💬")
+            ]
+        }
+
+        for key, label, style, default_emoji in layouts.get(category, []):
+            if roles.get(key):
+                # Priority: Saved custom emoji -> Default emoji
+                raw_emoji = custom_emojis.get(key) or default_emoji
+                
+                # Create button with emoji properly
+                btn = Button(
+                    style=style,
+                    label=label,
+                    custom_id=f"selfrole_{category}_{key}",
+                    emoji=raw_emoji if raw_emoji else None
+                )
+                
+                self.add_item(btn)
+
+# --- COG ---
 
 class SelfRoles(commands.Cog):
-    """Self-role management system"""
-
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, identifier=1234567890)
-        
-        default_guild = {
-            "roles": {}
-        }
-        
-        self.config.register_guild(**default_guild)
+        self.config = Config.get_conf(self, identifier=5566778899)
+        self.config.register_guild(
+            platforms={}, platform_emojis={}, locations={}, pronouns={}
+        )
+        bot.add_listener(self.button_listener, "on_interaction")
 
-    @commands.group(name="selfrole", aliases=["srole", "roles"])
-    @commands.guild_only()
-    async def selfrole(self, ctx):
-        """Self-role management commands"""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
-
-    @selfrole.command(name="add")
-    @commands.has_permissions(manage_roles=True)
-    async def selfrole_add(self, ctx, role: discord.Role):
-        """Add a role to the self-role system"""
-        async with self.config.guild(ctx.guild).roles() as roles:
-            roles[role.name.lower()] = str(role.id)
-        await ctx.send(f"Added role **{role.name}** to self-role system")
-
-    @selfrole.command(name="post")
-    @commands.has_permissions(manage_roles=True)
-    async def selfrole_post(self, ctx, channel: discord.TextChannel = None):
-        """Post the self-role buttons in a channel"""
-        roles = await self.config.guild(ctx.guild).roles()
-        
-        if not roles:
-            await ctx.send("No self-roles configured. Use `selfrole add` to add some.")
+    async def button_listener(self, interaction: discord.Interaction):
+        if not interaction.data or "custom_id" not in interaction.data:
             return
+        custom_id = interaction.data["custom_id"]
+        if not custom_id.startswith("selfrole_"):
+            return
+            
+        parts = custom_id.split("_")
+        category_map = {"platform": "platforms", "location": "locations", "pronoun": "pronouns"}
+        target_config = category_map.get(parts[1])
+        
+        data = await self.config.guild(interaction.guild).get_attr(target_config)()
+        role_id = data.get(parts[2])
+        
+        role = interaction.guild.get_role(role_id)
+        if not role: return
+            
+        if role in interaction.user.roles:
+            await interaction.user.remove_roles(role)
+            await interaction.response.send_message(f"Removed **{role.name}**.", ephemeral=True)
+        else:
+            await interaction.user.add_roles(role)
+            await interaction.response.send_message(f"Added **{role.name}**.", ephemeral=True)
 
+    @commands.group()
+    @commands.admin_or_permissions(manage_guild=True)
+    async def selfroles(self, ctx):
+        """Self-assignable roles management"""
+        pass
+
+    @selfroles.command()
+    async def setup(self, ctx):
+        """Setup: Type '@Role Emoji'. Example: @PC 🖥️"""
+        setup_structure = {
+            "platforms": ["PC", "Nintendo", "PlayStation", "Xbox"],
+            "locations": ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"],
+            "pronouns": ["He/Him", "She/Her", "They/Them", "Other/Ask"]
+        }
+
+        await ctx.send("Starting setup. Type **skip** to skip, or **quit** to exit.")
+
+        for cat_key, labels in setup_structure.items():
+            await ctx.send(f"--- **{cat_key.upper()}** ---")
+            roles_to_save = {}
+            emojis_to_save = {}
+            
+            for label in labels:
+                await ctx.send(f"Role/Emoji for **{label}**:")
+                try:
+                    msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=60.0)
+                    content = msg.content.strip()
+                    
+                    if content.lower() == "quit": return await ctx.send("Quit.")
+                    if content.lower() == "skip": continue
+
+                    # Find Role ID
+                    role_id = None
+                    if msg.role_mentions:
+                        role_id = msg.role_mentions[0].id
+                    else:
+                        id_match = re.search(r'\d{17,20}', content)
+                        if id_match: role_id = int(id_match.group())
+
+                    if not role_id:
+                        await ctx.send("No role found. Skipping.")
+                        continue
+
+                    # Key mapping
+                    key = label.lower().split("/")[0].split(" ")[0]
+                    if "north" in label.lower(): key = "na"
+                    if "south" in label.lower(): key = "sa"
+                    if "other" in label.lower(): key = "ask"
+
+                    roles_to_save[key] = role_id
+
+                    # Emoji extraction
+                    if cat_key == "platforms":
+                        # Look for custom emoji format <:name:id> or <a:name:id>
+                        custom_match = re.search(r'<(a?):(\w+):(\d+)>', content)
+                        if custom_match:
+                            emojis_to_save[key] = custom_match.group(0)
+                        else:
+                            # Try to find a standard unicode emoji
+                            clean_txt = re.sub(r'<@&\d+>|\d{17,20}', '', content).strip()
+                            emojis_to_save[key] = clean_txt if clean_txt else None
+
+                except asyncio.TimeoutError:
+                    return await ctx.send("Timed out.")
+
+            await self.config.guild(ctx.guild).get_attr(cat_key).set(roles_to_save)
+            if cat_key == "platforms":
+                await self.config.guild(ctx.guild).platform_emojis.set(emojis_to_save)
+
+        await ctx.send("Setup complete. Run `!selfroles post`.")
+
+    @selfroles.command()
+    async def post(self, ctx, channel: Optional[discord.TextChannel] = None):
+        channel = channel or ctx.channel
+        guild_data = await self.config.guild(ctx.guild).all()
+        
+        # We send one category at a time to catch which one causes the error
         try:
-            view = SelfRoleView(roles)
-            message = await (channel or ctx.channel).send("Select your roles:", view=view)
-            await ctx.send("Self-role buttons posted successfully!")
+            p_view = MultiRoleView(guild_data["platforms"], "platform", guild_data.get("platform_emojis"))
+            await channel.send(embed=discord.Embed(title="🎮 Gaming Platforms", color=discord.Color.blurple()), view=p_view)
+            
+            l_view = MultiRoleView(guild_data["locations"], "location")
+            await channel.send(embed=discord.Embed(title="🌍 Regional Roles", color=discord.Color.green()), view=l_view)
+            
+            pr_view = MultiRoleView(guild_data["pronouns"], "pronoun")
+            await channel.send(embed=discord.Embed(title="✨ Pronouns", color=discord.Color.teal()), view=pr_view)
         except Exception as e:
-            await ctx.send(f"Error posting buttons: {e}")
+            await ctx.send(f"Error posting: {e}. Check logs for details.")
 
 def setup(bot):
     bot.add_cog(SelfRoles(bot))
