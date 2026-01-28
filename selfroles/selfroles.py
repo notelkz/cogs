@@ -38,7 +38,6 @@ class MultiRoleView(View):
             if not role_id:
                 continue
 
-            # This part now handles custom server emojis correctly
             emoji_to_use = custom_emojis.get(key) or default_emoji
 
             self.add_item(Button(
@@ -83,6 +82,12 @@ class SelfRoles(commands.Cog):
         pass
 
     @selfroles.command()
+    async def clear_data(self, ctx):
+        """Wipes the config"""
+        await self.config.guild(ctx.guild).clear()
+        await ctx.send("✅ Data cleared.")
+
+    @selfroles.command()
     async def setup(self, ctx):
         """Setup: Type '@Role :custom_emoji:'"""
         setup_structure = {
@@ -91,7 +96,7 @@ class SelfRoles(commands.Cog):
             "pronouns": ["He/Him", "She/Her", "They/Them", "Other/Ask"]
         }
 
-        await ctx.send("Starting setup. Use **skip** or **quit** as needed.")
+        await ctx.send("Starting setup. Use **skip** or **quit**.")
 
         for cat_key, labels in setup_structure.items():
             await ctx.send(f"--- **{cat_key.upper()}** ---")
@@ -105,7 +110,7 @@ class SelfRoles(commands.Cog):
                     if msg.content.lower() == "quit": return
                     if msg.content.lower() == "skip": continue
 
-                    # 1. Get Role ID
+                    # 1. Capture Role ID
                     role_id = None
                     if msg.role_mentions:
                         role_id = msg.role_mentions[0].id
@@ -114,26 +119,32 @@ class SelfRoles(commands.Cog):
                         if match: role_id = int(match.group())
                     
                     if not role_id:
-                        await ctx.send("Role not found. skipping.")
+                        await ctx.send("❌ No role found. Skipping.")
                         continue
+
+                    # 2. Capture Emoji
+                    emoji_val = None
+                    # Search for custom emoji format
+                    custom_match = re.search(r'<(a?):(\w+):(\d+)>', msg.content)
+                    if custom_match:
+                        emoji_val = custom_match.group(0)
+                    else:
+                        # Fallback to standard unicode
+                        cleaned = re.sub(r'<@&\d+>|\d{17,20}', '', msg.content).strip()
+                        if cleaned:
+                            emoji_val = cleaned.split()[0]
 
                     key = label.lower().split("/")[0].split(" ")[0]
                     if "north" in label.lower(): key = "na"
                     if "south" in label.lower(): key = "sa"
                     if "other" in label.lower(): key = "ask"
+                    
                     roles_to_save[key] = role_id
-
-                    # 2. Get Custom Emoji correctly
-                    if cat_key == "platforms":
-                        # Check if message contains a custom emoji
-                        custom_emoji_match = re.search(r'<(a?):(\w+):(\d+)>', msg.content)
-                        if custom_emoji_match:
-                            emojis_to_save[key] = custom_emoji_match.group(0)
-                        else:
-                            # Fallback: check for standard unicode emoji in the text
-                            cleaned = re.sub(r'<@&\d+>|\d{17,20}', '', msg.content).strip()
-                            if cleaned:
-                                emojis_to_save[key] = cleaned.split()[0]
+                    if cat_key == "platforms" and emoji_val:
+                        emojis_to_save[key] = emoji_val
+                        await ctx.send(f"✅ Saved: {label} with {emoji_val}")
+                    else:
+                        await ctx.send(f"✅ Saved: {label}")
 
                 except asyncio.TimeoutError:
                     return await ctx.send("Timed out.")
@@ -149,7 +160,6 @@ class SelfRoles(commands.Cog):
         channel = channel or ctx.channel
         data = await self.config.guild(ctx.guild).all()
         
-        # We wrap the whole thing in one try-except for the 400 error
         try:
             p_view = MultiRoleView(data["platforms"], "platform", data.get("platform_emojis"))
             await channel.send(embed=discord.Embed(title="🎮 Gaming Platforms", color=0x5865F2), view=p_view)
@@ -159,5 +169,5 @@ class SelfRoles(commands.Cog):
             
             pr_view = MultiRoleView(data["pronouns"], "pronoun")
             await channel.send(embed=discord.Embed(title="✨ Pronouns", color=0x1ABC9C), view=pr_view)
-        except discord.HTTPException as e:
-            await ctx.send(f"❌ Discord rejected the emojis. Error: {e}")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {e}")
