@@ -28,7 +28,7 @@ class MultiRoleView(View):
             "pronoun": [
                 ("he", "He/Him", discord.ButtonStyle.secondary, "🔹"),
                 ("she", "She/Her", discord.ButtonStyle.secondary, "🔸"),
-                ("they", "They/Them", discord.ButtonStyle.secondary, "▫️"),
+                ("they", " They/Them", discord.ButtonStyle.secondary, "▫️"),
                 ("ask", "Other/Ask", discord.ButtonStyle.secondary, "💬")
             ]
         }
@@ -39,7 +39,6 @@ class MultiRoleView(View):
                 continue
 
             emoji_to_use = custom_emojis.get(key) or default_emoji
-
             self.add_item(Button(
                 style=style,
                 label=label,
@@ -83,20 +82,20 @@ class SelfRoles(commands.Cog):
 
     @selfroles.command()
     async def clear_data(self, ctx):
-        """Wipes the config"""
+        """Wipes the config to fix errors"""
         await self.config.guild(ctx.guild).clear()
         await ctx.send("✅ Data cleared.")
 
     @selfroles.command()
     async def setup(self, ctx):
-        """Setup: Type '@Role :custom_emoji:'"""
+        """Setup: Type '@Role :emoji:'"""
         setup_structure = {
             "platforms": ["PC", "Nintendo", "PlayStation", "Xbox"],
             "locations": ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"],
             "pronouns": ["He/Him", "She/Her", "They/Them", "Other/Ask"]
         }
 
-        await ctx.send("Starting setup. Use **skip** or **quit**.")
+        await ctx.send("Starting setup. Type **skip** or **quit**.")
 
         for cat_key, labels in setup_structure.items():
             await ctx.send(f"--- **{cat_key.upper()}** ---")
@@ -107,32 +106,41 @@ class SelfRoles(commands.Cog):
                 await ctx.send(f"Role & Emoji for **{label}**:")
                 try:
                     msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=60.0)
-                    if msg.content.lower() == "quit": return
-                    if msg.content.lower() == "skip": continue
+                    content = msg.content.strip()
+                    if content.lower() in ["quit", "skip"]: 
+                        continue
 
-                    # 1. Capture Role ID
+                    # 1. Capture Role
                     role_id = None
                     if msg.role_mentions:
                         role_id = msg.role_mentions[0].id
                     else:
-                        match = re.search(r'\d{17,20}', msg.content)
+                        match = re.search(r'\d{17,20}', content)
                         if match: role_id = int(match.group())
                     
                     if not role_id:
-                        await ctx.send("❌ No role found. Skipping.")
+                        await ctx.send("❌ No role found.")
                         continue
 
-                    # 2. Capture Emoji
+                    # 2. Capture Emoji (Advanced conversion)
                     emoji_val = None
-                    # Search for custom emoji format
-                    custom_match = re.search(r'<(a?):(\w+):(\d+)>', msg.content)
+                    # Search for standard custom emoji format <:name:id>
+                    custom_match = re.search(r'<(a?):(\w+):(\d+)>', content)
                     if custom_match:
                         emoji_val = custom_match.group(0)
                     else:
-                        # Fallback to standard unicode
-                        cleaned = re.sub(r'<@&\d+>|\d{17,20}', '', msg.content).strip()
-                        if cleaned:
-                            emoji_val = cleaned.split()[0]
+                        # Try to find emoji by name if user just typed :emoji:
+                        name_match = re.search(r':(\w+):', content)
+                        if name_match:
+                            emoji_name = name_match.group(1)
+                            found_emoji = discord.utils.get(ctx.guild.emojis, name=emoji_name)
+                            if found_emoji:
+                                emoji_val = str(found_emoji)
+                        
+                        # Fallback to standard unicode emoji
+                        if not emoji_val:
+                            cleaned = re.sub(r'<@&\d+>|\d{17,20}', '', content).strip()
+                            if cleaned: emoji_val = cleaned.split()[0]
 
                     key = label.lower().split("/")[0].split(" ")[0]
                     if "north" in label.lower(): key = "na"
@@ -142,9 +150,9 @@ class SelfRoles(commands.Cog):
                     roles_to_save[key] = role_id
                     if cat_key == "platforms" and emoji_val:
                         emojis_to_save[key] = emoji_val
-                        await ctx.send(f"✅ Saved: {label} with {emoji_val}")
+                        await ctx.send(f"✅ Saved with emoji: {emoji_val}")
                     else:
-                        await ctx.send(f"✅ Saved: {label}")
+                        await ctx.send(f"✅ Saved.")
 
                 except asyncio.TimeoutError:
                     return await ctx.send("Timed out.")
@@ -161,6 +169,7 @@ class SelfRoles(commands.Cog):
         data = await self.config.guild(ctx.guild).all()
         
         try:
+            # Post each category individually to isolate errors
             p_view = MultiRoleView(data["platforms"], "platform", data.get("platform_emojis"))
             await channel.send(embed=discord.Embed(title="🎮 Gaming Platforms", color=0x5865F2), view=p_view)
             
@@ -170,4 +179,4 @@ class SelfRoles(commands.Cog):
             pr_view = MultiRoleView(data["pronouns"], "pronoun")
             await channel.send(embed=discord.Embed(title="✨ Pronouns", color=0x1ABC9C), view=pr_view)
         except Exception as e:
-            await ctx.send(f"❌ Error: {e}")
+            await ctx.send(f"❌ Error: {e}\nRun `!selfroles clear_data` to reset.")
