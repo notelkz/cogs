@@ -35,29 +35,24 @@ class MultiRoleView(View):
 
         for key, label, style, default_emoji in layouts.get(category, []):
             role_id = roles.get(key)
-            if role_id:
-                # Get emoji and strip any potential hidden whitespace
-                raw_emoji = custom_emojis.get(key)
-                if raw_emoji:
-                    raw_emoji = raw_emoji.strip()
-                
-                emoji_to_use = raw_emoji if raw_emoji else default_emoji
-                
-                btn = Button(
-                    style=style,
-                    label=label,
-                    emoji=emoji_to_use,
-                    custom_id=f"selfrole_{category}_{key}"
-                )
-                self.add_item(btn)
+            if not role_id:
+                continue
+
+            # This part now handles custom server emojis correctly
+            emoji_to_use = custom_emojis.get(key) or default_emoji
+
+            self.add_item(Button(
+                style=style,
+                label=label,
+                emoji=emoji_to_use,
+                custom_id=f"selfrole_{category}_{key}"
+            ))
 
 class SelfRoles(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=5566778899)
-        self.config.register_guild(
-            platforms={}, platform_emojis={}, locations={}, pronouns={}
-        )
+        self.config.register_guild(platforms={}, platform_emojis={}, locations={}, pronouns={})
         bot.add_listener(self.button_listener, "on_interaction")
 
     async def button_listener(self, interaction: discord.Interaction):
@@ -88,20 +83,15 @@ class SelfRoles(commands.Cog):
         pass
 
     @selfroles.command()
-    async def clear_data(self, ctx):
-        """Wipes the saved emojis and roles to fix 'Invalid Emoji' errors."""
-        await self.config.guild(ctx.guild).clear()
-        await ctx.send("✅ Data cleared. You can now start a fresh `!selfroles setup`.")
-
-    @selfroles.command()
     async def setup(self, ctx):
+        """Setup: Type '@Role :custom_emoji:'"""
         setup_structure = {
             "platforms": ["PC", "Nintendo", "PlayStation", "Xbox"],
             "locations": ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"],
             "pronouns": ["He/Him", "She/Her", "They/Them", "Other/Ask"]
         }
 
-        await ctx.send("Type **skip** to skip, or **quit** to exit.")
+        await ctx.send("Starting setup. Use **skip** or **quit** as needed.")
 
         for cat_key, labels in setup_structure.items():
             await ctx.send(f"--- **{cat_key.upper()}** ---")
@@ -109,40 +99,41 @@ class SelfRoles(commands.Cog):
             emojis_to_save = {}
             
             for label in labels:
-                await ctx.send(f"Send Role & Emoji for **{label}**:")
+                await ctx.send(f"Role & Emoji for **{label}**:")
                 try:
                     msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=60.0)
-                    content = msg.content.strip()
-                    if content.lower() == "quit": return
-                    if content.lower() == "skip": continue
+                    if msg.content.lower() == "quit": return
+                    if msg.content.lower() == "skip": continue
 
                     # 1. Get Role ID
                     role_id = None
                     if msg.role_mentions:
                         role_id = msg.role_mentions[0].id
                     else:
-                        match = re.search(r'\d{17,20}', content)
+                        match = re.search(r'\d{17,20}', msg.content)
                         if match: role_id = int(match.group())
                     
                     if not role_id:
-                        await ctx.send("No role found. Skipping.")
+                        await ctx.send("Role not found. skipping.")
                         continue
 
-                    # 2. Get Key
                     key = label.lower().split("/")[0].split(" ")[0]
                     if "north" in label.lower(): key = "na"
                     if "south" in label.lower(): key = "sa"
                     if "other" in label.lower(): key = "ask"
-
                     roles_to_save[key] = role_id
 
-                    # 3. Get Emoji (Platforms Only)
+                    # 2. Get Custom Emoji correctly
                     if cat_key == "platforms":
-                        # Strip out the role mention/ID to find the emoji
-                        emoji_part = re.sub(r'<@&\d+>|\d{17,20}', '', content).strip()
-                        if emoji_part:
-                            # Discord emoji format: <:name:id> or raw unicode
-                            emojis_to_save[key] = emoji_part
+                        # Check if message contains a custom emoji
+                        custom_emoji_match = re.search(r'<(a?):(\w+):(\d+)>', msg.content)
+                        if custom_emoji_match:
+                            emojis_to_save[key] = custom_emoji_match.group(0)
+                        else:
+                            # Fallback: check for standard unicode emoji in the text
+                            cleaned = re.sub(r'<@&\d+>|\d{17,20}', '', msg.content).strip()
+                            if cleaned:
+                                emojis_to_save[key] = cleaned.split()[0]
 
                 except asyncio.TimeoutError:
                     return await ctx.send("Timed out.")
@@ -158,17 +149,15 @@ class SelfRoles(commands.Cog):
         channel = channel or ctx.channel
         data = await self.config.guild(ctx.guild).all()
         
+        # We wrap the whole thing in one try-except for the 400 error
         try:
-            # Platform Embed
             p_view = MultiRoleView(data["platforms"], "platform", data.get("platform_emojis"))
             await channel.send(embed=discord.Embed(title="🎮 Gaming Platforms", color=0x5865F2), view=p_view)
             
-            # Location Embed
             l_view = MultiRoleView(data["locations"], "location")
             await channel.send(embed=discord.Embed(title="🌍 Regional Roles", color=0x3BA55D), view=l_view)
             
-            # Pronoun Embed
             pr_view = MultiRoleView(data["pronouns"], "pronoun")
             await channel.send(embed=discord.Embed(title="✨ Pronouns", color=0x1ABC9C), view=pr_view)
-        except Exception as e:
-            await ctx.send(f"⚠️ Error: {e}\nTry running `!selfroles clear_data` and setting up again.")
+        except discord.HTTPException as e:
+            await ctx.send(f"❌ Discord rejected the emojis. Error: {e}")
