@@ -39,6 +39,10 @@ class MultiRoleView(View):
                 continue
 
             emoji_to_use = custom_emojis.get(key) or default_emoji
+            # Ensure emoji is valid
+            if emoji_to_use and not isinstance(emoji_to_use, str):
+                emoji_to_use = None
+            
             self.add_item(Button(
                 style=style,
                 label=label,
@@ -51,7 +55,6 @@ class SelfRoles(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=5566778899)
         self.config.register_guild(platforms={}, platform_emojis={}, locations={}, pronouns={})
-        bot.add_listener(self.button_listener, "on_interaction")
 
     async def button_listener(self, interaction: discord.Interaction):
         if not interaction.data or "custom_id" not in interaction.data:
@@ -65,14 +68,20 @@ class SelfRoles(commands.Cog):
         data = await self.config.guild(interaction.guild).get_attr(cat_map[parts[1]])()
         
         role = interaction.guild.get_role(data.get(parts[2]))
-        if not role: return
+        if not role: 
+            return
             
-        if role in interaction.user.roles:
-            await interaction.user.remove_roles(role)
-            await interaction.response.send_message(f"Removed **{role.name}**.", ephemeral=True)
-        else:
-            await interaction.user.add_roles(role)
-            await interaction.response.send_message(f"Added **{role.name}**.", ephemeral=True)
+        try:
+            if role in interaction.user.roles:
+                await interaction.user.remove_roles(role)
+                await interaction.response.send_message(f"Removed **{role.name}**.", ephemeral=True)
+            else:
+                await interaction.user.add_roles(role)
+                await interaction.response.send_message(f"Added **{role.name}**.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ I don't have permission to manage roles.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ An error occurred: {e}", ephemeral=True)
 
     @commands.group()
     @commands.admin_or_permissions(manage_guild=True)
@@ -93,84 +102,155 @@ class SelfRoles(commands.Cog):
             "locations": ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"],
             "pronouns": ["He/Him", "She/Her", "They/Them", "Other/Ask"]
         }
+        
+        await ctx.send("Starting setup. Please respond to each prompt with a custom emoji or type 'skip' to use the default.")
 
-        await ctx.send("Starting setup. Type **quit** to stop.")
-
-        for cat_key, labels in setup_structure.items():
-            await ctx.send(f"--- **{cat_key.upper()}** ---")
-            roles_to_save = {}
-            emojis_to_save = {}
-            
-            for label in labels:
-                # 1. Get Role
-                await ctx.send(f"Mention the role for **{label}**:")
-                try:
-                    r_msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=60.0)
-                    if r_msg.content.lower() == "quit": return
+        for category, items in setup_structure.items():
+            if category == "platforms":
+                category_emojis = {}
+                for item in items:
+                    key = item.lower().replace(" ", "")
+                    if key == "pc":
+                        key = "pc"
+                    elif key == "playstation":
+                        key = "playstation"
+                    elif key == "nintendo":
+                        key = "nintendo"
+                    elif key == "xbox":
+                        key = "xbox"
+                    else:
+                        key = key[:2]  # Fallback to first 2 letters
                     
-                    role_id = r_msg.role_mentions[0].id if r_msg.role_mentions else None
-                    if not role_id:
-                        match = re.search(r'\d{17,20}', r_msg.content)
-                        role_id = int(match.group()) if match else None
-
-                    if not role_id:
-                        await ctx.send("❌ No role found. Skipping.")
-                        continue
-
-                    # 2. Get Emoji via Reaction
-                    key = label.lower().split("/")[0].split(" ")[0]
-                    if "north" in label.lower(): key = "na"
-                    if "south" in label.lower(): key = "sa"
-                    if "other" in label.lower(): key = "ask"
-                    roles_to_save[key] = role_id
-
-                    if cat_key == "platforms":
-                        react_prompt = await ctx.send(f"**React to THIS message** with the custom emoji for **{label}** (or type 'skip' for default):")
-                        
-                        try:
-                            # Wait for reaction OR a 'skip' message
-                            tasks = [
-                                self.bot.wait_for("reaction_add", check=lambda r, u: u == ctx.author and r.message.id == react_prompt.id),
-                                self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.content.lower() == "skip")
-                            ]
-                            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED, timeout=45.0)
-                            
-                            for task in pending:
-                                task.cancel()
-
-                            result = done.pop().result()
-                            if isinstance(result, tuple): # It was a reaction
-                                emoji_obj = result[0].emoji
-                                emojis_to_save[key] = str(emoji_obj)
-                                await ctx.send(f"✅ Saved {label} with {emoji_obj}")
-                            else:
-                                await ctx.send(f"✅ Saved {label} with default emoji.")
-
-                        except asyncio.TimeoutError:
-                            await ctx.send("Timed out. Using default emoji.")
-
-                except Exception as e:
-                    await ctx.send(f"Error: {e}. Skipping.")
-
-            await self.config.guild(ctx.guild).get_attr(cat_key).set(roles_to_save)
-            if cat_key == "platforms":
-                await self.config.guild(ctx.guild).platform_emojis.set(emojis_to_save)
-
-        await ctx.send("Setup complete. Run `!selfroles post`.")
+                    await ctx.send(f"Please provide a custom emoji for **{item}** (or type 'skip' to use default):")
+                    try:
+                        response = await self.bot.wait_for('message', check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=30.0)
+                        if response.content.lower() == 'skip':
+                            category_emojis[key] = None
+                        else:
+                            category_emojis[key] = response.content
+                    except asyncio.TimeoutError:
+                        await ctx.send(f"Timeout for {item}, using default emoji.")
+                        category_emojis[key] = None
+                
+                await self.config.guild(ctx.guild).platform_emojis.set(category_emojis)
+            else:
+                # For locations and pronouns, just set defaults for now
+                pass
+        
+        await ctx.send("Setup completed! You can now use the commands to manage self-assignable roles.")
 
     @selfroles.command()
-    async def post(self, ctx, channel: Optional[discord.TextChannel] = None):
-        channel = channel or ctx.channel
-        data = await self.config.guild(ctx.guild).all()
+    async def post(self, ctx, channel: discord.TextChannel = None):
+        """Post the self-assignable role buttons in a channel"""
+        if channel is None:
+            channel = ctx.channel
+            
+        # Get current data
+        platforms = await self.config.guild(ctx.guild).platforms()
+        locations = await self.config.guild(ctx.guild).locations()
+        pronouns = await self.config.guild(ctx.guild).pronouns()
+        platform_emojis = await self.config.guild(ctx.guild).platform_emojis()
         
-        try:
-            p_view = MultiRoleView(data["platforms"], "platform", data.get("platform_emojis"))
-            await channel.send(embed=discord.Embed(title="🎮 Gaming Platforms", color=0x5865F2), view=p_view)
+        if not platforms and not locations and not pronouns:
+            await ctx.send("No role data configured. Please run setup first.")
+            return
             
-            l_view = MultiRoleView(data["locations"], "location")
-            await channel.send(embed=discord.Embed(title="🌍 Regional Roles", color=0x3BA55D), view=l_view)
+        # Send platform buttons
+        if platforms:
+            platform_view = MultiRoleView(platforms, "platform", platform_emojis)
+            await channel.send("Choose your platform:", view=platform_view)
             
-            pr_view = MultiRoleView(data["pronouns"], "pronoun")
-            await channel.send(embed=discord.Embed(title="✨ Pronouns", color=0x1ABC9C), view=pr_view)
-        except Exception as e:
-            await ctx.send(f"❌ Error: {e}")
+        # Send location buttons
+        if locations:
+            location_view = MultiRoleView(locations, "location")
+            await channel.send("Choose your location:", view=location_view)
+            
+        # Send pronoun buttons
+        if pronouns:
+            pronoun_view = MultiRoleView(pronouns, "pronoun")
+            await channel.send("Choose your pronouns:", view=pronoun_view)
+            
+        await ctx.send(f"✅ Posted role buttons in {channel.mention}")
+
+    @selfroles.command()
+    async def add_platform(self, ctx, platform_name: str, role: discord.Role):
+        """Add a platform role"""
+        platforms = await self.config.guild(ctx.guild).platforms()
+        platforms[platform_name.lower()] = role.id
+        await self.config.guild(ctx.guild).platforms.set(platforms)
+        await ctx.send(f"✅ Added platform **{platform_name}** with role **{role.name}**")
+
+    @selfroles.command()
+    async def add_location(self, ctx, location_name: str, role: discord.Role):
+        """Add a location role"""
+        locations = await self.config.guild(ctx.guild).locations()
+        locations[location_name.lower()] = role.id
+        await self.config.guild(ctx.guild).locations.set(locations)
+        await ctx.send(f"✅ Added location **{location_name}** with role **{role.name}**")
+
+    @selfroles.command()
+    async def add_pronoun(self, ctx, pronoun_name: str, role: discord.Role):
+        """Add a pronoun role"""
+        pronouns = await self.config.guild(ctx.guild).pronouns()
+        pronouns[pronoun_name.lower()] = role.id
+        await self.config.guild(ctx.guild).pronouns.set(pronouns)
+        await ctx.send(f"✅ Added pronoun **{pronoun_name}** with role **{role.name}**")
+
+    @selfroles.command()
+    async def list_roles(self, ctx):
+        """List all configured roles"""
+        platforms = await self.config.guild(ctx.guild).platforms()
+        locations = await self.config.guild(ctx.guild).locations()
+        pronouns = await self.config.guild(ctx.guild).pronouns()
+        
+        embed = discord.Embed(title="Self-Assignable Roles", color=0x00ff00)
+        
+        if platforms:
+            platform_list = "\n".join([f"**{k}**: <@&{v}>" for k, v in platforms.items()])
+            embed.add_field(name="Platforms", value=platform_list, inline=False)
+            
+        if locations:
+            location_list = "\n".join([f"**{k}**: <@&{v}>" for k, v in locations.items()])
+            embed.add_field(name="Locations", value=location_list, inline=False)
+            
+        if pronouns:
+            pronoun_list = "\n".join([f"**{k}**: <@&{v}>" for k, v in pronouns.items()])
+            embed.add_field(name="Pronouns", value=pronoun_list, inline=False)
+            
+        if not (platforms or locations or pronouns):
+            embed.description = "No roles configured yet."
+            
+        await ctx.send(embed=embed)
+
+    @selfroles.command()
+    async def remove_platform(self, ctx, platform_name: str):
+        """Remove a platform role"""
+        platforms = await self.config.guild(ctx.guild).platforms()
+        if platform_name.lower() in platforms:
+            del platforms[platform_name.lower()]
+            await self.config.guild(ctx.guild).platforms.set(platforms)
+            await ctx.send(f"✅ Removed platform **{platform_name}**")
+        else:
+            await ctx.send(f"❌ Platform **{platform_name}** not found")
+
+    @selfroles.command()
+    async def remove_location(self, ctx, location_name: str):
+        """Remove a location role"""
+        locations = await self.config.guild(ctx.guild).locations()
+        if location_name.lower() in locations:
+            del locations[location_name.lower()]
+            await self.config.guild(ctx.guild).locations.set(locations)
+            await ctx.send(f"✅ Removed location **{location_name}**")
+        else:
+            await ctx.send(f"❌ Location **{location_name}** not found")
+
+    @selfroles.command()
+    async def remove_pronoun(self, ctx, pronoun_name: str):
+        """Remove a pronoun role"""
+        pronouns = await self.config.guild(ctx.guild).pronouns()
+        if pronoun_name.lower() in pronouns:
+            del pronouns[pronoun_name.lower()]
+            await self.config.guild(ctx.guild).pronouns.set(pronouns)
+            await ctx.send(f"✅ Removed pronoun **{pronoun_name}**")
+        else:
+            await ctx.send(f"❌ Pronoun **{pronoun_name}** not found")
