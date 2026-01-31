@@ -167,7 +167,7 @@ class SelfRoles(commands.Cog):
 
     @selfroles.command()
     async def post(self, ctx, channel: Optional[discord.TextChannel] = None):
-        """Posts the embeds with proper spacing."""
+        """Posts the embeds with updated descriptions and spacing."""
         channel = channel or ctx.channel
         data = await self.config.guild(ctx.guild).all()
         
@@ -182,7 +182,7 @@ class SelfRoles(commands.Cog):
             },
             {
                 "title": "🌍 Regional Roles",
-                "desc": "Choose your region to see local channels and get better ping in matches.",
+                "desc": "Select your region to let the community know where you are from!",
                 "type": "location",
                 "data_key": "locations",
                 "emoji_key": "platform_emojis",
