@@ -10,6 +10,7 @@ class MultiRoleView(View):
         super().__init__(timeout=None)
         custom_emojis = custom_emojis or {}
         
+        # Define the layout for each category
         layouts = {
             "platform": [
                 ("pc", "PC", discord.ButtonStyle.secondary, "💻"),
@@ -38,7 +39,9 @@ class MultiRoleView(View):
             if not role_id:
                 continue
 
+            # Use captured custom emoji or fallback to default
             emoji_to_use = custom_emojis.get(key) or default_emoji
+
             self.add_item(Button(
                 style=style,
                 label=label,
@@ -47,15 +50,18 @@ class MultiRoleView(View):
             ))
 
 class SelfRoles(commands.Cog):
+    """Self-assignable roles with custom emojis and clean formatting."""
+
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9988776655, force_registration=True)
-        self.config.register_guild(
-            platforms={},
-            platform_emojis={},
-            locations={},
-            pronouns={}
-        )
+        default_guild = {
+            "platforms": {},
+            "platform_emojis": {},
+            "locations": {},
+            "pronouns": {}
+        }
+        self.config.register_guild(**default_guild)
         bot.add_listener(self.button_listener, "on_interaction")
 
     async def button_listener(self, interaction: discord.Interaction):
@@ -67,9 +73,13 @@ class SelfRoles(commands.Cog):
             
         parts = cid.split("_")
         cat_map = {"platform": "platforms", "location": "locations", "pronoun": "pronouns"}
-        data = await self.config.guild(interaction.guild).get_attr(cat_map[parts[1]])()
+        conf_category = cat_map.get(parts[1])
+        if not conf_category: return
+
+        data = await self.config.guild(interaction.guild).get_attr(conf_category)()
+        role_id = data.get(parts[2])
         
-        role = interaction.guild.get_role(data.get(parts[2]))
+        role = interaction.guild.get_role(role_id)
         if not role: return
             
         if role in interaction.user.roles:
@@ -86,15 +96,21 @@ class SelfRoles(commands.Cog):
         pass
 
     @selfroles.command()
+    async def clear_data(self, ctx):
+        """Wipes the config to fix errors or start over."""
+        await self.config.guild(ctx.guild).clear()
+        await ctx.send("✅ Data cleared. Run `!selfroles setup` to begin again.")
+
+    @selfroles.command()
     async def setup(self, ctx):
-        """Setup using Reactions for custom emojis."""
+        """Step-by-step setup using reactions for emojis."""
         setup_structure = {
             "platforms": ["PC", "Nintendo", "PlayStation", "Xbox"],
             "locations": ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"],
             "pronouns": ["He/Him", "She/Her", "They/Them", "Other/Ask"]
         }
 
-        await ctx.send("Starting setup. Type **quit** to exit.")
+        await ctx.send("Starting setup. Type **quit** to exit or **skip** to move past a role.")
 
         for cat_key, labels in setup_structure.items():
             await ctx.send(f"--- **{cat_key.upper()}** ---")
@@ -105,7 +121,8 @@ class SelfRoles(commands.Cog):
                 try:
                     r_msg = await self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.channel == ctx.channel, timeout=60.0)
                     if r_msg.content.lower() == "quit": return
-                    
+                    if r_msg.content.lower() == "skip": continue
+
                     role_id = r_msg.role_mentions[0].id if r_msg.role_mentions else None
                     if not role_id:
                         match = re.search(r'\d{17,20}', r_msg.content)
@@ -121,22 +138,24 @@ class SelfRoles(commands.Cog):
                     if "other" in label.lower(): key = "ask"
                     roles_to_save[key] = role_id
 
-                    if cat_key == "platforms":
-                        p_msg = await ctx.send(f"**React to THIS message** with the custom emoji for **{label}** (or type 'skip'):")
-                        try:
-                            # Wait for reaction OR a skip message
-                            reaction_task = self.bot.wait_for("reaction_add", check=lambda r, u: u == ctx.author and r.message.id == p_msg.id, timeout=30.0)
-                            message_task = self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.content.lower() == "skip", timeout=30.0)
-                            
-                            done, pending = await asyncio.wait([reaction_task, message_task], return_when=asyncio.FIRST_COMPLETED)
-                            for task in pending: task.cancel()
+                    # EMOJI CAPTURE
+                    prompt = await ctx.send(f"**React to THIS message** with the emoji for **{label}** (or type 'skip'):")
+                    try:
+                        reaction_task = self.bot.wait_for("reaction_add", check=lambda r, u: u == ctx.author and r.message.id == prompt.id, timeout=30.0)
+                        message_task = self.bot.wait_for("message", check=lambda m: m.author == ctx.author and m.content.lower() == "skip", timeout=30.0)
+                        
+                        done, pending = await asyncio.wait([reaction_task, message_task], return_when=asyncio.FIRST_COMPLETED)
+                        for t in pending: t.cancel()
 
-                            result = done.pop().result()
-                            if isinstance(result, tuple):
-                                emojis_to_save[key] = str(result[0].emoji)
-                                await ctx.send(f"✅ Saved with {result[0].emoji}")
-                        except asyncio.TimeoutError:
-                            await ctx.send("Timed out. Using default.")
+                        result = done.pop().result()
+                        if isinstance(result, tuple):
+                            emojis_to_save[key] = str(result[0].emoji)
+                            await ctx.send(f"✅ Saved with {result[0].emoji}")
+                        else:
+                            await ctx.send("✅ Using default.")
+                    except asyncio.TimeoutError:
+                        await ctx.send("Timed out. Using default.")
+
                 except Exception as e:
                     await ctx.send(f"Error: {e}")
 
@@ -144,15 +163,14 @@ class SelfRoles(commands.Cog):
             if cat_key == "platforms":
                 await self.config.guild(ctx.guild).platform_emojis.set(emojis_to_save)
 
-        await ctx.send("Setup complete. Run `!selfroles post`.")
+        await ctx.send("Setup finished! Run `!selfroles post`.")
 
     @selfroles.command()
     async def post(self, ctx, channel: Optional[discord.TextChannel] = None):
-        """Posts the formatted embeds with descriptions."""
+        """Posts formatted embeds with spacing between them."""
         channel = channel or ctx.channel
         data = await self.config.guild(ctx.guild).all()
         
-        # Define the embeds and text
         categories = [
             {
                 "title": "🎮 Gaming Platforms",
@@ -167,7 +185,7 @@ class SelfRoles(commands.Cog):
                 "desc": "Choose your region to see local channels and get better ping in matches.",
                 "type": "location",
                 "data_key": "locations",
-                "emoji_key": None,
+                "emoji_key": "platform_emojis", # Can store custom emojis for locations too if set
                 "color": 0x3BA55D
             },
             {
@@ -175,16 +193,25 @@ class SelfRoles(commands.Cog):
                 "desc": "Select your preferred pronouns to let the community know how to address you.",
                 "type": "pronoun",
                 "data_key": "pronouns",
-                "emoji_key": None,
+                "emoji_key": "platform_emojis",
                 "color": 0x1ABC9C
             }
         ]
 
-        for cat in categories:
-            roles = data.get(cat["data_key"], {})
-            if not any(roles.values()): continue
+        # Unicode Tag character for invisible spacing
+        spacer = "\U00000174"
 
-            emojis = data.get(cat["emoji_key"], {}) if cat["emoji_key"] else {}
+        for i, cat in enumerate(categories):
+            roles = data.get(cat["data_key"], {})
+            if not any(roles.values()): 
+                continue
+
+            emojis = data.get("platform_emojis", {}) # Check global emoji storage
             view = MultiRoleView(roles, cat["type"], emojis)
             embed = discord.Embed(title=cat["title"], description=cat["desc"], color=cat["color"])
+            
             await channel.send(embed=embed, view=view)
+
+            # Add spacing between embeds (but not after the last one)
+            if i < len(categories) - 1:
+                await channel.send(spacer)
